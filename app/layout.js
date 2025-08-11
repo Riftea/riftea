@@ -1,7 +1,8 @@
 // src/app/layout.js
 import './globals.css'
 import { Providers } from './providers'
-import Header from './components/Header'
+import Header from './components/header/Header.jsx'
+
 
 export const metadata = {
   title: 'Riftea',
