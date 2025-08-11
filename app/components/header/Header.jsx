@@ -9,7 +9,13 @@ export default function Header() {
     <header className="fixed top-0 left-0 w-full bg-orange-500 text-white shadow-md z-50">
       <div className="max-w-6xl mx-auto flex justify-between items-center px-4 py-3">
         {/* Logo */}
-        <h1 className="text-xl font-bold">Riftea</h1>
+        <Image
+          src="/logo.png"
+          alt="Logo"
+          width={120}
+          height={40}
+          className="cursor-pointer"
+        />
 
         {/* Controles */}
         {!session ? (
