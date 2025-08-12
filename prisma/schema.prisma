@@ -16,51 +16,61 @@ model User {
   tickets   Ticket[]
   purchases Purchase[]
   raffles   Raffle[]     @relation("RaffleOwner")
-  createdAt DateTime     @default(now())
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  @@map("users")
 }
 
 model Raffle {
   id             String          @id @default(cuid())
   title          String
   description    String
-  ticketPrice    Float
+  ticketPrice    Float           @map("ticket_price")
   owner          User            @relation("RaffleOwner", fields: [ownerId], references: [id])
-  ownerId        String
+  ownerId        String          @map("owner_id")
   tickets        Ticket[]
   participations Participation[]
-  createdAt      DateTime        @default(now())
-  endsAt         DateTime
-  isFinished     Boolean         @default(false)
+  createdAt      DateTime        @default(now()) @map("created_at")
+  endsAt         DateTime        @map("ends_at")
+  isFinished     Boolean         @default(false) @map("is_finished")
+
+  @@map("raffles")
 }
 
 model Purchase {
   id        String   @id @default(cuid())
   user      User     @relation(fields: [userId], references: [id])
-  userId    String
+  userId    String   @map("user_id")
   tickets   Ticket[]
   amount    Float
-  createdAt DateTime @default(now())
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("purchases")
 }
 
 model Ticket {
   id              String           @id @default(cuid())
   code            String           @unique
   user            User             @relation(fields: [userId], references: [id])
-  userId          String
+  userId          String           @map("user_id")
   raffle          Raffle           @relation(fields: [raffleId], references: [id])
-  raffleId        String
+  raffleId        String           @map("raffle_id")
   purchase        Purchase         @relation(fields: [purchaseId], references: [id])
-  purchaseId      String
+  purchaseId      String           @map("purchase_id")
   participation   Participation?   @relation("TicketParticipation")
-  isUsed          Boolean          @default(false)
-  createdAt       DateTime         @default(now())
+  isUsed          Boolean          @default(false) @map("is_used")
+  createdAt       DateTime         @default(now()) @map("created_at")
+
+  @@map("tickets")
 }
 
 model Participation {
   id         String   @id @default(cuid())
   raffle     Raffle   @relation(fields: [raffleId], references: [id])
-  raffleId   String
+  raffleId   String   @map("raffle_id")
   ticket     Ticket   @relation("TicketParticipation", fields: [ticketId], references: [id])
-  ticketId   String   @unique  // ← Aquí está el cambio
-  createdAt  DateTime @default(now())
+  ticketId   String   @unique @map("ticket_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("participations")
 }
