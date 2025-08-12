@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id        String       @id @default(cuid())
+  name      String
+  email     String       @unique
+  password  String
+  tickets   Ticket[]
+  purchases Purchase[]
+  raffles   Raffle[]     @relation("RaffleOwner")
+  createdAt DateTime     @default(now())
+}
+
+model Raffle {
+  id             String          @id @default(cuid())
+  title          String
+  description    String
+  ticketPrice    Float
+  owner          User            @relation("RaffleOwner", fields: [ownerId], references: [id])
+  ownerId        String
+  tickets        Ticket[]
+  participations Participation[]
+  createdAt      DateTime        @default(now())
+  endsAt         DateTime
+  isFinished     Boolean         @default(false)
+}
+
+model Purchase {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  tickets   Ticket[]
+  amount    Float
+  createdAt DateTime @default(now())
+}
+
+model Ticket {
+  id              String           @id @default(cuid())
+  code            String           @unique
+  user            User             @relation(fields: [userId], references: [id])
+  userId          String
+  raffle          Raffle           @relation(fields: [raffleId], references: [id])
+  raffleId        String
+  purchase        Purchase         @relation(fields: [purchaseId], references: [id])
+  purchaseId      String
+  participation   Participation?   @relation("TicketParticipation")
+  isUsed          Boolean          @default(false)
+  createdAt       DateTime         @default(now())
+}
+
+model Participation {
+  id         String   @id @default(cuid())
+  raffle     Raffle   @relation(fields: [raffleId], references: [id])
+  raffleId   String
+  ticket     Ticket   @relation("TicketParticipation", fields: [ticketId], references: [id])
+  ticketId   String   @unique  // ← Aquí está el cambio
+  createdAt  DateTime @default(now())
+}
