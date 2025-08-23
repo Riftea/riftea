@@ -1,7 +1,7 @@
 // src/app/layout.js
 import './globals.css'
 import { Providers } from './providers'
-import Header from './components/header/Header.jsx'
+import Header from '../src/components/header/Header.jsx'
 
 
 export const metadata = {

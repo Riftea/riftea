@@ -1,36 +1,415 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
 
-## Getting Started
-
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
+riftea
+├─ app
+│  ├─ admin
+│  │  ├─ crear-sorteo
+│  │  │  └─ page.js
+│  │  └─ page.js
+│  ├─ api
+│  │  ├─ auth
+│  │  │  └─ [...nextauth]
+│  │  │     └─ route.js
+│  │  ├─ notifications
+│  │  │  └─ route.js
+│  │  ├─ purchase.js
+│  │  ├─ raffles
+│  │  │  ├─ route.js
+│  │  │  └─ [id]
+│  │  │     ├─ assign-tickets
+│  │  │     │  └─ route.js
+│  │  │     ├─ page.js
+│  │  │     └─ route.js
+│  │  ├─ tickets
+│  │  │  └─ route.js
+│  │  └─ users
+│  │     └─ me
+│  │        └─ route.js
+│  ├─ components
+│  │  ├─ AuthButtons.jsx
+│  │  └─ header
+│  │     └─ Header.jsx
+│  ├─ favicon.ico
+│  ├─ globals.css
+│  ├─ hooks
+│  │  └─ useUser.js
+│  ├─ layout.js
+│  ├─ mis-sorteos
+│  │  └─ page.js
+│  ├─ page.js
+│  └─ providers.js
+├─ db.js
+├─ eslint.config.mjs
+├─ jsconfig.json
+├─ lib
+│  ├─ auth.js
+│  ├─ generateTickets.js
+│  └─ prisma.js
+├─ logo.png
+├─ next.config.mjs
+├─ package-lock.json
+├─ package.json
+├─ postcss.config.mjs
+├─ prisma
+│  ├─ enable_rls.sql
+│  ├─ migrations
+│  │  ├─ 20250812091137_initial_setup
+│  │  │  └─ migration.sql
+│  │  ├─ 20250816094904_add_role_field
+│  │  │  └─ migration.sql
+│  │  ├─ 20250816201834_add_notifications
+│  │  │  └─ migration.sql
+│  │  ├─ 20250816232332_add_audit_log
+│  │  │  └─ migration.sql
+│  │  ├─ 20250817091509_add_enhanced_raffle_features
+│  │  │  └─ migration.sql
+│  │  └─ migration_lock.toml
+│  └─ schema.prisma
+├─ public
+│  ├─ file.svg
+│  ├─ globe.svg
+│  ├─ logo.png
+│  ├─ next.svg
+│  ├─ vercel.svg
+│  └─ window.svg
+├─ scripts
+│  └─ listUsers.js
+└─ tsconfig.json
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+```
+```
+riftea
+├─ app
+│  ├─ admin
+│  │  ├─ crear-sorteo
+│  │  │  └─ page.js
+│  │  └─ page.js
+│  ├─ api
+│  │  ├─ auth
+│  │  │  └─ [...nextauth]
+│  │  │     └─ route.js
+│  │  ├─ notifications
+│  │  │  └─ route.js
+│  │  ├─ purchase
+│  │  │  └─ route.js
+│  │  ├─ purchase.js
+│  │  ├─ raffles
+│  │  │  ├─ route.js
+│  │  │  └─ [id]
+│  │  │     ├─ assign-tickets
+│  │  │     │  └─ route.js
+│  │  │     ├─ page.js
+│  │  │     └─ route.js
+│  │  ├─ tickets
+│  │  │  └─ route.js
+│  │  └─ users
+│  │     └─ me
+│  │        └─ route.js
+│  ├─ components
+│  │  ├─ AuthButtons.jsx
+│  │  └─ header
+│  │     └─ Header.jsx
+│  ├─ favicon.ico
+│  ├─ globals.css
+│  ├─ hooks
+│  │  └─ useUser.js
+│  ├─ layout.js
+│  ├─ mis-sorteos
+│  │  └─ page.js
+│  ├─ page.js
+│  ├─ providers.js
+│  └─ terminos
+│     └─ page.js
+├─ db.js
+├─ eslint.config.mjs
+├─ jsconfig.json
+├─ lib
+│  ├─ auth.js
+│  └─ generateTickets.js
+├─ logo.png
+├─ migration_script.sh
+├─ next.config.mjs
+├─ package-lock.json
+├─ package.json
+├─ postcss.config.mjs
+├─ prisma
+│  ├─ enable_rls.sql
+│  ├─ migrations
+│  │  ├─ 20250812091137_initial_setup
+│  │  │  └─ migration.sql
+│  │  ├─ 20250816094904_add_role_field
+│  │  │  └─ migration.sql
+│  │  ├─ 20250816201834_add_notifications
+│  │  │  └─ migration.sql
+│  │  ├─ 20250816232332_add_audit_log
+│  │  │  └─ migration.sql
+│  │  ├─ 20250817091509_add_enhanced_raffle_features
+│  │  │  └─ migration.sql
+│  │  └─ migration_lock.toml
+│  └─ schema.prisma
+├─ public
+│  ├─ file.svg
+│  ├─ globe.svg
+│  ├─ logo.png
+│  ├─ next.svg
+│  ├─ vercel.svg
+│  └─ window.svg
+├─ README.md
+├─ scripts
+│  ├─ listUsers.js
+│  └─ updateImports.js
+├─ src
+│  ├─ api
+│  ├─ components
+│  │  ├─ auth
+│  │  ├─ AuthButtons.jsx
+│  │  ├─ header
+│  │  │  └─ Header.jsx
+│  │  ├─ layout
+│  │  ├─ raffle
+│  │  │  └─ ProgressBar.js
+│  │  └─ ui
+│  ├─ hooks
+│  │  ├─ useProgress.js
+│  │  └─ useUser.js
+│  ├─ jobs
+│  │  └─ checkProgress.js
+│  ├─ lib
+│  │  ├─ auth.js
+│  │  ├─ crypto.js
+│  │  ├─ generateTickets.js
+│  │  ├─ prisma.js
+│  │  └─ queue.js
+│  ├─ pages
+│  ├─ services
+│  │  ├─ audit.service.js
+│  │  ├─ purchases.service.js
+│  │  └─ tickets.service.js
+│  ├─ utils
+│  ├─ validators
+│  └─ workers
+│     └─ worker.js
+├─ tests
+├─ tsconfig.json
+└─ _backup_old_structure
+   ├─ app
+   │  ├─ admin
+   │  │  ├─ crear-sorteo
+   │  │  │  └─ page.js
+   │  │  └─ page.js
+   │  ├─ api
+   │  │  ├─ auth
+   │  │  │  └─ [...nextauth]
+   │  │  │     └─ route.js
+   │  │  ├─ notifications
+   │  │  │  └─ route.js
+   │  │  ├─ purchase
+   │  │  │  └─ route.js
+   │  │  ├─ purchase.js
+   │  │  ├─ raffles
+   │  │  │  ├─ route.js
+   │  │  │  └─ [id]
+   │  │  │     ├─ assign-tickets
+   │  │  │     │  └─ route.js
+   │  │  │     ├─ page.js
+   │  │  │     └─ route.js
+   │  │  ├─ tickets
+   │  │  │  └─ route.js
+   │  │  └─ users
+   │  │     └─ me
+   │  │        └─ route.js
+   │  ├─ components
+   │  │  ├─ AuthButtons.jsx
+   │  │  └─ header
+   │  │     └─ Header.jsx
+   │  ├─ favicon.ico
+   │  ├─ globals.css
+   │  ├─ hooks
+   │  │  └─ useUser.js
+   │  ├─ layout.js
+   │  ├─ mis-sorteos
+   │  │  └─ page.js
+   │  ├─ page.js
+   │  ├─ providers.js
+   │  └─ terminos
+   │     └─ page.js
+   └─ lib
+      ├─ auth.js
+      └─ generateTickets.js
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+```
+```
+riftea
+├─ app
+│  ├─ admin
+│  │  ├─ crear-sorteo
+│  │  │  └─ page.js
+│  │  └─ page.js
+│  ├─ api
+│  │  ├─ auth
+│  │  │  └─ [...nextauth]
+│  │  │     └─ route.js
+│  │  ├─ notifications
+│  │  │  └─ route.js
+│  │  ├─ purchase
+│  │  │  └─ route.js
+│  │  ├─ purchase.js
+│  │  ├─ raffles
+│  │  │  ├─ route.js
+│  │  │  └─ [id]
+│  │  │     ├─ assign-tickets
+│  │  │     │  └─ route.js
+│  │  │     ├─ page.js
+│  │  │     └─ route.js
+│  │  ├─ tickets
+│  │  │  └─ my
+│  │  │     └─ route.js
+│  │  └─ users
+│  │     └─ me
+│  │        └─ route.js
+│  ├─ components
+│  │  ├─ AuthButtons.jsx
+│  │  └─ header
+│  │     └─ Header.jsx
+│  ├─ estadisticas
+│  │  └─ page.js
+│  ├─ favicon.ico
+│  ├─ globals.css
+│  ├─ hooks
+│  │  └─ useUser.js
+│  ├─ layout.js
+│  ├─ mis-sorteos
+│  │  └─ page.js
+│  ├─ mis-tickets
+│  │  └─ page.js
+│  ├─ page.js
+│  ├─ perfil
+│  │  └─ page.js
+│  ├─ providers.js
+│  ├─ soporte
+│  │  └─ page.js
+│  ├─ sorteo
+│  │  └─ [id]
+│  │     └─ page.js
+│  ├─ terminos
+│  │  └─ page.js
+│  └─ ventas
+│     └─ page.js
+├─ db.js
+├─ eslint.config.mjs
+├─ jsconfig.json
+├─ lib
+│  ├─ auth.js
+│  └─ generateTickets.js
+├─ logo.png
+├─ migration_script.sh
+├─ next.config.mjs
+├─ package-lock.json
+├─ package.json
+├─ postcss.config.mjs
+├─ prisma
+│  ├─ enable_rls.sql
+│  ├─ migrations
+│  │  ├─ 20250812091137_initial_setup
+│  │  │  └─ migration.sql
+│  │  ├─ 20250816094904_add_role_field
+│  │  │  └─ migration.sql
+│  │  ├─ 20250816201834_add_notifications
+│  │  │  └─ migration.sql
+│  │  ├─ 20250816232332_add_audit_log
+│  │  │  └─ migration.sql
+│  │  ├─ 20250817091509_add_enhanced_raffle_features
+│  │  │  └─ migration.sql
+│  │  └─ migration_lock.toml
+│  └─ schema.prisma
+├─ public
+│  ├─ file.svg
+│  ├─ globe.svg
+│  ├─ logo.png
+│  ├─ next.svg
+│  ├─ vercel.svg
+│  └─ window.svg
+├─ README.md
+├─ scripts
+│  ├─ listUsers.js
+│  └─ updateImports.js
+├─ src
+│  ├─ api
+│  ├─ components
+│  │  ├─ auth
+│  │  ├─ AuthButtons.jsx
+│  │  ├─ header
+│  │  │  └─ Header.jsx
+│  │  ├─ layout
+│  │  ├─ raffle
+│  │  │  └─ ProgressBar.js
+│  │  └─ ui
+│  ├─ hooks
+│  │  ├─ useProgress.js
+│  │  └─ useUser.js
+│  ├─ jobs
+│  │  └─ checkProgress.js
+│  ├─ lib
+│  │  ├─ auth.js
+│  │  ├─ crypto.js
+│  │  ├─ generateTickets.js
+│  │  ├─ prisma.js
+│  │  └─ queue.js
+│  ├─ pages
+│  ├─ services
+│  │  ├─ audit.service.js
+│  │  ├─ purchases.service.js
+│  │  └─ tickets.service.js
+│  ├─ utils
+│  ├─ validators
+│  └─ workers
+│     └─ worker.js
+├─ tests
+├─ tsconfig.json
+└─ _backup_old_structure
+   ├─ app
+   │  ├─ admin
+   │  │  ├─ crear-sorteo
+   │  │  │  └─ page.js
+   │  │  └─ page.js
+   │  ├─ api
+   │  │  ├─ auth
+   │  │  │  └─ [...nextauth]
+   │  │  │     └─ route.js
+   │  │  ├─ notifications
+   │  │  │  └─ route.js
+   │  │  ├─ purchase
+   │  │  │  └─ route.js
+   │  │  ├─ purchase.js
+   │  │  ├─ raffles
+   │  │  │  ├─ route.js
+   │  │  │  └─ [id]
+   │  │  │     ├─ assign-tickets
+   │  │  │     │  └─ route.js
+   │  │  │     ├─ page.js
+   │  │  │     └─ route.js
+   │  │  ├─ tickets
+   │  │  │  └─ route.js
+   │  │  └─ users
+   │  │     └─ me
+   │  │        └─ route.js
+   │  ├─ components
+   │  │  ├─ AuthButtons.jsx
+   │  │  └─ header
+   │  │     └─ Header.jsx
+   │  ├─ favicon.ico
+   │  ├─ globals.css
+   │  ├─ hooks
+   │  │  └─ useUser.js
+   │  ├─ layout.js
+   │  ├─ mis-sorteos
+   │  │  └─ page.js
+   │  ├─ page.js
+   │  ├─ providers.js
+   │  └─ terminos
+   │     └─ page.js
+   └─ lib
+      ├─ auth.js
+      └─ generateTickets.js
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```

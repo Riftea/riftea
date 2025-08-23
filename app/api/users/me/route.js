@@ -1,4 +1,4 @@
-// app/api/users/me/route.js - CREAR este archivo
+// app/api/users/me/route.js
 import { getServerSession } from 'next-auth'
 import { PrismaClient } from '@prisma/client'
 
@@ -28,7 +28,7 @@ export async function GET(request) {
                 title: true,
                 description: true,
                 endsAt: true,
-                isFinished: true
+                status: true  // ✅ CAMBIADO de isFinished a status
               }
             }
           }
@@ -38,7 +38,10 @@ export async function GET(request) {
             tickets: {
               include: {
                 raffle: {
-                  select: { title: true }
+                  select: { 
+                    title: true,
+                    status: true  // ✅ CAMBIADO también aquí si lo necesitas
+                  }
                 }
               }
             }
@@ -49,7 +52,7 @@ export async function GET(request) {
           select: {
             id: true,
             title: true,
-            isFinished: true,
+            status: true,  // ✅ CAMBIADO de isFinished a status
             createdAt: true
           }
         }
@@ -86,10 +89,20 @@ export async function GET(request) {
         totalPurchases: user.purchases.length,
         totalSpent: totalSpent,
         
-        // Datos detallados
-        tickets: user.tickets,
+        // Datos detallados con campos calculados
+        tickets: user.tickets.map(ticket => ({
+          ...ticket,
+          // Calcular si la rifa está terminada
+          raffleFinished: ticket.raffle.status === 'FINISHED' || 
+                         ticket.raffle.status === 'DRAWN' ||
+                         (ticket.raffle.endsAt && new Date() > new Date(ticket.raffle.endsAt))
+        })),
         purchases: user.purchases,
-        ownedRaffles: user.raffles, // Para futuro
+        ownedRaffles: user.raffles.map(raffle => ({
+          ...raffle,
+          // Agregar campo calculado isFinished
+          isFinished: raffle.status === 'FINISHED' || raffle.status === 'DRAWN'
+        })),
         
         // Tickets disponibles por rifa
         ticketsByRaffle: availableTickets.reduce((acc, ticket) => {
@@ -110,7 +123,8 @@ export async function GET(request) {
     console.error('Error en /api/users/me:', error)
     return Response.json({
       success: false,
-      error: 'Error interno del servidor'
+      error: 'Error interno del servidor',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     }, { status: 500 })
   } finally {
     await prisma.$disconnect()

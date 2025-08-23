@@ -8,15 +8,46 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+enum Role {
+  USER
+  ADMIN
+  SUPERADMIN
+}
+
+enum RaffleStatus {
+  DRAFT
+  PUBLISHED
+  ACTIVE
+  FINISHED
+  CANCELLED
+}
+
+enum NotificationType {
+  PURCHASE_CONFIRMATION
+  RAFFLE_WINNER
+  RAFFLE_CREATED
+  SYSTEM_ALERT
+}
+
 model User {
-  id        String       @id @default(cuid())
-  name      String
-  email     String       @unique
-  password  String
-  tickets   Ticket[]
-  purchases Purchase[]
-  raffles   Raffle[]     @relation("RaffleOwner")
-  createdAt DateTime     @default(now()) @map("created_at")
+  id            String         @id @default(cuid())
+  name          String?
+  email         String         @unique
+  password      String?        // opcional para OAuth
+  image         String?
+  role          Role           @default(USER)
+  isActive      Boolean        @default(true) @map("is_active")
+  
+  // Relaciones
+  tickets       Ticket[]
+  purchases     Purchase[]
+  raffles       Raffle[]       @relation("RaffleOwner")
+  notifications Notification[]
+  auditLogs     AuditLog[]
+  wonRaffles    Raffle[]       @relation("RaffleWinner") // Rifas ganadas
+  
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @default(now()) @updatedAt @map("updated_at")
 
   @@map("users")
 }
@@ -26,51 +57,141 @@ model Raffle {
   title          String
   description    String
   ticketPrice    Float           @map("ticket_price")
-  owner          User            @relation("RaffleOwner", fields: [ownerId], references: [id])
+  maxTickets     Int?            @map("max_tickets") // límite opcional de tickets
+  imageUrl       String?         @map("image_url")   // imagen del premio
+  
+  // Propietario
   ownerId        String          @map("owner_id")
+  owner          User            @relation("RaffleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  
+  // Ganador (opcional)
+  winnerId       String?         @map("winner_id")
+  winner         User?           @relation("RaffleWinner", fields: [winnerId], references: [id], onDelete: SetNull)
+  winningTicket  String?         @map("winning_ticket") // código del ticket ganador
+  
+  // Estado y fechas
+  status         RaffleStatus    @default(DRAFT)
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @default(now()) @updatedAt @map("updated_at")
+  publishedAt    DateTime?       @map("published_at")
+  startsAt       DateTime?       @map("starts_at")
+  endsAt         DateTime?       @map("ends_at")  // ✅ CAMBIADO: Ahora es opcional
+  drawnAt        DateTime?       @map("drawn_at") // cuándo se realizó el sorteo
+  
+  // Relaciones
   tickets        Ticket[]
   participations Participation[]
-  createdAt      DateTime        @default(now()) @map("created_at")
-  endsAt         DateTime        @map("ends_at")
-  isFinished     Boolean         @default(false) @map("is_finished")
 
+  @@index([ownerId])
+  @@index([winnerId])
+  @@index([status])
   @@map("raffles")
 }
 
 model Purchase {
-  id        String   @id @default(cuid())
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String   @map("user_id")
-  tickets   Ticket[]
-  amount    Float
-  createdAt DateTime @default(now()) @map("created_at")
+  id            String   @id @default(cuid())
+  user          User     @relation(fields: [userId], references: [id])
+  userId        String   @map("user_id")
+  
+  amount        Float
+  currency      String   @default("ARS")
+  paymentMethod String?  @map("payment_method") // "credit_card", "bank_transfer", etc.
+  paymentId     String?  @map("payment_id")     // ID del procesador de pagos
+  
+  status        String   @default("pending") // "pending", "completed", "failed", "refunded"
+  
+  tickets       Ticket[]
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@map("purchases")
 }
 
 model Ticket {
-  id              String           @id @default(cuid())
-  code            String           @unique
-  user            User             @relation(fields: [userId], references: [id])
-  userId          String           @map("user_id")
-  raffle          Raffle           @relation(fields: [raffleId], references: [id])
-  raffleId        String           @map("raffle_id")
-  purchase        Purchase         @relation(fields: [purchaseId], references: [id])
-  purchaseId      String           @map("purchase_id")
-  participation   Participation?   @relation("TicketParticipation")
-  isUsed          Boolean          @default(false) @map("is_used")
-  createdAt       DateTime         @default(now()) @map("created_at")
+  id            String         @id @default(cuid())
+  code          String         @unique
+  
+  user          User           @relation(fields: [userId], references: [id])
+  userId        String         @map("user_id")
+  
+  raffle        Raffle         @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId      String         @map("raffle_id")
+  
+  purchase      Purchase       @relation(fields: [purchaseId], references: [id])
+  purchaseId    String         @map("purchase_id")
+  
+  participation Participation? @relation("TicketParticipation")
+  
+  isUsed        Boolean        @default(false) @map("is_used")
+  isWinner      Boolean        @default(false) @map("is_winner")
+  
+  createdAt     DateTime       @default(now()) @map("created_at")
 
+  // Índices para optimizar consultas
+  @@index([raffleId])
+  @@index([userId])
   @@map("tickets")
 }
 
 model Participation {
   id         String   @id @default(cuid())
-  raffle     Raffle   @relation(fields: [raffleId], references: [id])
+  
+  raffle     Raffle   @relation(fields: [raffleId], references: [id], onDelete: Cascade)
   raffleId   String   @map("raffle_id")
+  
   ticket     Ticket   @relation("TicketParticipation", fields: [ticketId], references: [id])
   ticketId   String   @unique @map("ticket_id")
+  
+  isActive   Boolean  @default(true) @map("is_active") // por si se quiere desactivar una participación
   createdAt  DateTime @default(now()) @map("created_at")
 
+  @@index([raffleId])
   @@map("participations")
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String           @map("user_id")
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type      NotificationType @default(SYSTEM_ALERT)
+  title     String
+  message   String
+  
+  read      Boolean          @default(false)
+  readAt    DateTime?        @map("read_at")
+  
+  // Datos relacionados opcionales
+  raffleId  String?          @map("raffle_id")
+  ticketId  String?          @map("ticket_id")
+  
+  createdAt DateTime         @default(now()) @map("created_at")
+  expiresAt DateTime?        @map("expires_at")
+
+  @@index([userId, read])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String   // "create_raffle", "buy_ticket", "draw_raffle", etc.
+  
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  
+  targetType String? @map("target_type") // "raffle", "ticket", "user", etc.
+  targetId   String? @map("target_id")
+  
+  oldValues  Json?   @map("old_values") // valores anteriores (para updates)
+  newValues  Json?   @map("new_values") // valores nuevos
+  
+  ipAddress  String? @map("ip_address")
+  userAgent  String? @map("user_agent")
+  
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
 }
