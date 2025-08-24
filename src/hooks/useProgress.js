@@ -1,5 +1,5 @@
 // src/hooks/useProgress.js
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 /**
  * 📊 Hook para monitorear progreso de sorteos en tiempo real
@@ -26,8 +26,8 @@ export function useRaffleProgress(raffleId, options = {}) {
   const intervalRef = useRef(null);
   const wsRef = useRef(null);
 
-  // 📡 Fetch progress data
-  const fetchProgress = async () => {
+  // 📡 Fetch progress data - useCallback para evitar recreación en cada render
+  const fetchProgress = useCallback(async () => {
     try {
       const response = await fetch(`/api/raffles/${raffleId}/progress`);
       
@@ -55,23 +55,23 @@ export function useRaffleProgress(raffleId, options = {}) {
       setError(err.message);
       setLoading(false);
     }
-  };
+  }, [raffleId]);
 
-  // 🔄 Start/stop polling
-  const startPolling = () => {
+  // 🔄 Start/stop polling - useCallback para evitar recreación
+  const startPolling = useCallback(() => {
     if (intervalRef.current) return;
     
     intervalRef.current = setInterval(fetchProgress, refreshInterval);
     console.log(`📊 Polling iniciado para sorteo ${raffleId} cada ${refreshInterval}ms`);
-  };
+  }, [fetchProgress, refreshInterval, raffleId]);
 
-  const stopPolling = () => {
+  const stopPolling = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
       console.log(`📊 Polling detenido para sorteo ${raffleId}`);
     }
-  };
+  }, [raffleId]);
 
   // 🚀 Initialize
   useEffect(() => {
@@ -87,12 +87,13 @@ export function useRaffleProgress(raffleId, options = {}) {
     
     return () => {
       stopPolling();
-      // Close WebSocket if exists
-      if (wsRef.current) {
-        wsRef.current.close();
+      // Close WebSocket if exists - capturar referencia actual
+      const currentWs = wsRef.current;
+      if (currentWs) {
+        currentWs.close();
       }
     };
-  }, [raffleId, autoRefresh, refreshInterval]);
+  }, [raffleId, autoRefresh, fetchProgress, startPolling, stopPolling]);
 
   // 📈 Calculate derived values
   const isComplete = progress.percentage >= 100;
@@ -122,7 +123,7 @@ export function useMultipleRafflesProgress(raffleIds = [], options = {}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const fetchMultipleProgress = async () => {
+  const fetchMultipleProgress = useCallback(async () => {
     try {
       const promises = raffleIds.map(id => 
         fetch(`/api/raffles/${id}/progress`).then(r => r.json())
@@ -160,7 +161,7 @@ export function useMultipleRafflesProgress(raffleIds = [], options = {}) {
       setError(err.message);
       setLoading(false);
     }
-  };
+  }, [raffleIds]);
 
   useEffect(() => {
     if (raffleIds.length === 0) return;
@@ -171,7 +172,7 @@ export function useMultipleRafflesProgress(raffleIds = [], options = {}) {
     const interval = setInterval(fetchMultipleProgress, 10000);
     
     return () => clearInterval(interval);
-  }, [raffleIds.join(',')]);
+  }, [fetchMultipleProgress, raffleIds]);
 
   return {
     rafflesProgress,
@@ -231,7 +232,7 @@ function getEstimatedCompletion(progress) {
  */
 export function useProgressNotifications(raffleId, thresholds = [25, 50, 75, 90, 100]) {
   const [notifiedThresholds, setNotifiedThresholds] = useState(new Set());
-  const { percentage, isComplete } = useRaffleProgress(raffleId);
+  const { percentage } = useRaffleProgress(raffleId);
 
   useEffect(() => {
     thresholds.forEach(threshold => {
@@ -289,7 +290,7 @@ export function useUserProgressStats() {
   });
   const [loading, setLoading] = useState(true);
 
-  const fetchStats = async () => {
+  const fetchStats = useCallback(async () => {
     try {
       const response = await fetch('/api/users/me/progress-stats');
       
@@ -303,11 +304,11 @@ export function useUserProgressStats() {
       console.error('❌ Error fetching user stats:', error);
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchStats();
-  }, []);
+  }, [fetchStats]);
 
   return {
     stats,

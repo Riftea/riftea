@@ -352,7 +352,7 @@ export function SoportePage() {
                 </div>
                 
                 <div className="flex items-center gap-3">
-                  <span>🕐</span>
+                  <span>🕰</span>
                   <div>
                     <p className="text-white/90">Horarios</p>
                     <p className="text-white/70">Lun-Vie 9:00-18:00</p>
@@ -372,7 +372,7 @@ export function SoportePage() {
                     <span className="transition group-open:rotate-180">↓</span>
                   </summary>
                   <p className="mt-2 text-white/70 text-sm">
-                    Ve a "Crear Sorteo" en tu menú, completa los datos y publica cuando esté listo.
+                    Ve a &quot;Crear Sorteo&quot; en tu menú, completa los datos y publica cuando esté listo.
                   </p>
                 </details>
                 
@@ -389,7 +389,7 @@ export function SoportePage() {
                 <details className="group">
                   <summary className="flex cursor-pointer items-center justify-between text-white/90 hover:text-white">
                     <span>¿Cuándo se sortea?</span>
-                    <span className="transition group-own:rotate-180">↓</span>
+                    <span className="transition group-open:rotate-180">↓</span>
                   </summary>
                   <p className="mt-2 text-white/70 text-sm">
                     Cada sorteo tiene fecha límite. Se sortea automáticamente al completarse.
