@@ -1,11 +1,12 @@
 // app/mis-tickets/page.js
 "use client";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-export default function MisTicketsPage() {
+// Componente que usa useSearchParams - debe estar dentro de Suspense
+function MisTicketsContent() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -286,5 +287,39 @@ export default function MisTicketsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// Componente de loading para el fallback de Suspense
+function MisTicketsLoading() {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-green-900 via-teal-900 to-blue-900 pt-20">
+      <div className="container mx-auto px-4 py-8">
+        <div className="animate-pulse">
+          <div className="h-8 bg-white/20 rounded w-1/3 mb-8"></div>
+          <div className="space-y-6">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="bg-white/10 rounded-3xl p-6">
+                <div className="h-6 bg-white/20 rounded w-1/2 mb-4"></div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {[...Array(6)].map((_, j) => (
+                    <div key={j} className="h-24 bg-white/20 rounded-2xl"></div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Componente principal con Suspense
+export default function MisTicketsPage() {
+  return (
+    <Suspense fallback={<MisTicketsLoading />}>
+      <MisTicketsContent />
+    </Suspense>
   );
 }
