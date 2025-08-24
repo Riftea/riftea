@@ -6,6 +6,164 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
 
+// Componente para notificación individual con swipe
+function NotificationItem({ notification, onMarkRead, onDelete }) {
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragX, setDragX] = useState(0);
+  const [startX, setStartX] = useState(0);
+  const itemRef = useRef(null);
+
+  const handleTouchStart = (e) => {
+    setIsDragging(true);
+    setStartX(e.touches[0].clientX);
+  };
+
+  const handleTouchMove = (e) => {
+    if (!isDragging) return;
+    
+    const currentX = e.touches[0].clientX;
+    const deltaX = currentX - startX;
+    
+    // Permitir deslizar hacia ambos lados con límites
+    setDragX(Math.max(Math.min(deltaX, 120), -120));
+  };
+
+  const handleTouchEnd = () => {
+    if (!isDragging) return;
+    
+    setIsDragging(false);
+    
+    // Si se deslizó más de 80px en cualquier dirección, eliminar
+    if (Math.abs(dragX) > 80) {
+      handleDelete();
+    } else {
+      // Volver a la posición original
+      setDragX(0);
+    }
+  };
+
+  const handleMouseDown = (e) => {
+    setIsDragging(true);
+    setStartX(e.clientX);
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging) return;
+    
+    const currentX = e.clientX;
+    const deltaX = currentX - startX;
+    
+    // Permitir deslizar hacia ambos lados con límites
+    setDragX(Math.max(Math.min(deltaX, 120), -120));
+  };
+
+  const handleMouseUp = () => {
+    if (!isDragging) return;
+    
+    setIsDragging(false);
+    
+    // Si se deslizó más de 80px en cualquier dirección, eliminar
+    if (Math.abs(dragX) > 80) {
+      handleDelete();
+    } else {
+      setDragX(0);
+    }
+  };
+
+  const handleDelete = async () => {
+    try {
+      const res = await fetch("/api/notifications", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: notification.id }),
+      });
+      
+      if (res.ok) {
+        onDelete(notification.id);
+      } else {
+        console.error("Error eliminando notificación");
+        setDragX(0); // Volver a posición original si hay error
+      }
+    } catch (error) {
+      console.error("Error eliminando notificación:", error);
+      setDragX(0);
+    }
+  };
+
+  useEffect(() => {
+    const handleMouseMoveGlobal = (e) => handleMouseMove(e);
+    const handleMouseUpGlobal = () => handleMouseUp();
+
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMoveGlobal);
+      document.addEventListener('mouseup', handleMouseUpGlobal);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMoveGlobal);
+      document.removeEventListener('mouseup', handleMouseUpGlobal);
+    };
+  }, [isDragging, startX, dragX]);
+
+  return (
+    <div className="relative overflow-hidden bg-white">
+      {/* Fondo de eliminación */}
+      <div 
+        className="absolute inset-0 bg-gray-100 flex items-center justify-center"
+        style={{ 
+          opacity: Math.abs(dragX) / 120 
+        }}
+      >
+        <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        </svg>
+        <span className="ml-2 text-red-500 text-sm font-medium">Eliminar</span>
+      </div>
+      
+      {/* Contenido de la notificación */}
+      <div
+        ref={itemRef}
+        className="bg-white border-b last:border-b-0 cursor-grab active:cursor-grabbing select-none"
+        style={{
+          transform: `translateX(${dragX}px)`,
+          transition: isDragging ? 'none' : 'transform 0.3s ease',
+        }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onMouseDown={handleMouseDown}
+      >
+        <div className="p-3 hover:bg-gray-50 text-sm flex justify-between items-start gap-3">
+          <div className="flex-1">
+            <div className={`${!notification.read ? 'font-medium' : ''}`}>
+              {notification.message}
+            </div>
+            <div className="text-xs text-gray-400 mt-1">
+              {new Date(notification.createdAt).toLocaleString('es-AR', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+              })}
+            </div>
+          </div>
+          <div>
+            {!notification.read && (
+              <button 
+                onClick={() => onMarkRead(notification.id)} 
+                className="text-xs text-blue-600 hover:text-blue-800 transition-colors"
+              >
+                Marcar leído
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Header() {
   const { data: session } = useSession();
   const router = useRouter();
@@ -81,7 +239,6 @@ export default function Header() {
         throw new Error(`HTTP error! status: ${res.status}`);
       }
       
-      const updated = await res.json();
       setNotifications(prev => 
         prev.map(n => n.id === id ? { ...n, read: true } : n)
       );
@@ -90,13 +247,16 @@ export default function Header() {
     }
   };
 
+  // Eliminar notificación
+  const deleteNotification = (id) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+  };
+
   // Función para manejar el cierre de sesión con redirect forzado
   const handleSignOut = async () => {
     try {
       await signOut({ callbackUrl: "/" });
     } catch (error) {
-      // En caso de que signOut no redirija por alguna razón,
-      // forzar navegación al home
       console.error("Error al cerrar sesión:", error);
       router.push("/");
     }
@@ -154,11 +314,14 @@ export default function Header() {
                 )}
               </button>
 
-              {/* Dropdown de notificaciones */}
+              {/* Dropdown de notificaciones - Mejorado para móvil */}
               {notifOpen && (
-                <div className="absolute right-0 mt-2 w-80 bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5">
-                  <div className="p-3 border-b text-sm font-medium">
-                    Notificaciones
+                <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5 sm:w-96">
+                  <div className="p-3 border-b text-sm font-medium bg-gray-50">
+                    <div className="flex justify-between items-center">
+                      <span>Notificaciones</span>
+                      <span className="text-xs text-gray-500">Desliza ↔ para eliminar</span>
+                    </div>
                   </div>
                   <div className="max-h-56 overflow-auto">
                     {loading ? (
@@ -171,42 +334,20 @@ export default function Header() {
                       </div>
                     ) : (
                       notifications.map(n => (
-                        <div 
-                          key={n.id} 
-                          className="p-3 hover:bg-gray-50 border-b last:border-b-0 text-sm flex justify-between items-start gap-3"
-                        >
-                          <div className="flex-1">
-                            <div className={`${!n.read ? 'font-medium' : ''}`}>
-                              {n.message}
-                            </div>
-                            <div className="text-xs text-gray-400 mt-1">
-                              {new Date(n.createdAt).toLocaleString('es-AR', {
-                                day: '2-digit',
-                                month: '2-digit',
-                                year: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}
-                            </div>
-                          </div>
-                          <div>
-                            {!n.read && (
-                              <button 
-                                onClick={() => markRead(n.id)} 
-                                className="text-xs text-blue-600 hover:text-blue-800 transition-colors"
-                              >
-                                Marcar leído
-                              </button>
-                            )}
-                          </div>
-                        </div>
+                        <NotificationItem
+                          key={n.id}
+                          notification={n}
+                          onMarkRead={markRead}
+                          onDelete={deleteNotification}
+                        />
                       ))
                     )}
                   </div>
-                  <div className="p-2 text-center text-sm border-t">
+                  <div className="p-2 text-center text-sm border-t bg-gray-50">
                     <Link 
                       href="/notificaciones" 
                       className="text-orange-500 hover:text-orange-600 hover:underline transition-colors"
+                      onClick={() => setNotifOpen(false)}
                     >
                       Ver todas
                     </Link>
@@ -255,13 +396,14 @@ export default function Header() {
                 </svg>
               </button>
 
-              {/* Dropdown del menú de usuario */}
+              {/* Dropdown del menú de usuario - Mejorado para móvil */}
               {menuOpen && (
-                <div className="absolute right-0 mt-2 w-56 bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5">
+                <div className="absolute right-0 mt-2 w-56 max-w-[calc(100vw-2rem)] bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5">
                   <div className="p-2">
                     <Link 
                       href="/perfil" 
                       className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                      onClick={() => setMenuOpen(false)}
                     >
                       Perfil
                     </Link>
@@ -271,6 +413,7 @@ export default function Header() {
                       <Link 
                         href="/admin/crear-sorteo" 
                         className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                        onClick={() => setMenuOpen(false)}
                       >
                         Crear Sorteo
                       </Link>
@@ -279,24 +422,28 @@ export default function Header() {
                     <Link 
                       href="/mis-sorteos" 
                       className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                      onClick={() => setMenuOpen(false)}
                     >
                       Mis Sorteos
                     </Link>
                     <Link 
                       href="/mis-tickets" 
                       className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                      onClick={() => setMenuOpen(false)}
                     >
                       Mis Tickets
                     </Link>
                     <Link 
                       href="/ventas" 
                       className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                      onClick={() => setMenuOpen(false)}
                     >
                       Ventas
                     </Link>
                     <Link 
                       href="/estadisticas" 
                       className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                      onClick={() => setMenuOpen(false)}
                     >
                       Estadísticas
                     </Link>
@@ -306,6 +453,7 @@ export default function Header() {
                       <Link 
                         href="/admin" 
                         className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                        onClick={() => setMenuOpen(false)}
                       >
                         Panel Admin
                       </Link>
@@ -314,6 +462,7 @@ export default function Header() {
                     <Link 
                       href="/soporte" 
                       className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                      onClick={() => setMenuOpen(false)}
                     >
                       Soporte
                     </Link>
