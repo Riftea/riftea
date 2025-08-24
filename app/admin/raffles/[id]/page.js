@@ -1,4 +1,4 @@
-// app/admin/raffle/[id]/page.js
+// app/admin/raffles/[id]/page.js
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -179,12 +179,18 @@ export default function AdminRaffleEdit({ params }) {
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
           <h1 className="text-3xl font-bold text-gray-900">Editar Sorteo</h1>
-          {/* Enlace a la página pública plural para evitar 404 */}
-          <Link href={`/raffles/${id}`} className="text-blue-600 hover:underline text-sm">
+          {/* Enlace a la página pública - corregido para apuntar a /sorteo/[id] */}
+          <Link href={`/sorteo/${id}`} className="text-blue-600 hover:underline text-sm">
             Ver página pública →
           </Link>
         </div>
         <p className="text-gray-600">ID: {id}</p>
+        {/* Breadcrumb navigation */}
+        <div className="text-sm text-gray-500 mt-2">
+          <Link href="/admin" className="hover:underline">Admin</Link>
+          <span className="mx-2">→</span>
+          <span>Editar Sorteo</span>
+        </div>
       </div>
 
       {/* Alerts */}
