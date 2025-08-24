@@ -160,7 +160,7 @@ export default function SoportePage() {
                 </div>
                 
                 <div className="flex items-center gap-3">
-                  <span>🕐</span>
+                  <span>🕰</span>
                   <div>
                     <p className="text-white/90">Horarios</p>
                     <p className="text-white/70">Lun-Vie 9:00-18:00</p>
@@ -180,152 +180,30 @@ export default function SoportePage() {
                     <span className="transition group-open:rotate-180">↓</span>
                   </summary>
                   <p className="mt-2 text-white/70 text-sm">
-                    Si ganas, te contactaremos por email con las instrucciones de entrega.
+                    Ve a &quot;Crear Sorteo&quot; en tu menú, completa los datos y publica cuando esté listo.
                   </p>
                 </details>
-
+                
                 <details className="group">
                   <summary className="flex cursor-pointer items-center justify-between text-white/90 hover:text-white">
-                    <span>¿Los pagos son seguros?</span>
+                    <span>¿Cómo comprar tickets?</span>
                     <span className="transition group-open:rotate-180">↓</span>
                   </summary>
                   <p className="mt-2 text-white/70 text-sm">
-                    Sí, usamos procesadores de pago certificados y encriptación SSL.
+                    Entra al sorteo, selecciona cantidad y completa el pago.
                   </p>
                 </details>
-
+                
                 <details className="group">
                   <summary className="flex cursor-pointer items-center justify-between text-white/90 hover:text-white">
-                    <span>¿Puedo cancelar mi compra?</span>
+                    <span>¿Cuándo se sortea?</span>
                     <span className="transition group-open:rotate-180">↓</span>
                   </summary>
                   <p className="mt-2 text-white/70 text-sm">
-                    Las compras son finales, pero puedes contactarnos en casos excepcionales.
+                    Cada sorteo tiene fecha límite. Se sortea automáticamente al completarse.
                   </p>
                 </details>
               </div>
-            </div>
-
-            {/* Enlaces Útiles */}
-            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-              <h3 className="text-lg font-bold text-white mb-4">🔗 Enlaces Útiles</h3>
-              
-              <div className="space-y-3">
-                <a 
-                  href="/terminos" 
-                  className="block text-blue-300 hover:text-blue-200 transition-colors"
-                >
-                  📋 Términos y Condiciones
-                </a>
-                <a 
-                  href="/privacidad" 
-                  className="block text-blue-300 hover:text-blue-200 transition-colors"
-                >
-                  🔒 Política de Privacidad
-                </a>
-                <a 
-                  href="/como-funciona" 
-                  className="block text-blue-300 hover:text-blue-200 transition-colors"
-                >
-                  ❓ ¿Cómo Funciona?
-                </a>
-                <a 
-                  href="/seguridad" 
-                  className="block text-blue-300 hover:text-blue-200 transition-colors"
-                >
-                  🛡️ Seguridad
-                </a>
-              </div>
-            </div>
-
-            {/* Estado del Sistema */}
-            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-white/20">
-              <h3 className="text-lg font-bold text-white mb-4">⚡ Estado del Sistema</h3>
-              
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-white/90">Plataforma</span>
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="text-green-300 text-sm">Operativo</span>
-                  </div>
-                </div>
-                
-                <div className="flex items-center justify-between">
-                  <span className="text-white/90">Pagos</span>
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="text-green-300 text-sm">Operativo</span>
-                  </div>
-                </div>
-                
-                <div className="flex items-center justify-between">
-                  <span className="text-white/90">Notificaciones</span>
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="text-green-300 text-sm">Operativo</span>
-                  </div>
-                </div>
-                
-                <div className="flex items-center justify-between">
-                  <span className="text-white/90">Sorteos</span>
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="text-green-300 text-sm">Operativo</span>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="mt-4 pt-4 border-t border-white/20">
-                <p className="text-white/70 text-xs text-center">
-                  Última actualización: {new Date().toLocaleString()}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Sección de Ayuda Rápida */}
-        <div className="mt-12 bg-gradient-to-r from-blue-500/20 to-purple-500/20 backdrop-blur-lg rounded-3xl p-8 border border-blue-500/20">
-          <div className="text-center mb-8">
-            <h3 className="text-2xl font-bold text-white mb-4">🚀 ¿Necesitas ayuda inmediata?</h3>
-            <p className="text-white/70">
-              Tenemos varias opciones para resolver tu consulta rápidamente
-            </p>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="text-center p-6 bg-white/10 rounded-2xl">
-              <div className="text-4xl mb-4">💬</div>
-              <h4 className="text-white font-bold mb-2">Chat en Vivo</h4>
-              <p className="text-white/70 text-sm mb-4">
-                Habla con nuestro equipo en tiempo real
-              </p>
-              <button className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-colors">
-                Iniciar Chat
-              </button>
-            </div>
-            
-            <div className="text-center p-6 bg-white/10 rounded-2xl">
-              <div className="text-4xl mb-4">📚</div>
-              <h4 className="text-white font-bold mb-2">Base de Conocimiento</h4>
-              <p className="text-white/70 text-sm mb-4">
-                Encuentra respuestas en nuestra guía
-              </p>
-              <button className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors">
-                Ver Guías
-              </button>
-            </div>
-            
-            <div className="text-center p-6 bg-white/10 rounded-2xl">
-              <div className="text-4xl mb-4">🎥</div>
-              <h4 className="text-white font-bold mb-2">Video Tutoriales</h4>
-              <p className="text-white/70 text-sm mb-4">
-                Aprende con nuestros videos paso a paso
-              </p>
-              <button className="px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg transition-colors">
-                Ver Videos
-              </button>
             </div>
           </div>
         </div>
