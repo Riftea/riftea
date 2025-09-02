@@ -184,8 +184,9 @@ export default function Header() {
         setMenuOpen(false);
       }
     }
-    document.addEventListener("mousedown", handleDown);
-    return () => document.removeEventListener("mousedown", handleDown);
+    // <-- CAMBIO: usar "click" en vez de "mousedown" para evitar la carrera con el onClick del botón
+    document.addEventListener("click", handleDown);
+    return () => document.removeEventListener("click", handleDown);
   }, []);
 
   // Cargar notificaciones cuando hay sesión
@@ -290,7 +291,7 @@ export default function Header() {
             <div className="relative" ref={notifRef}>
               <button
                 aria-label="Notificaciones"
-                onClick={() => setNotifOpen(v => !v)}
+                onClick={(e) => { e.stopPropagation(); setNotifOpen(v => !v); }} // <-- STOP PROPAGATION aplicado aquí
                 className="relative p-2 rounded-md hover:bg-orange-600/20 transition-colors"
               >
                 <svg 
@@ -368,7 +369,7 @@ export default function Header() {
           ) : (
             <div className="relative" ref={menuRef}>
               <button
-                onClick={() => setMenuOpen(v => !v)}
+                onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }} // <-- STOP PROPAGATION aplicado aquí
                 className="flex items-center gap-2 px-2 py-1 rounded hover:bg-orange-600/20 transition-colors"
                 aria-expanded={menuOpen}
               >

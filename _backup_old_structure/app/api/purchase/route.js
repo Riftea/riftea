@@ -1,1 +1,0 @@
-import { createPurchaseWithTickets } from '@/src/services/purchases.service';

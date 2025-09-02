@@ -20,6 +20,7 @@ enum RaffleStatus {
   ACTIVE
   FINISHED
   CANCELLED
+  COMPLETED  // ✅ Agregado para rifas completadas
 }
 
 enum NotificationType {
@@ -27,6 +28,17 @@ enum NotificationType {
   RAFFLE_WINNER
   RAFFLE_CREATED
   SYSTEM_ALERT
+  WINNER_NOTIFICATION  // ✅ Agregado para notificaciones de ganadores
+}
+
+enum TicketStatus {
+  PENDING
+  ACTIVE
+  AVAILABLE    // ✅ Agregado - tickets disponibles para usar
+  IN_RAFFLE    // ✅ Agregado - tickets participando en una rifa
+  WINNER
+  LOST
+  DELETED      // ✅ Agregado - tickets eliminados por admin
 }
 
 model User {
@@ -75,8 +87,11 @@ model Raffle {
   updatedAt      DateTime        @default(now()) @updatedAt @map("updated_at")
   publishedAt    DateTime?       @map("published_at")
   startsAt       DateTime?       @map("starts_at")
-  endsAt         DateTime?       @map("ends_at")  // ✅ CAMBIADO: Ahora es opcional
+  endsAt         DateTime?       @map("ends_at")  // ✅ Usado por el servicio como 'deadline'
   drawnAt        DateTime?       @map("drawn_at") // cuándo se realizó el sorteo
+  
+  // ✅ Campo adicional para límite de participantes (usado por el servicio)
+  maxParticipants Int?           @map("max_participants")
   
   // Relaciones
   tickets        Ticket[]
@@ -109,18 +124,27 @@ model Purchase {
 
 model Ticket {
   id            String         @id @default(cuid())
+  uuid          String         @unique @default(cuid()) // Campo UUID único
   code          String         @unique
+  hash          String?        // ✅ Agregado para validación SHA256
   
   user          User           @relation(fields: [userId], references: [id])
   userId        String         @map("user_id")
   
-  raffle        Raffle         @relation(fields: [raffleId], references: [id], onDelete: Cascade)
-  raffleId      String         @map("raffle_id")
+  // ✅ Hacer raffle opcional para tickets genéricos
+  raffle        Raffle?        @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId      String?        @map("raffle_id") // Ahora es opcional
   
-  purchase      Purchase       @relation(fields: [purchaseId], references: [id])
-  purchaseId    String         @map("purchase_id")
+  purchase      Purchase?      @relation(fields: [purchaseId], references: [id])
+  purchaseId    String?        @map("purchase_id") // Opcional para tickets generados manualmente
   
   participation Participation? @relation("TicketParticipation")
+  
+  // Campos para mejorar funcionalidad
+  status        TicketStatus   @default(PENDING)
+  metodoPago    String?        @map("metodo_pago") // "MERCADO_PAGO", "MANUAL_ADMIN", etc.
+  displayCode   String?        @map("display_code") // código para mostrar al usuario
+  generatedAt   DateTime?      @map("generated_at") // cuándo se generó (puede diferir de createdAt)
   
   isUsed        Boolean        @default(false) @map("is_used")
   isWinner      Boolean        @default(false) @map("is_winner")
@@ -130,6 +154,8 @@ model Ticket {
   // Índices para optimizar consultas
   @@index([raffleId])
   @@index([userId])
+  @@index([status])
+  @@index([uuid])
   @@map("tickets")
 }
 
@@ -143,6 +169,7 @@ model Participation {
   ticketId   String   @unique @map("ticket_id")
   
   isActive   Boolean  @default(true) @map("is_active") // por si se quiere desactivar una participación
+  isWinner   Boolean  @default(false) @map("is_winner") // ✅ Agregado para marcar participación ganadora
   createdAt  DateTime @default(now()) @map("created_at")
 
   @@index([raffleId])
