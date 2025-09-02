@@ -1,6 +1,7 @@
-// src/lib/auth.js - Tu configuración que funcionaba, solo cambié la ruta del import
+// src/lib/auth.js - Configuración completa corregida
 import GoogleProvider from "next-auth/providers/google";
-import prisma from "./prisma.js"; // ✅ Ahora está en la misma carpeta src/lib/
+import { getServerSession } from 'next-auth/next';
+import prisma from "./prisma.js"; // ✅ Mantiene el export default de tu prisma.js
 import NextAuth from "next-auth";
 
 export const authOptions = {
@@ -173,3 +174,19 @@ export const authOptions = {
     maxAge: 30 * 24 * 60 * 60, // 30 días
   },
 };
+
+// ✅ Funciones helper agregadas
+export async function getServerAuth() {
+  const session = await getServerSession(authOptions);
+  return session;
+}
+
+export async function requireAdmin(req) {
+  const session = await getServerAuth();
+  
+  if (!session || session.user?.role !== 'admin') {
+    throw new Error('Acceso denegado');
+  }
+  
+  return session;
+}

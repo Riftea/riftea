@@ -1,19 +1,29 @@
-// src/app/api/admin/generar-tickets/route.js - CORREGIDO
+// src/app/api/admin/generar-tickets/route.js - VERSIÓN COMPLETA CORREGIDA CON RUTAS RELATIVAS
+import { NextResponse } from 'next/server';
 import { getServerSession } from "next-auth/next";
-// ✅ CORRECCIÓN: Importar desde lib/auth.js en lugar de route.js
-import { authOptions } from "../../../../lib/auth.js";
-import { generateTicketUUID, generateTicketCode } from "@/src/lib/crypto";
-import { PrismaClient } from "@prisma/client";
+import { authOptions } from "../../auth/[...nextauth]/route.js";
+import prisma from "../../../../lib/prisma.js";
+import crypto from 'crypto';
 
-const prisma = new PrismaClient();
+// Función para generar UUID único para tickets
+function generateTicketUUID() {
+  return crypto.randomUUID();
+}
+
+// Función para generar código de ticket único
+function generateTicketCode() {
+  const timestamp = Date.now().toString(36).toUpperCase();
+  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+  return `TK-${timestamp}-${random}`;
+}
 
 export async function POST(request) {
   try {
     const session = await getServerSession(authOptions);
     
     // Verificar que el usuario esté autenticado y sea SUPERADMIN
-    if (!session || session.user.role !== "superadmin") {
-      return Response.json(
+    if (!session || session.user.role !== "SUPERADMIN") {
+      return NextResponse.json(
         { error: "No autorizado. Solo SUPERADMIN puede generar tickets." },
         { status: 403 }
       );
@@ -22,7 +32,7 @@ export async function POST(request) {
     const body = await request.json();
     const { 
       userId, 
-      sorteoId, // ✅ Cambié raffleId por sorteoId para que coincida con el frontend
+      sorteoId, // Cambiado raffleId por sorteoId para que coincida con el frontend
       cantidad = 1, 
       crearPurchase = true,
       ticketPrice = 0
@@ -30,14 +40,14 @@ export async function POST(request) {
 
     // Validaciones básicas
     if (!userId) {
-      return Response.json(
+      return NextResponse.json(
         { error: "userId es requerido" },
         { status: 400 }
       );
     }
 
     if (cantidad < 1 || cantidad > 100) {
-      return Response.json(
+      return NextResponse.json(
         { error: "La cantidad debe ser entre 1 y 100" },
         { status: 400 }
       );
@@ -50,7 +60,7 @@ export async function POST(request) {
     });
 
     if (!usuario) {
-      return Response.json(
+      return NextResponse.json(
         { error: "Usuario no encontrado" },
         { status: 404 }
       );
@@ -76,14 +86,14 @@ export async function POST(request) {
       });
 
       if (!raffle) {
-        return Response.json(
+        return NextResponse.json(
           { error: "Sorteo no encontrado" },
           { status: 404 }
         );
       }
 
       if (!['PUBLISHED', 'ACTIVE'].includes(raffle.status)) {
-        return Response.json(
+        return NextResponse.json(
           { error: "Solo se pueden generar tickets para sorteos publicados o activos" },
           { status: 400 }
         );
@@ -93,7 +103,7 @@ export async function POST(request) {
       if (raffle.maxTickets) {
         const ticketsActuales = raffle._count.tickets;
         if (ticketsActuales + cantidad > raffle.maxTickets) {
-          return Response.json(
+          return NextResponse.json(
             { error: `Excede el límite máximo de tickets. Disponibles: ${raffle.maxTickets - ticketsActuales}` },
             { status: 400 }
           );
@@ -102,7 +112,7 @@ export async function POST(request) {
 
       // Verificar que la raffle no haya terminado
       if (raffle.endsAt && new Date() > new Date(raffle.endsAt)) {
-        return Response.json(
+        return NextResponse.json(
           { error: "El sorteo ya ha terminado" },
           { status: 400 }
         );
@@ -208,7 +218,7 @@ export async function POST(request) {
             attempts++;
             
             if (error.code === 'P2002') {
-              console.warn(`🔄 Colisión UUID intento ${attempts}/5`);
+              console.warn(`Colisión UUID intento ${attempts}/5`);
               if (attempts >= 5) {
                 throw new Error("No fue posible generar ticket único tras 5 intentos");
               }
@@ -239,25 +249,29 @@ export async function POST(request) {
         }
       });
 
-      // Log de auditoría
-      await tx.auditLog.create({
-        data: {
-          action: 'ADMIN_TICKET_GENERATION',
-          userId: session.user.id,
-          targetType: 'ticket',
-          targetId: purchaseCreada?.id || ticketsGenerados[0]?.id,
-          newValues: {
-            targetUserId: userId,
-            ticketCount: cantidad,
-            raffleId: sorteoId || null,
-            purchaseId: purchaseCreada?.id || null,
-            totalAmount,
-            generatedBy: 'SUPERADMIN',
-            reason: 'Manual ticket generation',
-            realPurchase: crearPurchase
+      // Log de auditoría (solo si existe la tabla auditLog)
+      try {
+        await tx.auditLog.create({
+          data: {
+            action: 'ADMIN_TICKET_GENERATION',
+            userId: session.user.id,
+            targetType: 'ticket',
+            targetId: purchaseCreada?.id || ticketsGenerados[0]?.id,
+            newValues: {
+              targetUserId: userId,
+              ticketCount: cantidad,
+              raffleId: sorteoId || null,
+              purchaseId: purchaseCreada?.id || null,
+              totalAmount,
+              generatedBy: 'SUPERADMIN',
+              reason: 'Manual ticket generation',
+              realPurchase: crearPurchase
+            }
           }
-        }
-      });
+        });
+      } catch (auditError) {
+        console.warn('No se pudo crear log de auditoría:', auditError);
+      }
     });
 
     // Respuesta completa
@@ -307,33 +321,31 @@ export async function POST(request) {
       };
     }
 
-    return Response.json(responseData);
+    return NextResponse.json(responseData);
     
   } catch (error) {
     console.error("Error generando tickets:", error);
     
     if (error.message?.includes('No fue posible generar ticket único')) {
-      return Response.json(
+      return NextResponse.json(
         { error: "Error generando tickets únicos. Intenta con menos cantidad." },
         { status: 400 }
       );
     }
 
     if (error.code === 'P2002') {
-      return Response.json(
+      return NextResponse.json(
         { error: "Error de duplicación. Intenta nuevamente." },
         { status: 400 }
       );
     }
 
-    return Response.json(
+    return NextResponse.json(
       { 
         error: "Error interno del servidor",
         message: process.env.NODE_ENV === 'development' ? error.message : "Error interno"
       },
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
 }

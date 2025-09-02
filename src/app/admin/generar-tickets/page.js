@@ -1,339 +1,285 @@
-// src/app/api/admin/generar-tickets/route.js - CORREGIDO
-import { getServerSession } from "next-auth/next";
-// ✅ CORRECCIÓN: Importar desde lib/auth.js en lugar de route.js
-import { authOptions } from "../../../../lib/auth.js";
-import { generateTicketUUID, generateTicketCode } from "@/src/lib/crypto";
-import { PrismaClient } from "@prisma/client";
+// src/app/admin/generar-tickets/page.js - COMPLETO CORREGIDO
+'use client';
 
-const prisma = new PrismaClient();
+import { useState, useEffect } from 'react';
+import { useSession } from 'next-auth/react';
 
-export async function POST(request) {
-  try {
-    const session = await getServerSession(authOptions);
-    
-    // ✅ CORRECCIÓN: Cambiar "SUPERADMIN" por "superadmin" (línea 15)
-    if (!session || session.user.role !== "superadmin") {
-      return Response.json(
-        { error: "No autorizado. Solo SUPERADMIN puede generar tickets." },
-        { status: 403 }
-      );
+export default function GenerarTicketsPage() {
+  const { data: session, status } = useSession();
+  const [usuarios, setUsuarios] = useState([]);
+  const [sorteos, setSorteos] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    userId: '',
+    sorteoId: '',
+    cantidad: 1,
+    crearPurchase: true,
+    ticketPrice: 0
+  });
+  const [resultado, setResultado] = useState(null);
+
+  // Verificar permisos
+  useEffect(() => {
+    if (status === 'authenticated' && session?.user?.role !== 'SUPERADMIN') {
+      window.location.href = '/';
     }
+  }, [session, status]);
 
-    const body = await request.json();
-    const { 
-      userId, 
-      sorteoId, // ✅ Cambié raffleId por sorteoId para que coincida con el frontend
-      cantidad = 1, 
-      crearPurchase = true,
-      ticketPrice = 0
-    } = body;
-
-    // Validaciones básicas
-    if (!userId) {
-      return Response.json(
-        { error: "userId es requerido" },
-        { status: 400 }
-      );
-    }
-
-    if (cantidad < 1 || cantidad > 100) {
-      return Response.json(
-        { error: "La cantidad debe ser entre 1 y 100" },
-        { status: 400 }
-      );
-    }
-
-    // Verificar que el usuario existe
-    const usuario = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, name: true, email: true }
-    });
-
-    if (!usuario) {
-      return Response.json(
-        { error: "Usuario no encontrado" },
-        { status: 404 }
-      );
-    }
-
-    let raffle = null;
-
-    // Si se especifica sorteoId, validar la raffle
-    if (sorteoId) {
-      raffle = await prisma.raffle.findUnique({
-        where: { id: sorteoId },
-        select: { 
-          id: true, 
-          title: true, 
-          status: true, 
-          endsAt: true,
-          maxTickets: true,
-          ticketPrice: true,
-          _count: {
-            select: { tickets: true }
-          }
-        }
-      });
-
-      if (!raffle) {
-        return Response.json(
-          { error: "Sorteo no encontrado" },
-          { status: 404 }
-        );
-      }
-
-      if (!['PUBLISHED', 'ACTIVE'].includes(raffle.status)) {
-        return Response.json(
-          { error: "Solo se pueden generar tickets para sorteos publicados o activos" },
-          { status: 400 }
-        );
-      }
-
-      // Verificar límite de tickets si existe
-      if (raffle.maxTickets) {
-        const ticketsActuales = raffle._count.tickets;
-        if (ticketsActuales + cantidad > raffle.maxTickets) {
-          return Response.json(
-            { error: `Excede el límite máximo de tickets. Disponibles: ${raffle.maxTickets - ticketsActuales}` },
-            { status: 400 }
-          );
-        }
-      }
-
-      // Verificar que la raffle no haya terminado
-      if (raffle.endsAt && new Date() > new Date(raffle.endsAt)) {
-        return Response.json(
-          { error: "El sorteo ya ha terminado" },
-          { status: 400 }
-        );
-      }
-    }
-
-    const ticketsGenerados = [];
-    let purchaseCreada = null;
-    
-    const totalAmount = sorteoId ? 
-      (raffle.ticketPrice * cantidad) : 
-      (ticketPrice * cantidad);
-
-    // Usar transacción para crear Purchase + Tickets de forma atómica
-    await prisma.$transaction(async (tx) => {
-      
-      // Crear Purchase ficticia si se solicitó
-      if (crearPurchase) {
-        purchaseCreada = await tx.purchase.create({
-          data: {
-            userId,
-            amount: totalAmount,
-            currency: "ARS",
-            paymentMethod: "ADMIN_GENERATED",
-            paymentId: `ADMIN_${Date.now()}`,
-            status: "completed"
-          }
-        });
-      }
-
-      // Crear tickets
-      for (let i = 0; i < cantidad; i++) {
-        let attempts = 0;
-        let ticketCreated = false;
-
-        while (!ticketCreated && attempts < 5) {
-          try {
-            const uuid = generateTicketUUID();
-            const code = generateTicketCode();
-
-            const ticketData = {
-              uuid,
-              code,
-              userId,
-              status: "ACTIVE",
-              metodoPago: "ADMIN_GENERATED",
-              generatedAt: new Date(),
-              displayCode: code,
-              isUsed: false,
-              isWinner: false
-            };
-
-            if (purchaseCreada) {
-              ticketData.purchaseId = purchaseCreada.id;
-            }
-
-            if (sorteoId) {
-              ticketData.raffleId = sorteoId;
-            }
-
-            const ticket = await tx.ticket.create({
-              data: ticketData,
-              include: {
-                purchase: true,
-                raffle: {
-                  select: { id: true, title: true }
-                }
-              }
-            });
-
-            // Si es para una raffle específica, crear participación automáticamente
-            if (sorteoId) {
-              await tx.participation.create({
-                data: {
-                  ticketId: ticket.id,
-                  raffleId: sorteoId,
-                  isActive: true
-                }
-              });
-            }
-
-            ticketsGenerados.push({
-              id: ticket.id,
-              uuid: ticket.uuid,
-              code: ticket.code,
-              displayCode: ticket.displayCode,
-              status: ticket.status,
-              createdAt: ticket.createdAt,
-              raffleId: ticket.raffleId,
-              purchaseId: ticket.purchaseId,
-              purchase: ticket.purchase ? {
-                id: ticket.purchase.id,
-                amount: ticket.purchase.amount,
-                status: ticket.purchase.status,
-                paymentMethod: ticket.purchase.paymentMethod
-              } : null,
-              raffle: ticket.raffle
-            });
-
-            ticketCreated = true;
-
-          } catch (error) {
-            attempts++;
-            
-            if (error.code === 'P2002') {
-              console.warn(`🔄 Colisión UUID intento ${attempts}/5`);
-              if (attempts >= 5) {
-                throw new Error("No fue posible generar ticket único tras 5 intentos");
-              }
-            } else {
-              throw error;
-            }
-          }
-        }
-      }
-
-      // Crear notificación
-      const notificationTitle = sorteoId 
-        ? `¡Tickets comprados para ${raffle.title}!`
-        : `¡Has recibido ${cantidad} tickets!`;
+  // Cargar usuarios
+  useEffect(() => {
+    const cargarUsuarios = async () => {
+      try {
+        const response = await fetch('/api/admin/usuarios');
+        const data = await response.json();
         
-      const notificationMessage = sorteoId 
-        ? `Tus ${cantidad} tickets para "${raffle.title}" están listos. ¡Buena suerte!`
-        : `Se han agregado ${cantidad} tickets a tu cuenta.`;
-
-      await tx.notification.create({
-        data: {
-          userId,
-          title: notificationTitle,
-          message: notificationMessage,
-          type: sorteoId ? 'PURCHASE_CONFIRMATION' : 'SYSTEM_ALERT',
-          raffleId: sorteoId || null,
-          ticketId: ticketsGenerados[0]?.id
+        if (data.success) {
+          setUsuarios(data.users);
+        } else {
+          console.error('Error cargando usuarios:', data.error);
         }
-      });
-
-      // Log de auditoría
-      await tx.auditLog.create({
-        data: {
-          action: 'ADMIN_TICKET_GENERATION',
-          userId: session.user.id,
-          targetType: 'ticket',
-          targetId: purchaseCreada?.id || ticketsGenerados[0]?.id,
-          newValues: {
-            targetUserId: userId,
-            ticketCount: cantidad,
-            raffleId: sorteoId || null,
-            purchaseId: purchaseCreada?.id || null,
-            totalAmount,
-            generatedBy: 'SUPERADMIN',
-            reason: 'Manual ticket generation',
-            realPurchase: crearPurchase
-          }
-        }
-      });
-    });
-
-    // Respuesta completa
-    const responseData = {
-      success: true,
-      mensaje: sorteoId 
-        ? `Se generaron ${cantidad} tickets para ${usuario.name} en el sorteo ${raffle.title}`
-        : `Se generaron ${cantidad} tickets para ${usuario.name}`,
-      
-      tickets: ticketsGenerados,
-      
-      purchase: purchaseCreada ? {
-        id: purchaseCreada.id,
-        amount: purchaseCreada.amount,
-        status: purchaseCreada.status,
-        paymentMethod: purchaseCreada.paymentMethod,
-        createdAt: purchaseCreada.createdAt
-      } : null,
-      
-      usuario: {
-        name: usuario.name,
-        email: usuario.email
-      },
-      
-      resumen: {
-        tipo: sorteoId ? 'sorteo_tickets' : 'generic_tickets',
-        cantidad,
-        precioTotal: totalAmount,
-        conPurchase: crearPurchase,
-        ticketsConParticipacion: sorteoId ? cantidad : 0
-      },
-      
-      generadoPor: {
-        name: session.user.name,
-        email: session.user.email,
-        role: session.user.role
-      },
-      
-      fecha: new Date().toISOString()
+      } catch (error) {
+        console.error('Error:', error);
+      }
     };
 
-    if (raffle) {
-      responseData.sorteo = {
-        id: raffle.id,
-        title: raffle.title,
-        precioOriginal: raffle.ticketPrice
-      };
+    if (status === 'authenticated' && session?.user?.role === 'SUPERADMIN') {
+      cargarUsuarios();
     }
+  }, [session, status]);
 
-    return Response.json(responseData);
-    
-  } catch (error) {
-    console.error("Error generando tickets:", error);
-    
-    if (error.message?.includes('No fue posible generar ticket único')) {
-      return Response.json(
-        { error: "Error generando tickets únicos. Intenta con menos cantidad." },
-        { status: 400 }
-      );
+  // Cargar sorteos activos
+  useEffect(() => {
+    const cargarSorteos = async () => {
+      try {
+        const response = await fetch('/api/raffles?status=ACTIVE,PUBLISHED');
+        const data = await response.json();
+        
+        if (data.success) {
+          setSorteos(data.raffles || []);
+        }
+      } catch (error) {
+        console.error('Error cargando sorteos:', error);
+      }
+    };
+
+    if (status === 'authenticated' && session?.user?.role === 'SUPERADMIN') {
+      cargarSorteos();
     }
+  }, [session, status]);
 
-    if (error.code === 'P2002') {
-      return Response.json(
-        { error: "Error de duplicación. Intenta nuevamente." },
-        { status: 400 }
-      );
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setResultado(null);
+
+    try {
+      const response = await fetch('/api/admin/generar-tickets', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formData),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setResultado({
+          success: true,
+          mensaje: data.mensaje,
+          tickets: data.tickets,
+          resumen: data.resumen
+        });
+        
+        // Resetear formulario
+        setFormData({
+          userId: '',
+          sorteoId: '',
+          cantidad: 1,
+          crearPurchase: true,
+          ticketPrice: 0
+        });
+      } else {
+        setResultado({
+          success: false,
+          error: data.error
+        });
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      setResultado({
+        success: false,
+        error: 'Error de conexión'
+      });
+    } finally {
+      setLoading(false);
     }
+  };
 
-    return Response.json(
-      { 
-        error: "Error interno del servidor",
-        message: process.env.NODE_ENV === 'development' ? error.message : "Error interno"
-      },
-      { status: 500 }
-    );
-  } finally {
-    await prisma.$disconnect();
+  const handleInputChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: type === 'checkbox' ? checked : value
+    }));
+  };
+
+  // Si no está autenticado o no es SUPERADMIN, mostrar loading o redirigir
+  if (status === 'loading') {
+    return <div className="flex justify-center items-center min-h-screen">
+      <div className="text-lg">Cargando...</div>
+    </div>;
   }
+
+  if (!session || session.user.role !== 'SUPERADMIN') {
+    return <div className="flex justify-center items-center min-h-screen">
+      <div className="text-lg text-red-600">No autorizado</div>
+    </div>;
+  }
+
+  return (
+    <div className="container mx-auto px-4 py-8">
+      <h1 className="text-3xl font-bold mb-8">Generar Tickets - Panel Admin</h1>
+
+      <div className="max-w-2xl mx-auto">
+        <form onSubmit={handleSubmit} className="bg-white shadow-md rounded-lg p-6">
+          {/* Usuario */}
+          <div className="mb-4">
+            <label htmlFor="userId" className="block text-sm font-medium text-gray-700 mb-2">
+              Seleccionar Usuario *
+            </label>
+            <select
+              id="userId"
+              name="userId"
+              value={formData.userId}
+              onChange={handleInputChange}
+              required
+              className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">-- Seleccionar Usuario --</option>
+              {usuarios.map(user => (
+                <option key={user.id} value={user.id}>
+                  {user.name} ({user.email})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Sorteo (Opcional) */}
+          <div className="mb-4">
+            <label htmlFor="sorteoId" className="block text-sm font-medium text-gray-700 mb-2">
+              Sorteo (Opcional)
+            </label>
+            <select
+              id="sorteoId"
+              name="sorteoId"
+              value={formData.sorteoId}
+              onChange={handleInputChange}
+              className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">-- Tickets Genéricos --</option>
+              {sorteos.map(sorteo => (
+                <option key={sorteo.id} value={sorteo.id}>
+                  {sorteo.title} - ${sorteo.ticketPrice}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Si seleccionas un sorteo, se crearán automáticamente las participaciones
+            </p>
+          </div>
+
+          {/* Cantidad */}
+          <div className="mb-4">
+            <label htmlFor="cantidad" className="block text-sm font-medium text-gray-700 mb-2">
+              Cantidad de Tickets
+            </label>
+            <input
+              type="number"
+              id="cantidad"
+              name="cantidad"
+              value={formData.cantidad}
+              onChange={handleInputChange}
+              min="1"
+              max="100"
+              className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {/* Precio por ticket (solo si no hay sorteo) */}
+          {!formData.sorteoId && (
+            <div className="mb-4">
+              <label htmlFor="ticketPrice" className="block text-sm font-medium text-gray-700 mb-2">
+                Precio por Ticket (ARS)
+              </label>
+              <input
+                type="number"
+                id="ticketPrice"
+                name="ticketPrice"
+                value={formData.ticketPrice}
+                onChange={handleInputChange}
+                min="0"
+                step="0.01"
+                className="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          )}
+
+          {/* Crear Purchase */}
+          <div className="mb-6">
+            <label className="flex items-center">
+              <input
+                type="checkbox"
+                name="crearPurchase"
+                checked={formData.crearPurchase}
+                onChange={handleInputChange}
+                className="mr-2"
+              />
+              <span className="text-sm text-gray-700">Crear registro de Purchase ficticia</span>
+            </label>
+            <p className="text-xs text-gray-500 mt-1">
+              Recomendado para mantener consistencia en el historial
+            </p>
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50"
+          >
+            {loading ? 'Generando...' : 'Generar Tickets'}
+          </button>
+        </form>
+
+        {/* Resultado */}
+        {resultado && (
+          <div className={`mt-6 p-4 rounded-lg ${resultado.success ? 'bg-green-100 border-green-500' : 'bg-red-100 border-red-500'} border`}>
+            {resultado.success ? (
+              <div>
+                <h3 className="text-lg font-semibold text-green-800 mb-2">¡Éxito!</h3>
+                <p className="text-green-700 mb-4">{resultado.mensaje}</p>
+                
+                {resultado.resumen && (
+                  <div className="bg-white p-3 rounded border">
+                    <h4 className="font-medium mb-2">Resumen:</h4>
+                    <ul className="text-sm space-y-1">
+                      <li><strong>Tipo:</strong> {resultado.resumen.tipo}</li>
+                      <li><strong>Cantidad:</strong> {resultado.resumen.cantidad} tickets</li>
+                      <li><strong>Precio Total:</strong> ${resultado.resumen.precioTotal}</li>
+                      <li><strong>Con Purchase:</strong> {resultado.resumen.conPurchase ? 'Sí' : 'No'}</li>
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <h3 className="text-lg font-semibold text-red-800 mb-2">Error</h3>
+                <p className="text-red-700">{resultado.error}</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
