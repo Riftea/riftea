@@ -1,12 +1,15 @@
 // app/api/raffles/[id]/route.js
 import { getServerSession } from "next-auth/next";
 // Desde src/app/api/raffles/[id]/ hacia src/lib/
-import { authOptions } from "../../../../lib/auth.js";
-import prisma from "../../../../lib/prisma.js";
+import prisma from '@/lib/prisma';
+import { authOptions } from '@/lib/auth';
 
 export async function GET(req, { params }) {
   try {
-    const { id } = params;
+    // Awaiting params si es una Promise
+    const resolvedParams = await params;
+    const { id } = resolvedParams;
+    
     const raffle = await prisma.raffle.findUnique({
       where: { id },
       include: { 
@@ -43,7 +46,10 @@ export async function PUT(req, { params }) {
       return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401 });
     }
 
-    const { id } = params;
+    // Awaiting params si es una Promise
+    const resolvedParams = await params;
+    const { id } = resolvedParams;
+    
     const raffle = await prisma.raffle.findUnique({ 
       where: { id },
       include: {
@@ -81,6 +87,7 @@ export async function PUT(req, { params }) {
     }
 
     const body = await req.json();
+    console.log("[PUT DEBUG] Body received:", body);
     
     // Validaciones si se están actualizando ciertos campos
     if (body.ticketPrice !== undefined && body.ticketPrice <= 0) {
@@ -91,19 +98,42 @@ export async function PUT(req, { params }) {
       return new Response(JSON.stringify({ error: "La fecha de finalización debe ser futura" }), { status: 400 });
     }
 
-    const data = {
-      title: body.title ?? raffle.title,
-      description: body.description ?? raffle.description,
-      ticketPrice: typeof body.ticketPrice !== "undefined" ? parseFloat(body.ticketPrice) : raffle.ticketPrice,
-      endsAt: body.endsAt ? new Date(body.endsAt) : raffle.endsAt,
-      published: typeof body.published !== "undefined" ? !!body.published : raffle.published,
-      participantLimit: typeof body.participantLimit !== "undefined" ? body.participantLimit : raffle.participantLimit,
-    };
+    // Preparar datos para actualizar
+    const data = {};
+    
+    if (body.title !== undefined) data.title = body.title;
+    if (body.description !== undefined) data.description = body.description;
+    if (body.ticketPrice !== undefined) data.ticketPrice = parseFloat(body.ticketPrice);
+    if (body.endsAt !== undefined) data.endsAt = body.endsAt ? new Date(body.endsAt) : null;
+    
+    // Mapear 'published' a 'publishedAt' según el schema de Prisma
+    if (body.published !== undefined) {
+      if (body.published) {
+        data.publishedAt = new Date(); // Establecer fecha de publicación actual
+        data.status = "PUBLISHED"; // Cambiar estado a publicado
+      } else {
+        data.publishedAt = null; // Quitar fecha de publicación
+        data.status = "DRAFT"; // Cambiar estado a borrador
+      }
+    }
+    
+    // Manejar participantLimit - mapear al campo correcto del schema
+    if (body.participantLimit !== undefined) {
+      data.maxParticipants = body.participantLimit === null ? null : parseInt(body.participantLimit, 10);
+    }
+
+    console.log("[PUT DEBUG] Data to update:", data);
 
     const updated = await prisma.raffle.update({ 
       where: { id }, 
       data,
       include: {
+        _count: { 
+          select: { 
+            tickets: true, 
+            participations: true 
+          } 
+        },
         owner: {
           select: {
             name: true,
@@ -117,7 +147,11 @@ export async function PUT(req, { params }) {
     return new Response(JSON.stringify(updated), { status: 200 });
   } catch (err) {
     console.error("PUT /api/raffles/[id] error:", err);
-    return new Response(JSON.stringify({ error: "Error al actualizar sorteo" }), { status: 500 });
+    console.error("Error stack:", err.stack);
+    return new Response(JSON.stringify({ 
+      error: "Error al actualizar sorteo",
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    }), { status: 500 });
   }
 }
 
@@ -128,7 +162,10 @@ export async function DELETE(req, { params }) {
       return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401 });
     }
 
-    const { id } = params;
+    // Awaiting params si es una Promise
+    const resolvedParams = await params;
+    const { id } = resolvedParams;
+    
     const raffle = await prisma.raffle.findUnique({
       where: { id },
       include: { 
@@ -190,7 +227,7 @@ export async function DELETE(req, { params }) {
             action: "delete_raffle",
             userId: session.user.id,
             targetId: raffle.id,
-            meta: JSON.stringify({ 
+            newValues: JSON.stringify({ 
               raffleTitle: raffle.title,
               ticketsCount,
               participationsCount: partsCount,

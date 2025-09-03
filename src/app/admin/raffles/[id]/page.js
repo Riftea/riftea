@@ -1,11 +1,11 @@
-// app/admin/raffles/[id]/page.js
+// src/app/admin/raffles/[id]/page.js
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, use } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 export default function AdminRaffleEdit({ params }) {
-  const { id } = params;
+  const { id } = use(params); // ✅ Usar React.use() para los parámetros
   const router = useRouter();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -21,20 +21,32 @@ export default function AdminRaffleEdit({ params }) {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`/api/raffles/${id}`);
+        // ✅ Usar la nueva ruta de admin
+        const res = await fetch(`/api/admin/raffles/${id}`);
         if (!res.ok) {
           const errJson = await res.json().catch(() => null);
           throw new Error(errJson?.error || `Status ${res.status}`);
         }
-        const d = await res.json();
+        const raffleData = await res.json();
+        
         if (mounted) {
-          setData(d);
+          // ✅ Mapear campos del schema al formato del frontend
+          const processedData = {
+            ...raffleData,
+            // Mapear published basado en status y publishedAt
+            published: raffleData.publishedAt !== null && 
+                      (raffleData.status === 'PUBLISHED' || raffleData.status === 'ACTIVE'),
+            // Mapear maxParticipants a participantLimit para el frontend
+            participantLimit: raffleData.maxParticipants
+          };
+          
+          setData(processedData);
           setLoading(false);
         }
       } catch (err) {
-        console.error(err);
+        console.error('Error loading raffle:', err);
         if (mounted) {
-          setError("Error al cargar el sorteo");
+          setError("Error al cargar el sorteo: " + err.message);
           setLoading(false);
         }
       }
@@ -55,31 +67,55 @@ export default function AdminRaffleEdit({ params }) {
     try {
       if (!data) throw new Error("Datos inválidos");
 
-      // Construir payload explícito (evita enviar campos no deseados como _count, owner, etc.)
-      const payload = {
-        title: (data.title ?? "").toString().trim(),
-        description: data.description ?? "",
-        ticketPrice:
-          data.ticketPrice === "" ||
-          data.ticketPrice === null ||
-          typeof data.ticketPrice === "undefined"
-            ? undefined
-            : Number(data.ticketPrice),
-        participantLimit:
-          data.participantLimit === "" ||
-          data.participantLimit === null ||
-          typeof data.participantLimit === "undefined"
-            ? null
-            : parseInt(data.participantLimit, 10),
-        endsAt: data.endsAt ? new Date(data.endsAt).toISOString() : null,
-        published: !!data.published,
-      };
+      // ✅ Construir payload con validaciones mejoradas
+      const payload = {};
 
-      if (typeof payload.ticketPrice === "undefined" || Number.isNaN(payload.ticketPrice)) {
-        delete payload.ticketPrice;
+      // Campos requeridos
+      if (data.title?.trim()) {
+        payload.title = data.title.trim();
+      } else {
+        throw new Error("El título es requerido");
       }
 
-      const res = await fetch(`/api/raffles/${id}`, {
+      // Campos opcionales
+      if (data.description !== undefined) {
+        payload.description = data.description;
+      }
+
+      // Precio del ticket con validación
+      if (data.ticketPrice !== undefined && data.ticketPrice !== null && data.ticketPrice !== "") {
+        const price = Number(data.ticketPrice);
+        if (isNaN(price) || price <= 0) {
+          throw new Error("El precio del ticket debe ser un número mayor a 0");
+        }
+        payload.ticketPrice = price;
+      }
+
+      // Límite de participantes (mapear a maxParticipants en el backend)
+      if (data.participantLimit !== undefined && data.participantLimit !== null && data.participantLimit !== "") {
+        const limit = parseInt(data.participantLimit, 10);
+        if (isNaN(limit) || limit <= 0) {
+          throw new Error("El límite de participantes debe ser un número mayor a 0");
+        }
+        payload.participantLimit = limit;
+      } else {
+        payload.participantLimit = null;
+      }
+
+      // Fecha de finalización
+      if (data.endsAt) {
+        payload.endsAt = new Date(data.endsAt).toISOString();
+      } else {
+        payload.endsAt = null;
+      }
+
+      // Estado publicado
+      payload.published = !!data.published;
+
+      console.log('Sending payload:', payload);
+
+      // ✅ Usar la nueva ruta de admin
+      const res = await fetch(`/api/admin/raffles/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -87,11 +123,22 @@ export default function AdminRaffleEdit({ params }) {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || `Status ${res.status}`);
+        throw new Error(errorData.error || `Error ${res.status}`);
       }
 
       const updatedData = await res.json();
-      setData(updatedData);
+      console.log('Updated data received:', updatedData);
+      
+      // ✅ Procesar los datos actualizados y mapear campos
+      const processedUpdatedData = {
+        ...updatedData,
+        // Mapear campos del schema al frontend
+        published: updatedData.publishedAt !== null && 
+                  (updatedData.status === 'PUBLISHED' || updatedData.status === 'ACTIVE'),
+        participantLimit: updatedData.maxParticipants
+      };
+      
+      setData(processedUpdatedData);
       setSuccess("Sorteo guardado exitosamente");
 
       // Opcional: redirigir después de un tiempo
@@ -99,8 +146,8 @@ export default function AdminRaffleEdit({ params }) {
         router.push("/admin");
       }, 2000);
     } catch (err) {
-      console.error(err);
-      setError(err.message || "No se pudo guardar");
+      console.error('Error saving raffle:', err);
+      setError(err.message || "No se pudo guardar el sorteo");
     } finally {
       setSaving(false);
     }
@@ -115,19 +162,21 @@ export default function AdminRaffleEdit({ params }) {
     setError(null);
 
     try {
-      const res = await fetch(`/api/raffles/${id}`, {
+      // ✅ Usar la nueva ruta de admin
+      const res = await fetch(`/api/admin/raffles/${id}`, {
         method: "DELETE",
       });
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || `Status ${res.status}`);
+        throw new Error(errorData.error || `Error ${res.status}`);
       }
 
+      // Redirigir al panel de admin
       router.push("/admin");
     } catch (err) {
-      console.error(err);
-      setError(err.message || "No se pudo eliminar");
+      console.error('Error deleting raffle:', err);
+      setError(err.message || "No se pudo eliminar el sorteo");
     } finally {
       setDeleting(false);
     }
@@ -136,14 +185,19 @@ export default function AdminRaffleEdit({ params }) {
   // Formatea la fecha para el input datetime-local en hora local (YYYY-MM-DDTHH:mm)
   function formatDateForInput(dateString) {
     if (!dateString) return "";
-    const date = new Date(dateString);
-    const pad = (n) => String(n).padStart(2, "0");
-    const yyyy = date.getFullYear();
-    const mm = pad(date.getMonth() + 1);
-    const dd = pad(date.getDate());
-    const hh = pad(date.getHours());
-    const min = pad(date.getMinutes());
-    return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+    try {
+      const date = new Date(dateString);
+      const pad = (n) => String(n).padStart(2, "0");
+      const yyyy = date.getFullYear();
+      const mm = pad(date.getMonth() + 1);
+      const dd = pad(date.getDate());
+      const hh = pad(date.getHours());
+      const min = pad(date.getMinutes());
+      return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+    } catch (error) {
+      console.error('Error formatting date:', error);
+      return "";
+    }
   }
 
   if (loading) {
@@ -166,7 +220,7 @@ export default function AdminRaffleEdit({ params }) {
       <div className="max-w-2xl mx-auto p-6">
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <h1 className="text-xl font-bold text-red-800 mb-2">Sorteo no encontrado</h1>
-          <p className="text-red-600 mb-4">El sorteo que buscas no existe o no tienes permisos para editarlo.</p>
+          <p className="text-red-600 mb-4">{error || "El sorteo que buscas no existe o no tienes permisos para editarlo."}</p>
           <Link href="/admin" className="text-red-600 hover:underline">← Volver al panel admin</Link>
         </div>
       </div>
@@ -179,13 +233,11 @@ export default function AdminRaffleEdit({ params }) {
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
           <h1 className="text-3xl font-bold text-gray-900">Editar Sorteo</h1>
-          {/* Enlace a la página pública - corregido para apuntar a /sorteo/[id] */}
           <Link href={`/sorteo/${id}`} className="text-blue-600 hover:underline text-sm">
             Ver página pública →
           </Link>
         </div>
         <p className="text-gray-600">ID: {id}</p>
-        {/* Breadcrumb navigation */}
         <div className="text-sm text-gray-500 mt-2">
           <Link href="/admin" className="hover:underline">Admin</Link>
           <span className="mx-2">→</span>
@@ -215,6 +267,20 @@ export default function AdminRaffleEdit({ params }) {
           <div>
             <span className="font-medium">Tickets:</span> {data._count?.tickets || 0}
           </div>
+          <div>
+            <span className="font-medium">Estado:</span> 
+            <span className={`ml-1 px-2 py-1 rounded-full text-xs ${
+              data.status === 'PUBLISHED' ? 'bg-green-100 text-green-800' :
+              data.status === 'ACTIVE' ? 'bg-blue-100 text-blue-800' :
+              data.status === 'DRAFT' ? 'bg-gray-100 text-gray-800' :
+              'bg-yellow-100 text-yellow-800'
+            }`}>
+              {data.status}
+            </span>
+          </div>
+          <div>
+            <span className="font-medium">Creador:</span> {data.owner?.name || 'N/A'}
+          </div>
         </div>
       </div>
 
@@ -229,7 +295,7 @@ export default function AdminRaffleEdit({ params }) {
             type="text"
             required
             className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            value={data.title ?? ""}
+            value={data.title || ""}
             onChange={e => setData({ ...data, title: e.target.value })}
             placeholder="Título del sorteo"
           />
@@ -243,7 +309,7 @@ export default function AdminRaffleEdit({ params }) {
           <textarea
             rows={4}
             className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            value={data.description ?? ""}
+            value={data.description || ""}
             onChange={e => setData({ ...data, description: e.target.value })}
             placeholder="Describe el sorteo..."
           />
@@ -262,10 +328,10 @@ export default function AdminRaffleEdit({ params }) {
               min="0"
               required
               className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              value={typeof data.ticketPrice !== "undefined" && data.ticketPrice !== null ? data.ticketPrice : ""}
+              value={data.ticketPrice !== undefined && data.ticketPrice !== null ? data.ticketPrice : ""}
               onChange={e => {
-                const v = e.target.value;
-                setData({ ...data, ticketPrice: v === "" ? "" : Number(v) });
+                const value = e.target.value;
+                setData({ ...data, ticketPrice: value === "" ? "" : Number(value) });
               }}
               placeholder="0.00"
             />
@@ -281,7 +347,7 @@ export default function AdminRaffleEdit({ params }) {
             type="number"
             min="1"
             className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            value={data.participantLimit ?? ""}
+            value={data.participantLimit || ""}
             onChange={e => setData({ ...data, participantLimit: e.target.value ? parseInt(e.target.value, 10) : null })}
             placeholder="Deja vacío para sin límite"
           />
@@ -352,6 +418,7 @@ export default function AdminRaffleEdit({ params }) {
         <p><strong>Nota:</strong> No puedes eliminar un sorteo que ya tiene participantes o tickets vendidos.</p>
         <p className="mt-1">Creado: {data.createdAt ? new Date(data.createdAt).toLocaleString() : "N/A"}</p>
         {data.updatedAt && <p>Última actualización: {new Date(data.updatedAt).toLocaleString()}</p>}
+        {data.publishedAt && <p>Publicado: {new Date(data.publishedAt).toLocaleString()}</p>}
       </div>
     </div>
   );

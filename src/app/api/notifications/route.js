@@ -1,7 +1,7 @@
 // app/api/notifications/route.js
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "../../../lib/auth.js";
-import prisma from "../../../lib/prisma.js";
+import { authOptions } from "@/lib/auth";
+import prisma from "@/lib/prisma";
 
 /**
  * GET -> devuelve notificaciones del usuario logueado (no accesible para otros usuarios)

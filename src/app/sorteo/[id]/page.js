@@ -1,11 +1,12 @@
-// app/sorteo/[id]/page.js
+// src/app/sorteo/[id]/page.js
 "use client";
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useState, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
 import ProgressBar from "@/components/raffle/ProgressBar";
+import ParticipateModal from "@/components/raffle/ParticipateModal";
 
 export default function SorteoPage({ params }) {
   // Unwrap the params Promise using React.use()
@@ -16,30 +17,114 @@ export default function SorteoPage({ params }) {
   const router = useRouter();
   
   const [raffle, setRaffle] = useState(null);
+  const [participants, setParticipants] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [purchasing, setPurchasing] = useState(false);
   const [quantity, setQuantity] = useState(1);
+  
+  // Estados para participación
+  const [showParticipateModal, setShowParticipateModal] = useState(false);
+  const [userParticipation, setUserParticipation] = useState(null);
+  const [participantsLoading, setParticipantsLoading] = useState(false);
+
+  // ✅ CORREGIDO: Cargar lista de participantes - useCallback para evitar recreación
+  const loadParticipants = useCallback(async (raffleId = id) => {
+    try {
+      setParticipantsLoading(true);
+      console.log('Loading participants for raffle:', raffleId);
+      
+      const res = await fetch(`/api/raffles/${raffleId}/participate`);
+      if (res.ok) {
+        const data = await res.json();
+        console.log('Participants loaded:', data);
+        setParticipants(Array.isArray(data.participants) ? data.participants : []);
+      } else {
+        console.warn('Failed to load participants:', res.status);
+        setParticipants([]);
+      }
+    } catch (err) {
+      console.error("Error loading participants:", err);
+      setParticipants([]);
+    } finally {
+      setParticipantsLoading(false);
+    }
+  }, [id]);
+
+  // ✅ CORREGIDO: Verificar si el usuario ya está participando - useCallback
+  const checkUserParticipation = useCallback(async (raffleId) => {
+    if (!session?.user?.email || !raffleId) return;
+
+    try {
+      console.log('Checking user participation for raffle:', raffleId);
+      const res = await fetch('/api/tickets/my');
+      if (res.ok) {
+        const data = await res.json();
+        console.log('User tickets response:', data);
+        
+        // Manejar diferentes formatos de respuesta
+        let tickets = [];
+        if (Array.isArray(data)) {
+          tickets = data;
+        } else if (data.tickets && Array.isArray(data.tickets)) {
+          tickets = data.tickets;
+        } else if (data.data && Array.isArray(data.data)) {
+          tickets = data.data;
+        }
+        
+        const participation = tickets.find(ticket => 
+          ticket.raffleId === raffleId && 
+          (ticket.status === 'IN_RAFFLE' || ticket.status === 'ACTIVE')
+        );
+        setUserParticipation(participation || null);
+        console.log('User participation:', participation);
+      } else {
+        console.warn('Failed to check user participation:', res.status);
+      }
+    } catch (err) {
+      console.error("Error checking participation:", err);
+    }
+  }, [session?.user?.email]);
 
   // Cargar datos del sorteo
   useEffect(() => {
     let mounted = true;
 
-    async function fetchRaffle() {
+    async function fetchData() {
       setLoading(true);
       setError(null);
       
       try {
-        const res = await fetch(`/api/raffles/${id}`);
-        if (!res.ok) {
-          const errJson = await res.json().catch(() => null);
-          throw new Error(errJson?.error || `Error ${res.status}`);
+        console.log('Fetching raffle data for ID:', id);
+        
+        // Cargar información del sorteo - ✅ Con mejor manejo de errores
+        const raffleRes = await fetch(`/api/raffles/${id}`);
+        console.log('Raffle response status:', raffleRes.status);
+        
+        if (!raffleRes.ok) {
+          let errorMessage = `Error ${raffleRes.status}`;
+          try {
+            const errJson = await raffleRes.json();
+            errorMessage = errJson.error || errorMessage;
+          } catch (e) {
+            console.warn('Could not parse error response');
+          }
+          throw new Error(errorMessage);
         }
         
-        const data = await res.json();
+        const raffleData = await raffleRes.json();
+        console.log('Raffle data loaded:', raffleData);
+        
         if (mounted) {
-          setRaffle(data);
+          setRaffle(raffleData);
+          
+          // Solo cargar participantes si el usuario está autenticado y el sorteo está cargado
+          if (session && raffleData?.id) {
+            loadParticipants(raffleData.id);
+            checkUserParticipation(raffleData.id);
+          }
         }
+
       } catch (err) {
         console.error("Error cargando sorteo:", err);
         if (mounted) {
@@ -52,44 +137,76 @@ export default function SorteoPage({ params }) {
       }
     }
 
-    fetchRaffle();
+    if (id) {
+      fetchData();
+    }
     return () => { mounted = false; };
-  }, [id]);
+  }, [id, session, loadParticipants, checkUserParticipation]); // ✅ CORREGIDO: Dependencias incluidas
 
-  // Función para comprar tickets
+  // Función para comprar tickets (mantener la funcionalidad existente)
   const handlePurchase = async () => {
     if (!session) {
       router.push('/auth/signin');
       return;
     }
 
+    if (!raffle?.id) {
+      alert('Error: ID del sorteo no válido');
+      return;
+    }
+
     setPurchasing(true);
     try {
-      const res = await fetch('/api/purchase', {
+      console.log('Purchasing tickets:', { raffleId: id, quantity });
+      
+      const res = await fetch('/api/tickets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           raffleId: id,
-          quantity: quantity,
-          totalAmount: raffle.ticketPrice * quantity
+          quantity: quantity
         })
       });
 
       if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.error || 'Error en la compra');
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || `Error ${res.status}: Error en la compra`);
       }
 
       const result = await res.json();
+      console.log('Purchase result:', result);
       
       // Redirigir a página de confirmación o actualizar estado
-      router.push(`/mis-tickets?new=${result.tickets?.length || quantity}`);
+      router.push(`/mis-tickets?new=${result.tickets?.count || quantity}`);
       
     } catch (err) {
       console.error('Error en compra:', err);
       alert('Error al procesar la compra: ' + err.message);
     } finally {
       setPurchasing(false);
+    }
+  };
+
+  // Handler para participación exitosa
+  const handleParticipationSuccess = (data) => {
+    console.log('Participation successful:', data);
+    
+    // Actualizar estado local
+    setUserParticipation({
+      raffleId: id,
+      ticketCode: data.participation?.ticketCode || data.ticketCode,
+      status: 'IN_RAFFLE'
+    });
+
+    // Recargar participantes
+    loadParticipants();
+
+    // Mostrar notificación de éxito
+    alert(`¡Participación exitosa! Tu ticket ${data.participation?.ticketCode || 'se registró'} está ahora en el sorteo.`);
+    
+    // Si el sorteo está listo, mostrar mensaje adicional
+    if (data.raffleStatus?.isReady) {
+      alert(`🎉 ¡El sorteo alcanzó el límite de participantes! Se realizará pronto.`);
     }
   };
 
@@ -121,12 +238,20 @@ export default function SorteoPage({ params }) {
           <div className="bg-red-500/20 border border-red-500/50 rounded-3xl p-8 text-center">
             <h1 className="text-2xl font-bold text-white mb-4">Sorteo no encontrado</h1>
             <p className="text-white/70 mb-6">{error}</p>
-            <Link 
-              href="/" 
-              className="inline-block px-6 py-3 bg-white/20 hover:bg-white/30 text-white rounded-xl transition-colors"
-            >
-              ← Volver al inicio
-            </Link>
+            <div className="flex gap-4 justify-center">
+              <button
+                onClick={() => window.location.reload()}
+                className="px-6 py-3 bg-purple-500 hover:bg-purple-600 text-white rounded-xl transition-colors"
+              >
+                Reintentar
+              </button>
+              <Link 
+                href="/" 
+                className="inline-block px-6 py-3 bg-white/20 hover:bg-white/30 text-white rounded-xl transition-colors"
+              >
+                Volver al inicio
+              </Link>
+            </div>
           </div>
         </div>
       </div>
@@ -138,7 +263,10 @@ export default function SorteoPage({ params }) {
   const maxTickets = raffle.maxTickets || 1000;
   const progressPercentage = Math.min((ticketsSold / maxTickets) * 100, 100);
   const isOwner = session?.user?.id === raffle.ownerId;
-  const canPurchase = raffle.status === 'ACTIVE' || raffle.status === 'PUBLISHED';
+  
+  // Verificar si puede comprar/participar
+  const canPurchase = (raffle.status === 'ACTIVE' || raffle.status === 'PUBLISHED') && raffle.publishedAt;
+  const canParticipate = canPurchase && !isOwner && !userParticipation;
   const isExpired = raffle.endsAt && new Date() > new Date(raffle.endsAt);
 
   return (
@@ -203,12 +331,55 @@ export default function SorteoPage({ params }) {
             {/* Barra de Progreso */}
             <div className="mb-8">
               <ProgressBar
-                current={ticketsSold}
-                target={maxTickets}
-                title="Progreso del Sorteo"
+                current={participants.length}
+                target={raffle.maxParticipants || 100}
+                title="Progreso de Participantes"
                 animated={true}
               />
             </div>
+
+            {/* Lista de Participantes */}
+            {participants.length > 0 && (
+              <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20 mb-8">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-xl font-bold text-white">Participantes ({participants.length})</h3>
+                  <button
+                    onClick={() => loadParticipants()}
+                    disabled={participantsLoading}
+                    className="px-3 py-1 bg-white/20 hover:bg-white/30 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {participantsLoading ? '🔄' : '🔄 Actualizar'}
+                  </button>
+                </div>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-60 overflow-y-auto">
+                  {participants.map((participant, index) => (
+                    <div 
+                      key={participant.id || index}
+                      className={`p-3 rounded-xl border ${
+                        participant.isWinner 
+                          ? 'bg-yellow-500/20 border-yellow-500/50' 
+                          : 'bg-white/5 border-white/20'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-white text-sm font-bold">
+                          {participant.isWinner ? '👑' : index + 1}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-white font-medium truncate">
+                            {participant.user?.name || participant.name || 'Usuario'}
+                          </div>
+                          <div className="text-white/60 text-xs font-mono">
+                            {participant.ticket?.code || participant.ticketCode || 'Código oculto'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Información del Dueño */}
             {raffle.owner && (
@@ -217,10 +388,13 @@ export default function SorteoPage({ params }) {
                 <div className="flex items-center gap-4">
                   <Image
                     src={raffle.owner.image || '/avatar-default.png'}
-                    alt={raffle.owner.name}
+                    alt={raffle.owner.name || 'Usuario'}
                     width={48}
                     height={48}
                     className="rounded-full border-2 border-white/20"
+                    onError={(e) => {
+                      e.target.src = '/avatar-default.png';
+                    }}
                   />
                   <div>
                     <p className="text-white font-medium">{raffle.owner.name}</p>
@@ -231,7 +405,7 @@ export default function SorteoPage({ params }) {
             )}
           </div>
 
-          {/* Sidebar de Compra */}
+          {/* Sidebar de Acciones */}
           <div className="lg:col-span-1">
             <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20 sticky top-24">
               
@@ -246,12 +420,12 @@ export default function SorteoPage({ params }) {
               {/* Estadísticas */}
               <div className="grid grid-cols-2 gap-4 mb-6">
                 <div className="text-center p-3 bg-white/5 rounded-xl">
-                  <div className="text-2xl font-bold text-white">{ticketsSold}</div>
-                  <div className="text-sm text-white/70">Vendidos</div>
+                  <div className="text-2xl font-bold text-white">{participants.length}</div>
+                  <div className="text-sm text-white/70">Participantes</div>
                 </div>
                 <div className="text-center p-3 bg-white/5 rounded-xl">
-                  <div className="text-2xl font-bold text-white">{maxTickets}</div>
-                  <div className="text-sm text-white/70">Total</div>
+                  <div className="text-2xl font-bold text-white">{raffle.maxParticipants || '∞'}</div>
+                  <div className="text-sm text-white/70">Máximo</div>
                 </div>
               </div>
 
@@ -268,12 +442,46 @@ export default function SorteoPage({ params }) {
                 </div>
               )}
 
-              {/* Controles de compra */}
+              {/* Estado de participación del usuario */}
+              {session && userParticipation && (
+                <div className="mb-6 bg-green-500/20 border border-green-500/50 rounded-xl p-4 text-center">
+                  <p className="text-green-300 font-bold mb-1">¡Ya estás participando!</p>
+                  <p className="text-green-200/80 text-sm">
+                    Ticket: {userParticipation.ticketCode || userParticipation.code || 'Código oculto'}
+                  </p>
+                </div>
+              )}
+
+              {/* Botón de Participar */}
+              {session && canParticipate && (
+                <div className="mb-4">
+                  <button
+                    onClick={() => setShowParticipateModal(true)}
+                    className="w-full py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                  >
+                    🎯 Participar con Ticket
+                  </button>
+                  <p className="text-white/60 text-xs text-center mt-2">
+                    Usa uno de tus tickets disponibles para participar
+                  </p>
+                </div>
+              )}
+
+              {/* Separador si hay ambas opciones */}
+              {session && canParticipate && canPurchase && (
+                <div className="flex items-center my-4">
+                  <hr className="flex-1 border-white/20" />
+                  <span className="px-3 text-white/50 text-sm">o</span>
+                  <hr className="flex-1 border-white/20" />
+                </div>
+              )}
+
+              {/* Controles de compra (mantener funcionalidad existente) */}
               {!isOwner && canPurchase && !isExpired && (
                 <div className="space-y-4">
                   <div>
                     <label className="block text-white/70 text-sm mb-2">
-                      Cantidad de tickets:
+                      Comprar tickets nuevos:
                     </label>
                     <input
                       type="number"
@@ -306,7 +514,7 @@ export default function SorteoPage({ params }) {
                     👑 Eres el organizador de este sorteo
                   </p>
                   <Link 
-                    href={`/admin/raffle/${id}`}
+                    href={`/admin/raffles/${id}`}
                     className="inline-block mt-2 text-blue-400 hover:underline text-sm"
                   >
                     Administrar sorteo →
@@ -317,12 +525,12 @@ export default function SorteoPage({ params }) {
               {!canPurchase && !isOwner && (
                 <div className="bg-yellow-500/20 border border-yellow-500/50 rounded-xl p-4 text-center">
                   <p className="text-yellow-300 text-sm">
-                    Este sorteo no está disponible para compras
+                    Este sorteo no está disponible
                   </p>
                 </div>
               )}
 
-              {!session && canPurchase && (
+              {!session && (
                 <button
                   onClick={() => router.push('/auth/signin')}
                   className="w-full py-3 bg-white/20 hover:bg-white/30 text-white font-bold rounded-xl transition-colors"
@@ -334,6 +542,14 @@ export default function SorteoPage({ params }) {
           </div>
         </div>
       </div>
+
+      {/* Modal de Participación */}
+      <ParticipateModal
+        isOpen={showParticipateModal}
+        onClose={() => setShowParticipateModal(false)}
+        raffle={raffle}
+        onSuccess={handleParticipationSuccess}
+      />
     </div>
   );
 }

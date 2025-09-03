@@ -1,18 +1,18 @@
-// app/api/users/me/route.js
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth.js'
-import prisma from '@/lib/prisma.js'
+// src/app/api/users/me/route.js - CORREGIDO
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '@/lib/auth';
+import prisma from '@/lib/prisma';
+import { NextResponse } from 'next/server';
 
-export async function GET(request) {
+export async function GET() {
   try {
-    // Usar authOptions para obtener la sesión
-    const session = await getServerSession(authOptions)
+    const session = await getServerSession(authOptions);
     
     if (!session?.user?.email) {
-      return Response.json({
+      return NextResponse.json({
         success: false,
         error: 'No autenticado'
-      }, { status: 401 })
+      }, { status: 401 });
     }
 
     // Buscar usuario completo en la base de datos
@@ -20,6 +20,12 @@ export async function GET(request) {
       where: { email: session.user.email },
       include: {
         tickets: {
+          where: {
+            // Filtrar tickets válidos
+            NOT: {
+              status: 'DELETED'
+            }
+          },
           include: {
             raffle: {
               select: {
@@ -27,7 +33,8 @@ export async function GET(request) {
                 title: true,
                 description: true,
                 endsAt: true,
-                status: true
+                status: true,
+                ticketPrice: true
               }
             }
           }
@@ -45,51 +52,97 @@ export async function GET(request) {
               }
             }
           },
-          orderBy: { createdAt: 'desc' }
+          orderBy: { createdAt: 'desc' },
+          take: 10 // Limitar para performance
         },
-        raffles: { // Si en el futuro puede crear rifas
+        raffles: {
           select: {
             id: true,
             title: true,
             status: true,
-            createdAt: true
+            createdAt: true,
+            ticketPrice: true,
+            _count: {
+              select: {
+                tickets: true,
+                participations: true
+              }
+            }
+          },
+          orderBy: { createdAt: 'desc' }
+        },
+        wonRaffles: {
+          select: {
+            id: true,
+            title: true,
+            createdAt: true,
+            drawnAt: true
           }
         }
       }
-    })
+    });
 
     if (!user) {
-      return Response.json({
+      return NextResponse.json({
         success: false,
         error: 'Usuario no encontrado en la base de datos'
-      }, { status: 404 })
+      }, { status: 404 });
     }
 
-    // Calcular estadísticas útiles
-    const availableTickets = user.tickets.filter(ticket => !ticket.isUsed)
-    const usedTickets = user.tickets.filter(ticket => ticket.isUsed)
-    const totalSpent = user.purchases.reduce((sum, purchase) => sum + purchase.amount, 0)
+    // Calcular estadísticas
+    const availableTickets = user.tickets.filter(ticket => 
+      !ticket.isUsed && ticket.status === 'AVAILABLE'
+    );
+    const usedTickets = user.tickets.filter(ticket => ticket.isUsed);
+    const totalSpent = user.purchases.reduce((sum, purchase) => sum + purchase.amount, 0);
 
-    // Calcular estadísticas adicionales para la página de estadísticas
-    const totalRafflesCreated = user.raffles.length
-    const totalTicketsSold = user.raffles.reduce((sum, raffle) => {
-      // Aquí necesitarías hacer otra consulta para obtener el count de tickets por raffle
-      // Por ahora lo dejamos en 0 hasta que agregues esa información
-      return sum + 0
-    }, 0)
+    // Estadísticas de rifas creadas
+    const totalRafflesCreated = user.raffles.length;
+    const finishedRaffles = user.raffles.filter(r => r.status === 'FINISHED' || r.status === 'COMPLETED');
+    
+    // Calcular tickets vendidos y revenue de sus rifas
+    const totalTicketsSold = user.raffles.reduce((sum, raffle) => sum + raffle._count.tickets, 0);
     const totalRevenue = user.raffles.reduce((sum, raffle) => {
-      // Similar al anterior, necesitarías el count de tickets vendidos
-      return sum + 0
-    }, 0)
+      return sum + (raffle._count.tickets * raffle.ticketPrice);
+    }, 0);
 
-    // Respuesta con datos completos y estadísticas adicionales
-    return Response.json({
+    // Top raffles (mejores por revenue)
+    const topRaffles = user.raffles
+      .map(raffle => ({
+        id: raffle.id,
+        title: raffle.title,
+        ticketsSold: raffle._count.tickets,
+        revenue: raffle._count.tickets * raffle.ticketPrice,
+        participants: raffle._count.participations
+      }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5);
+
+    // Actividad reciente (combinar compras y rifas creadas)
+    const recentActivity = [
+      ...user.purchases.slice(0, 3).map(purchase => ({
+        icon: '💳',
+        description: `Compraste ${purchase.tickets?.length || 0} tickets por $${purchase.amount}`,
+        timeAgo: formatTimeAgo(purchase.createdAt),
+        createdAt: purchase.createdAt
+      })),
+      ...user.raffles.slice(0, 2).map(raffle => ({
+        icon: '🎯',
+        description: `Creaste el sorteo "${raffle.title}"`,
+        timeAgo: formatTimeAgo(raffle.createdAt),
+        createdAt: raffle.createdAt
+      }))
+    ]
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .slice(0, 5);
+
+    return NextResponse.json({
       success: true,
-      // Estructura original para compatibilidad
       user: {
         id: user.id,
         name: user.name,
         email: user.email,
+        role: user.role,
         createdAt: user.createdAt,
         
         // Estadísticas de tickets
@@ -101,32 +154,25 @@ export async function GET(request) {
         totalPurchases: user.purchases.length,
         totalSpent: totalSpent,
         
-        // Datos detallados con campos calculados
-        tickets: user.tickets.map(ticket => ({
-          ...ticket,
-          // Calcular si la rifa está terminada
-          raffleFinished: ticket.raffle.status === 'FINISHED' || 
-                         ticket.raffle.status === 'DRAWN' ||
-                         (ticket.raffle.endsAt && new Date() > new Date(ticket.raffle.endsAt))
-        })),
+        // Datos detallados
+        tickets: user.tickets,
         purchases: user.purchases,
-        ownedRaffles: user.raffles.map(raffle => ({
-          ...raffle,
-          // Agregar campo calculado isFinished
-          isFinished: raffle.status === 'FINISHED' || raffle.status === 'DRAWN'
-        })),
+        ownedRaffles: user.raffles,
+        wonRaffles: user.wonRaffles,
         
-        // Tickets disponibles por rifa
+        // Tickets agrupados por rifa
         ticketsByRaffle: availableTickets.reduce((acc, ticket) => {
-          const raffleId = ticket.raffleId
+          const raffleId = ticket.raffleId;
+          if (!raffleId) return acc;
+          
           if (!acc[raffleId]) {
             acc[raffleId] = {
               raffle: ticket.raffle,
               tickets: []
-            }
+            };
           }
-          acc[raffleId].tickets.push(ticket)
-          return acc
+          acc[raffleId].tickets.push(ticket);
+          return acc;
         }, {})
       },
       
@@ -134,21 +180,30 @@ export async function GET(request) {
       totalRafflesCreated,
       totalTicketsSold,
       totalRevenue,
-      totalWins: 0, // Necesitarías agregar lógica para contar victorias
-      totalParticipants: 0, // Necesitarías agregar lógica para contar participantes únicos
-      successRate: totalRafflesCreated > 0 ? Math.round((user.raffles.filter(r => r.status === 'FINISHED').length / totalRafflesCreated) * 100) : 0,
-      topRaffles: [], // Podrías agregar los mejores sorteos
-      recentActivity: [] // Podrías agregar actividad reciente
-    })
+      totalWins: user.wonRaffles.length,
+      totalParticipants: user.raffles.reduce((sum, raffle) => sum + raffle._count.participations, 0),
+      successRate: totalRafflesCreated > 0 ? Math.round((finishedRaffles.length / totalRafflesCreated) * 100) : 0,
+      topRaffles,
+      recentActivity
+    });
 
   } catch (error) {
-    console.error('Error en /api/users/me:', error)
-    return Response.json({
+    console.error('Error en /api/users/me:', error);
+    return NextResponse.json({
       success: false,
       error: 'Error interno del servidor',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    }, { status: 500 })
-  } finally {
-    await prisma.$disconnect()
+    }, { status: 500 });
   }
+}
+
+// Función helper para formatear tiempo
+function formatTimeAgo(date) {
+  const now = new Date();
+  const diffInSeconds = Math.floor((now - new Date(date)) / 1000);
+  
+  if (diffInSeconds < 60) return 'Hace un momento';
+  if (diffInSeconds < 3600) return `Hace ${Math.floor(diffInSeconds / 60)} minutos`;
+  if (diffInSeconds < 86400) return `Hace ${Math.floor(diffInSeconds / 3600)} horas`;
+  return `Hace ${Math.floor(diffInSeconds / 86400)} días`;
 }

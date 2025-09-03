@@ -87,10 +87,11 @@ export function useRaffleProgress(raffleId, options = {}) {
     
     return () => {
       stopPolling();
-      // ✅ Close WebSocket if exists - capturar referencia actual al inicio del cleanup
+      // ✅ Fix ESLint warning - capturar referencia actual al inicio del cleanup
       const currentWs = wsRef.current;
       if (currentWs) {
         currentWs.close();
+        wsRef.current = null; // Limpiar la referencia
       }
     };
   }, [raffleId, autoRefresh, fetchProgress, startPolling, stopPolling]);

@@ -2,7 +2,6 @@
 ```
 riftea
 ├─ eslint.config.mjs
-├─ estructura.md
 ├─ jsconfig.json
 ├─ logo.png
 ├─ migration_script.sh
@@ -50,6 +49,9 @@ riftea
 │  │  │  ├─ admin
 │  │  │  │  ├─ generar-tickets
 │  │  │  │  │  └─ route.js
+│  │  │  │  ├─ raffles
+│  │  │  │  │  └─ [id]
+│  │  │  │  │     └─ route.js
 │  │  │  │  ├─ sorteos
 │  │  │  │  │  └─ route.js
 │  │  │  │  └─ usuarios
@@ -67,6 +69,8 @@ riftea
 │  │  │  │  ├─ route.js
 │  │  │  │  └─ [id]
 │  │  │  │     ├─ assign-tickets
+│  │  │  │     │  └─ route.js
+│  │  │  │     ├─ participate
 │  │  │  │     │  └─ route.js
 │  │  │  │     └─ route.js
 │  │  │  ├─ tickets
@@ -113,6 +117,7 @@ riftea
 │  │  │  └─ Header.jsx
 │  │  ├─ layout
 │  │  ├─ raffle
+│  │  │  ├─ ParticipateModal.jsx
 │  │  │  └─ ProgressBar.js
 │  │  ├─ tickets
 │  │  │  └─ UserTicketsDisplay.jsx

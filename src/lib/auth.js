@@ -1,9 +1,8 @@
 // src/lib/auth.js - Configuración completa corregida
 import GoogleProvider from "next-auth/providers/google";
-import { getServerSession } from 'next-auth/next';
+import { getServerSession } from 'next-auth/next'; // ✅ Import correcto
+import { NextResponse } from 'next/server'; // ✅ NextResponse en lugar de Response
 import prisma from "./prisma.js";
-import NextAuth from "next-auth";
-import { NextResponse } from 'next/server';
 
 export const authOptions = {
   providers: [
@@ -22,7 +21,6 @@ export const authOptions = {
       }
       
       console.log("[SIGNIN] intentando signIn para:", user.email);
-      console.log("[SIGNIN] DATABASE_URL (slice):", process.env.DATABASE_URL ? process.env.DATABASE_URL.slice(0,50) : "no env");
       
       try {
         const existingUser = await prisma.user.findUnique({
@@ -104,21 +102,55 @@ export const authOptions = {
       if (!session?.user?.email) return session;
       
       try {
+        // ✅ CORREGIDO: Query completa con todas las relaciones necesarias para estadísticas
         const dbUser = await prisma.user.findUnique({
           where: { email: session.user.email },
           include: {
             tickets: {
               where: { isUsed: false },
-              include: { raffle: true }
+              include: { 
+                raffle: {
+                  select: {
+                    id: true,
+                    title: true,
+                    status: true,
+                    endsAt: true,
+                    drawnAt: true
+                  }
+                }
+              }
             },
             purchases: {
               orderBy: { createdAt: 'desc' },
-              take: 5
+              take: 5,
+              include: {
+                tickets: {
+                  select: {
+                    id: true,
+                    code: true,
+                    status: true
+                  }
+                }
+              }
             },
-            wonRaffles: true,
+            wonRaffles: {
+              select: {
+                id: true,
+                title: true,
+                drawnAt: true,
+                ticketPrice: true
+              }
+            },
             notifications: {
               where: { read: false },
-              orderBy: { createdAt: 'desc' }
+              orderBy: { createdAt: 'desc' },
+              select: {
+                id: true,
+                title: true,
+                message: true,
+                type: true,
+                createdAt: true
+              }
             }
           }
         });
@@ -127,21 +159,49 @@ export const authOptions = {
           session.user.role = dbUser.role.toString().toLowerCase();
           session.user.id = dbUser.id;
           session.user.dbId = dbUser.id;
-          session.user.availableTickets = dbUser.tickets.length;
-          session.user.totalPurchases = dbUser.purchases.length;
-          session.user.memberSince = dbUser.createdAt;
-          session.user.wonRaffles = dbUser.wonRaffles.length;
-          session.user.unreadNotifications = dbUser.notifications.length;
           session.user.isActive = dbUser.isActive;
+          session.user.memberSince = dbUser.createdAt;
+          
+          // ✅ CORREGIDO: Validación de campos nulos antes de acceder a propiedades
+          session.user.availableTickets = dbUser.tickets?.length || 0;
+          session.user.totalPurchases = dbUser.purchases?.length || 0;
+          session.user.wonRaffles = dbUser.wonRaffles?.length || 0;
+          session.user.unreadNotifications = dbUser.notifications?.length || 0;
+          
+          // ✅ MEJORA: Estadísticas adicionales calculadas
+          const activeTicketsInRaffles = dbUser.tickets?.filter(ticket => 
+            ticket.raffle && ticket.raffle.status === 'ACTIVE'
+          ).length || 0;
+          
+          const totalWinnings = dbUser.wonRaffles?.reduce((sum, raffle) => 
+            sum + (raffle.ticketPrice || 0), 0
+          ) || 0;
+          
+          session.user.activeTicketsInRaffles = activeTicketsInRaffles;
+          session.user.totalWinnings = totalWinnings;
           
           console.log("[SESSION] usuario encontrado en DB:", dbUser.email, "role:", session.user.role);
         } else {
           session.user.role = "user";
-          console.log("[SESSION] usuario NO encontrado en DB:", session.user.email, "asignando role por defecto: user");
+          // ✅ Valores por defecto para evitar undefined
+          session.user.availableTickets = 0;
+          session.user.totalPurchases = 0;
+          session.user.wonRaffles = 0;
+          session.user.unreadNotifications = 0;
+          session.user.activeTicketsInRaffles = 0;
+          session.user.totalWinnings = 0;
+          console.log("[SESSION] usuario NO encontrado en DB:", session.user.email, "asignando valores por defecto");
         }
       } catch (err) {
         session.user.role = "user";
-        console.error("[SESSION] callback error:", err, "- asignando role por defecto: user");
+        // ✅ Valores por defecto en caso de error
+        session.user.availableTickets = 0;
+        session.user.totalPurchases = 0;
+        session.user.wonRaffles = 0;
+        session.user.unreadNotifications = 0;
+        session.user.activeTicketsInRaffles = 0;
+        session.user.totalWinnings = 0;
+        console.error("[SESSION] callback error:", err, "- asignando valores por defecto");
       }
       
       return session;
@@ -160,33 +220,46 @@ export const authOptions = {
   
   session: {
     strategy: "jwt",
-    maxAge: 30 * 24 * 60 * 60,
+    maxAge: 30 * 24 * 60 * 60, // 30 días
+  },
+  
+  pages: {
+    signIn: '/auth/signin',
+    error: '/auth/error',
   },
 };
 
-// ✅ Funciones helper agregadas
+// ✅ Funciones helper mejoradas
 export async function getServerAuth() {
-  const session = await getServerSession(authOptions);
-  return session;
+  try {
+    const session = await getServerSession(authOptions);
+    return session;
+  } catch (error) {
+    console.error('[AUTH] Error getting server session:', error);
+    return null;
+  }
 }
 
-export async function requireAdmin(req) {
+export async function requireAdmin() {
   const session = await getServerAuth();
   
-  if (!session || session.user?.role !== 'admin') {
-    throw new Error('Acceso denegado');
+  if (!session || !session.user) {
+    throw new Error('Authentication required');
+  }
+  
+  if (session.user.role !== 'admin' && session.user.role !== 'superadmin') {
+    throw new Error('Admin access required');
   }
   
   return session;
 }
 
-// ✅ Nuevas funciones para compatibilidad con las rutas API
 export async function getCurrentUser() {
   try {
     const session = await getServerSession(authOptions);
     return session?.user || null;
   } catch (error) {
-    console.error('Error getting current user:', error);
+    console.error('[AUTH] Error getting current user:', error);
     return null;
   }
 }
@@ -201,6 +274,7 @@ export async function requireAuth() {
   return user;
 }
 
+// ✅ CORREGIDO: Usar NextResponse en lugar de Response
 export function createErrorResponse(message, status = 400) {
   return NextResponse.json(
     { success: false, error: message },
@@ -216,5 +290,13 @@ export function createSuccessResponse(data, message = 'Success') {
   });
 }
 
-// ✅ Para compatibilidad con imports antiguos si los hubiera
+// ✅ Función adicional para manejar errores de autenticación
+export function createUnauthorizedResponse(message = 'Unauthorized') {
+  return NextResponse.json(
+    { success: false, error: message },
+    { status: 401 }
+  );
+}
+
+// ✅ Para compatibilidad con imports antiguos
 export const verifyAuth = getCurrentUser;

@@ -9,6 +9,7 @@ export default function EstadisticasPage() {
   const router = useRouter();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (status === "loading") return;
@@ -23,13 +24,24 @@ export default function EstadisticasPage() {
   const fetchStats = async () => {
     try {
       const res = await fetch("/api/users/me");
-      if (!res.ok) throw new Error("Error al cargar estadísticas");
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "Error al cargar estadísticas");
+      }
       
       const data = await res.json();
+      
+      // Verificar que la respuesta sea exitosa
+      if (!data.success) {
+        throw new Error(data.error || "Error en la respuesta del servidor");
+      }
+      
       setStats(data);
-      setLoading(false);
+      setError(null);
     } catch (err) {
-      console.error(err);
+      console.error("Error fetching stats:", err);
+      setError(err.message);
+    } finally {
       setLoading(false);
     }
   };
@@ -46,6 +58,26 @@ export default function EstadisticasPage() {
               ))}
             </div>
             <div className="h-64 bg-white/20 rounded-3xl"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 pt-20">
+        <div className="container mx-auto px-4 py-8">
+          <div className="text-center">
+            <div className="text-6xl mb-4">⚠️</div>
+            <h1 className="text-2xl font-bold text-white mb-4">Error al cargar estadísticas</h1>
+            <p className="text-red-400 mb-4">{error}</p>
+            <button 
+              onClick={fetchStats}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg transition-colors"
+            >
+              Reintentar
+            </button>
           </div>
         </div>
       </div>
@@ -116,6 +148,36 @@ export default function EstadisticasPage() {
             <div className="text-white/90 font-medium">Tasa de Éxito</div>
             <div className="text-teal-400/70 text-sm">Sorteos completados</div>
           </div>
+
+          {/* Nuevas estadísticas basadas en los datos del usuario */}
+          <div className="bg-gradient-to-r from-indigo-500/20 to-blue-500/20 backdrop-blur-lg rounded-2xl p-6 border border-indigo-500/20">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-indigo-400">🎟️</div>
+              <div className="text-2xl font-bold text-white">{stats?.user?.totalTickets || 0}</div>
+            </div>
+            <div className="text-white/90 font-medium">Tickets Totales</div>
+            <div className="text-indigo-400/70 text-sm">Como participante</div>
+          </div>
+
+          <div className="bg-gradient-to-r from-emerald-500/20 to-green-500/20 backdrop-blur-lg rounded-2xl p-6 border border-emerald-500/20">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-emerald-400">✅</div>
+              <div className="text-2xl font-bold text-white">{stats?.user?.availableTickets || 0}</div>
+            </div>
+            <div className="text-white/90 font-medium">Tickets Disponibles</div>
+            <div className="text-emerald-400/70 text-sm">Para usar</div>
+          </div>
+
+          <div className="bg-gradient-to-r from-orange-500/20 to-red-500/20 backdrop-blur-lg rounded-2xl p-6 border border-orange-500/20">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-orange-400">💸</div>
+              <div className="text-2xl font-bold text-white">
+                ${stats?.user?.totalSpent ? stats.user.totalSpent.toLocaleString() : '0'}
+              </div>
+            </div>
+            <div className="text-white/90 font-medium">Total Gastado</div>
+            <div className="text-orange-400/70 text-sm">En participaciones</div>
+          </div>
         </div>
 
         {/* Gráficos y Análisis */}
@@ -160,6 +222,17 @@ export default function EstadisticasPage() {
             ) : (
               <div className="text-center py-8 text-white/70">
                 <p>Sin datos de sorteos aún</p>
+                {stats?.user?.ownedRaffles?.length > 0 && (
+                  <div className="mt-4 text-left">
+                    <p className="text-white/50 text-sm mb-2">Sorteos creados:</p>
+                    {stats.user.ownedRaffles.map((raffle) => (
+                      <div key={raffle.id} className="p-2 bg-white/5 rounded-lg mb-2">
+                        <p className="text-white text-sm">{raffle.title}</p>
+                        <p className="text-white/50 text-xs">Estado: {raffle.status}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -182,6 +255,19 @@ export default function EstadisticasPage() {
             ) : (
               <div className="text-center py-8 text-white/70">
                 <p>Sin actividad reciente</p>
+                {stats?.user?.purchases?.length > 0 && (
+                  <div className="mt-4 text-left">
+                    <p className="text-white/50 text-sm mb-2">Compras recientes:</p>
+                    {stats.user.purchases.slice(0, 3).map((purchase) => (
+                      <div key={purchase.id} className="p-2 bg-white/5 rounded-lg mb-2">
+                        <p className="text-white text-sm">${purchase.amount}</p>
+                        <p className="text-white/50 text-xs">
+                          {new Date(purchase.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

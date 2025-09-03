@@ -1,33 +1,7 @@
-// app/api/auth/[...nextauth]/route.js
+// src/app/api/auth/[...nextauth]/route.js - CORREGIDO
 import NextAuth from "next-auth";
-import { authOptions } from "../../../../lib/auth.js";
+import { authOptions } from "@/lib/auth";
 
-// 🔧 MEJORA: Handler con mejor manejo de errores
-const handler = async (req, context) => {
-  try {
-    return await NextAuth(req, context, authOptions);
-  } catch (error) {
-    console.error("[NEXTAUTH HANDLER] Error:", error);
-    
-    // 🔧 MEJORA: Respuesta de error más específica
-    return new Response(
-      JSON.stringify({
-        error: "Authentication Error",
-        message: process.env.NODE_ENV === 'development' ? error.message : "Internal Server Error"
-      }),
-      {
-        status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-  }
-};
+const handler = NextAuth(authOptions);
 
-// Exportar para ambos métodos HTTP
 export { handler as GET, handler as POST };
-
-// 🔧 MEJORA: Metadata para la API
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
