@@ -5,7 +5,7 @@ import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
-import ProgressBar from "@/src/components/raffle/ProgressBar";
+import ProgressBar from "@/components/raffle/ProgressBar";
 
 export default function SorteoPage({ params }) {
   // Unwrap the params Promise using React.use()

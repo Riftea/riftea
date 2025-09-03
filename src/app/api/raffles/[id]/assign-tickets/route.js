@@ -1,7 +1,7 @@
 // app/api/raffles/[id]/assign-tickets/route.js
 import { getServerSession } from "next-auth/next";
-import { authOptions } from '@/src/lib/auth';
-import prisma from "@/src/lib/prisma";
+import { authOptions } from '@/lib/auth';
+import prisma from "@/lib/prisma";
 import { v4 as uuidv4 } from "uuid";
 import crypto from "crypto";
 

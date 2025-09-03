@@ -173,7 +173,7 @@ export default function AdminPage() {
         </p>
         {isSuperAdmin && (
           <p className="text-xs text-gray-500 mt-1">
-            💡 Haz clic en "Generar Ticket" para crear un ticket de prueba instantáneamente
+            💡 Haz clic en &quot;Generar Ticket&quot; para crear un ticket de prueba instantáneamente
           </p>
         )}
       </div>
@@ -186,7 +186,7 @@ export default function AdminPage() {
             <li>• <strong>Generar Ticket:</strong> Crea 1 ticket de prueba instantáneo para ti</li>
             <li>• <strong>Generar Múltiples:</strong> Interfaz completa para generar tickets para otros usuarios</li>
             <li>• <strong>Mis Tickets:</strong> Ver todos tus tickets (incluidos los de prueba)</li>
-            <li>• Los tickets generados aparecen en "Mis Tickets" inmediatamente</li>
+            <li>• Los tickets generados aparecen en &quot;Mis Tickets&quot; inmediatamente</li>
           </ul>
         </div>
       )}

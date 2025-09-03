@@ -1,7 +1,7 @@
 // src/services/tickets.service.js
 import crypto from 'crypto';
 import { PrismaClient } from '@prisma/client';
-import { generateTicketUUID, createTicketHash, generateTicketCode } from "@/src/lib/crypto";
+import { generateTicketUUID, createTicketHash, generateTicketCode } from "@/lib/crypto";
 
 const prisma = new PrismaClient();
 
@@ -15,7 +15,7 @@ export class TicketsService {
   }
 
   /**
-   * Valida si un ticket es válido comparando el hash
+   * Valida si un ticket es vÃ¡lido comparando el hash
    */
   static validateTicket(userId, ticketUuid, hash) {
     const expectedHash = this.generateTicketHash(userId, ticketUuid);
@@ -23,13 +23,13 @@ export class TicketsService {
   }
 
   /**
-   * 🎟️ Genera tickets seguros con UUID + SHA256 (usando tu función existente)
+   * ðŸŽŸï¸ Genera tickets seguros con UUID + SHA256 (usando tu funciÃ³n existente)
    */
   static async createTickets({
     userId,
     purchaseId = null,
     quantity = 1,
-    raffleId = null, // 🆕 Soporte para tickets específicos de rifa
+    raffleId = null, // ðŸ†• Soporte para tickets especÃ­ficos de rifa
     tx = null
   }) {
     const prismaClient = tx || prisma;
@@ -42,12 +42,12 @@ export class TicketsService {
 
       while (!ticketCreated && attempts < 5) {
         try {
-          // 🔐 Generar identificadores únicos
+          // ðŸ" Generar identificadores Ãºnicos
           const uuid = generateTicketUUID();
-          const code = generateTicketCode(); // Tu función existente
-          const hash = this.generateTicketHash(userId, uuid); // Método mejorado
+          const code = generateTicketCode(); // Tu funciÃ³n existente
+          const hash = this.generateTicketHash(userId, uuid); // MÃ©todo mejorado
 
-          // 🎫 Crear ticket en DB
+          // ðŸŽ« Crear ticket en DB
           const ticket = await prismaClient.ticket.create({
             data: {
               uuid,
@@ -55,7 +55,7 @@ export class TicketsService {
               hash,
               userId,
               purchaseId,
-              raffleId, // 🆕 Puede ser null para tickets genéricos
+              raffleId, // ðŸ†• Puede ser null para tickets genÃ©ricos
               status: "AVAILABLE",
               generatedAt: new Date(timestamp),
             }
@@ -68,9 +68,9 @@ export class TicketsService {
           attempts++;
           
           if (error.code === 'P2002') { // Unique constraint violation
-            console.warn(`🔄 Colisión UUID intento ${attempts}/5`);
+            console.warn(`ðŸ"„ ColisiÃ³n UUID intento ${attempts}/5`);
             if (attempts >= 5) {
-              throw new Error("No fue posible generar ticket único tras 5 intentos");
+              throw new Error("No fue posible generar ticket Ãºnico tras 5 intentos");
             }
           } else {
             throw error;
@@ -83,15 +83,15 @@ export class TicketsService {
   }
 
   /**
-   * Genera un nuevo ticket para un usuario (método nuevo mejorado)
+   * Genera un nuevo ticket para un usuario (mÃ©todo nuevo mejorado)
    */
   static async generateTicket(userId, generatedBy = 'system', raffleId = null) {
     try {
-      // Crear el ticket con UUID automático
+      // Crear el ticket con UUID automÃ¡tico
       const tickets = await this.createTickets({
         userId,
         quantity: 1,
-        raffleId // 🆕 Soporte para tickets específicos
+        raffleId // ðŸ†• Soporte para tickets especÃ­ficos
       });
 
       const ticket = tickets[0];
@@ -117,7 +117,7 @@ export class TicketsService {
         }
       });
 
-      // Crear notificación
+      // Crear notificaciÃ³n
       await prisma.notification.create({
         data: {
           userId,
@@ -126,7 +126,7 @@ export class TicketsService {
             : 'Nuevo ticket recibido',
           message: generatedBy === 'superadmin' 
             ? 'Un superadministrador ha generado un ticket para ti'
-            : `Has recibido un nuevo ticket${raffleId ? ' para una rifa específica' : ''}`,
+            : `Has recibido un nuevo ticket${raffleId ? ' para una rifa especÃ­fica' : ''}`,
           type: 'SYSTEM_ALERT',
           raffleId
         }
@@ -140,7 +140,7 @@ export class TicketsService {
   }
 
   /**
-   * ✅ Verificar propiedad de un ticket (tu función existente mejorada)
+   * âœ… Verificar propiedad de un ticket (tu funciÃ³n existente mejorada)
    */
   static async verifyTicketOwnership(ticketUuid, userId) {
     const ticket = await prisma.ticket.findUnique({
@@ -159,9 +159,9 @@ export class TicketsService {
       return { valid: false, error: "Ticket no pertenece al usuario" };
     }
 
-    // 🔐 Verificar hash SHA256 (método mejorado)
+    // ðŸ" Verificar hash SHA256 (mÃ©todo mejorado)
     if (!this.validateTicket(userId, ticket.uuid, ticket.hash)) {
-      return { valid: false, error: "Hash de seguridad inválido" };
+      return { valid: false, error: "Hash de seguridad invÃ¡lido" };
     }
 
     return {
@@ -178,9 +178,9 @@ export class TicketsService {
   }
 
   /**
-   * 🆕 Verificar si un ticket puede usarse en una rifa específica
+   * ðŸ†• Verificar si un ticket puede aplicarse en una rifa especÃ­fica
    */
-  static async canUseTicketInRaffle(ticketId, raffleId, userId) {
+  static async canApplyTicketToRaffle(ticketId, raffleId, userId) {
     try {
       const ticket = await prisma.ticket.findUnique({
         where: { id: ticketId },
@@ -193,12 +193,12 @@ export class TicketsService {
       });
 
       if (!ticket || ticket.userId !== userId) {
-        return { canUse: false, reason: 'Ticket no válido o no pertenece al usuario' };
+        return { canUse: false, reason: 'Ticket no vÃ¡lido o no pertenece al usuario' };
       }
 
-      // Verificar si ya está participando en esta rifa
+      // Verificar si ya estÃ¡ participando en esta rifa
       if (ticket.participations.length > 0) {
-        return { canUse: false, reason: 'Este ticket ya está participando en esta rifa' };
+        return { canUse: false, reason: 'Este ticket ya estÃ¡ participando en esta rifa' };
       }
 
       // Verificar estado del ticket
@@ -206,7 +206,7 @@ export class TicketsService {
         return { canUse: false, reason: 'Ticket no disponible' };
       }
 
-      // Si es un ticket específico de otra rifa, no se puede usar
+      // Si es un ticket especÃ­fico de otra rifa, no se puede usar
       if (ticket.raffleId && ticket.raffleId !== raffleId) {
         return { canUse: false, reason: 'Ticket asignado a otra rifa' };
       }
@@ -224,28 +224,28 @@ export class TicketsService {
       }
 
       if (!['PUBLISHED', 'ACTIVE'].includes(raffle.status)) {
-        return { canUse: false, reason: 'La rifa no está disponible' };
+        return { canUse: false, reason: 'La rifa no estÃ¡ disponible' };
       }
 
       if (raffle.deadline && new Date() > new Date(raffle.deadline)) {
-        return { canUse: false, reason: 'La rifa ya terminó' };
+        return { canUse: false, reason: 'La rifa ya terminÃ³' };
       }
 
-      // Verificar límite de participantes si existe
+      // Verificar lÃ­mite de participantes si existe
       if (raffle.maxParticipants && raffle._count.participations >= raffle.maxParticipants) {
-        return { canUse: false, reason: 'La rifa alcanzó el límite máximo de participantes' };
+        return { canUse: false, reason: 'La rifa alcanzÃ³ el lÃ­mite mÃ¡ximo de participantes' };
       }
 
       return { canUse: true, reason: 'Ticket compatible con la rifa' };
       
     } catch (error) {
       console.error('Error checking ticket compatibility:', error);
-      return { canUse: false, reason: 'Error de validación' };
+      return { canUse: false, reason: 'Error de validaciÃ³n' };
     }
   }
 
   /**
-   * 🆕 Obtener tickets disponibles para un usuario (genéricos + específicos disponibles)
+   * ðŸ†• Obtener tickets disponibles para un usuario (genÃ©ricos + especÃ­ficos disponibles)
    */
   static async getAvailableTicketsForUser(userId, raffleId = null) {
     const where = {
@@ -255,11 +255,11 @@ export class TicketsService {
       }
     };
 
-    // Si se especifica una rifa, incluir tickets genéricos y específicos de esa rifa
+    // Si se especifica una rifa, incluir tickets genÃ©ricos y especÃ­ficos de esa rifa
     if (raffleId) {
       where.OR = [
-        { raffleId: null }, // Tickets genéricos
-        { raffleId: raffleId } // Tickets específicos de esta rifa
+        { raffleId: null }, // Tickets genÃ©ricos
+        { raffleId: raffleId } // Tickets especÃ­ficos de esta rifa
       ];
     }
 
@@ -288,12 +288,12 @@ export class TicketsService {
   }
 
   /**
-   * ✅ Valida y usa un ticket para participar en un sorteo (MEJORADO)
+   * âœ… Aplica un ticket para participar en un sorteo (MEJORADO)
    */
-  static async useTicketInRaffle(ticketId, raffleId, userId) {
+  static async applyTicketToRaffle(ticketId, raffleId, userId) {
     try {
-      // 🔍 Verificar compatibilidad primero
-      const compatibility = await this.canUseTicketInRaffle(ticketId, raffleId, userId);
+      // ðŸ" Verificar compatibilidad primero
+      const compatibility = await this.canApplyTicketToRaffle(ticketId, raffleId, userId);
       if (!compatibility.canUse) {
         throw new Error(compatibility.reason);
       }
@@ -312,26 +312,26 @@ export class TicketsService {
 
       // Validar el hash del ticket por seguridad
       if (!this.validateTicket(userId, ticket.uuid, ticket.hash)) {
-        throw new Error('Ticket inválido - hash no coincide');
+        throw new Error('Ticket invÃ¡lido - hash no coincide');
       }
 
-      // Obtener información de la rifa
+      // Obtener informaciÃ³n de la rifa
       const raffle = await prisma.raffle.findUnique({
         where: { id: raffleId }
       });
 
-      // 🔄 TRANSACCIÓN: Crear participación y actualizar estado
+      // ðŸ"„ TRANSACCIÃ"N: Crear participaciÃ³n y actualizar estado
       const result = await prisma.$transaction(async (tx) => {
         // 1. Actualizar estado del ticket
         await tx.ticket.update({
           where: { id: ticketId },
           data: { 
             status: 'IN_RAFFLE',
-            raffleId: raffleId // Asignar rifa si era genérico
+            raffleId: raffleId // Asignar rifa si era genÃ©rico
           }
         });
 
-        // 2. Crear participación
+        // 2. Crear participaciÃ³n
         const participation = await tx.participation.create({
           data: {
             ticketId,
@@ -350,7 +350,7 @@ export class TicketsService {
           }
         });
 
-        // 3. Crear notificación
+        // 3. Crear notificaciÃ³n
         await tx.notification.create({
           data: {
             userId,
@@ -361,7 +361,7 @@ export class TicketsService {
           }
         });
 
-        // 4. Log de auditoría
+        // 4. Log de auditorÃ­a
         await tx.auditLog.create({
           data: {
             action: 'USE_TICKET_IN_RAFFLE',
@@ -424,7 +424,7 @@ export class TicketsService {
   }
 
   /**
-   * Obtiene información de un ticket específico
+   * Obtiene informaciÃ³n de un ticket especÃ­fico
    */
   static async getTicketInfo(ticketId) {
     return await prisma.ticket.findUnique({
@@ -461,7 +461,7 @@ export class TicketsService {
   }
 
   /**
-   * 🎲 Seleccionar ticket ganador aleatorio para una rifa (tu función existente)
+   * ðŸŽ² Seleccionar ticket ganador aleatorio para una rifa (tu funciÃ³n existente)
    */
   static async selectRandomWinner(raffleId) {
     // Buscar participaciones activas
@@ -488,11 +488,11 @@ export class TicketsService {
       throw new Error("No hay participaciones activas para sortear");
     }
 
-    // 🎲 Selección aleatoria criptográficamente segura
+    // ðŸŽ² SelecciÃ³n aleatoria criptogrÃ¡ficamente segura
     const randomIndex = crypto.randomInt(0, activeParticipations.length);
     const winnerParticipation = activeParticipations[randomIndex];
 
-    // 🏆 Marcar como ganador en DB
+    // ðŸ† Marcar como ganador en DB
     await prisma.$transaction(async (tx) => {
       // Marcar ticket como ganador
       await tx.ticket.update({
@@ -500,7 +500,7 @@ export class TicketsService {
         data: { status: "WINNER" }
       });
 
-      // Marcar participación como ganadora
+      // Marcar participaciÃ³n como ganadora
       await tx.participation.update({
         where: { id: winnerParticipation.id },
         data: { isWinner: true }
@@ -517,12 +517,12 @@ export class TicketsService {
         }
       });
 
-      // Crear notificación para el ganador
+      // Crear notificaciÃ³n para el ganador
       await tx.notification.create({
         data: {
           userId: winnerParticipation.ticket.userId,
-          title: '🎉 ¡Felicidades! Has ganado',
-          message: `Tu ticket ${winnerParticipation.ticket.code} ganó el sorteo`,
+          title: 'ðŸŽ‰ Â¡Felicidades! Has ganado',
+          message: `Tu ticket ${winnerParticipation.ticket.code} ganÃ³ el sorteo`,
           type: 'WINNER_NOTIFICATION',
           raffleId
         }
@@ -540,7 +540,7 @@ export class TicketsService {
   }
 
   /**
-   * 📊 Estadísticas de tickets por rifa (adaptado a participaciones)
+   * ðŸ"Š EstadÃ­sticas de tickets por rifa (adaptado a participaciones)
    */
   static async getRaffleTicketStats(raffleId) {
     const participationStats = await prisma.participation.groupBy({
@@ -591,7 +591,7 @@ export class TicketsService {
       }
 
       await prisma.$transaction(async (tx) => {
-        // Cambiar estado a DELETED en lugar de eliminar físicamente
+        // Cambiar estado a DELETED en lugar de eliminar fÃ­sicamente
         await tx.ticket.update({
           where: { id: ticketId },
           data: { status: 'DELETED' }
@@ -602,12 +602,12 @@ export class TicketsService {
           data: {
             userId: ticket.userId,
             title: 'Ticket eliminado',
-            message: 'Un administrador eliminó tu ticket',
+            message: 'Un administrador eliminÃ³ tu ticket',
             type: 'SYSTEM_ALERT',
           }
         });
 
-        // Log de auditoría
+        // Log de auditorÃ­a
         await tx.auditLog.create({
           data: {
             action: 'TICKET_DELETED',
@@ -631,7 +631,7 @@ export class TicketsService {
   }
 
   /**
-   * 🎯 Obtener tickets de usuario para una rifa específica (tu función existente)
+   * ðŸŽ¯ Obtener tickets de usuario para una rifa especÃ­fica (tu funciÃ³n existente)
    */
   static async getUserRaffleTickets(userId, raffleId) {
     return await prisma.participation.findMany({

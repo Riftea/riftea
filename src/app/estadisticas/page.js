@@ -22,7 +22,7 @@ export default function EstadisticasPage() {
 
   const fetchStats = async () => {
     try {
-      const res = await fetch("/api/users/me/stats");
+      const res = await fetch("/api/users/me");
       if (!res.ok) throw new Error("Error al cargar estadísticas");
       
       const data = await res.json();

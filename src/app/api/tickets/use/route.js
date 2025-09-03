@@ -1,7 +1,8 @@
 // src/app/api/tickets/use/route.js - UBICACIÓN CORRECTA para App Router
 import { getServerSession } from 'next-auth/next';
-import { authOptions } from '../../auth/[...nextauth]/route';
-import { TicketService } from '../../../../services/tickets.service'; // ✅ Ruta correcta desde src/
+import { TicketsService } from '@/services/tickets.service'; // ✅ Ruta correcta desde src/
+import { authOptions } from '@/lib/auth';
+
 
 export async function POST(request) {
   try {
@@ -25,7 +26,7 @@ export async function POST(request) {
     }
 
     // ✅ Verificar compatibilidad antes de usar
-    const compatibility = await TicketService.canUseTicketInRaffle(
+    const compatibility = await TicketsService.canApplyTicketToRaffle(
       ticketId, 
       raffleId, 
       session.user.id
@@ -42,7 +43,7 @@ export async function POST(request) {
     }
 
     // Usar el ticket en el sorteo
-    const participation = await TicketService.useTicketInRaffle(
+    const participation = await TicketsService.applyTicketToRaffle(
       ticketId, 
       raffleId, 
       session.user.id

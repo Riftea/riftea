@@ -87,7 +87,7 @@ export function useRaffleProgress(raffleId, options = {}) {
     
     return () => {
       stopPolling();
-      // Close WebSocket if exists - capturar referencia actual
+      // ✅ Close WebSocket if exists - capturar referencia actual al inicio del cleanup
       const currentWs = wsRef.current;
       if (currentWs) {
         currentWs.close();

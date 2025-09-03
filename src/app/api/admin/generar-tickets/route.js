@@ -1,8 +1,8 @@
 // src/app/api/admin/generar-tickets/route.js - VERSIÓN COMPLETA CORREGIDA CON RUTAS RELATIVAS
 import { NextResponse } from 'next/server';
 import { getServerSession } from "next-auth/next";
-import { authOptions } from "../../auth/[...nextauth]/route.js";
-import prisma from "../../../../lib/prisma.js";
+import { authOptions } from '@/lib/auth';
+import prisma from "@/lib/prisma";
 import crypto from 'crypto';
 
 // Función para generar UUID único para tickets
@@ -22,7 +22,7 @@ export async function POST(request) {
     const session = await getServerSession(authOptions);
     
     // Verificar que el usuario esté autenticado y sea SUPERADMIN
-    if (!session || session.user.role !== "SUPERADMIN") {
+    if (!session || session.user.role !== "superadmin") {
       return NextResponse.json(
         { error: "No autorizado. Solo SUPERADMIN puede generar tickets." },
         { status: 403 }

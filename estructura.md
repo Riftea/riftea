@@ -125,6 +125,7 @@ riftea
 │  ├─ jobs
 │  │  └─ checkProgress.js
 │  ├─ lib
+│  │  ├─ auth-utils.js
 │  │  ├─ auth.js
 │  │  ├─ crypto.js
 │  │  ├─ generateTickets.js

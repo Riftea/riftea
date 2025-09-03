@@ -1,8 +1,8 @@
 // app/api/purchases/my-sales/route.js
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { authOptions } from '@/src/lib/auth.js';
-import prisma from '@/src/lib/prisma.js';
+import { authOptions } from '@/lib/auth.js';
+import prisma from '@/lib/prisma.js';
 
 export async function GET() {
   console.log('💰 [MY-SALES] ===== INICIO DE SOLICITUD =====');

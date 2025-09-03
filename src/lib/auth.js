@@ -1,8 +1,9 @@
 // src/lib/auth.js - Configuración completa corregida
 import GoogleProvider from "next-auth/providers/google";
 import { getServerSession } from 'next-auth/next';
-import prisma from "./prisma.js"; // ✅ Mantiene el export default de tu prisma.js
+import prisma from "./prisma.js";
 import NextAuth from "next-auth";
+import { NextResponse } from 'next/server';
 
 export const authOptions = {
   providers: [
@@ -15,7 +16,6 @@ export const authOptions = {
   
   callbacks: {
     async signIn({ user, account, profile }) {
-      // Si no viene email, denegar
       if (!user?.email) {
         console.warn("signIn: no email provided");
         return false;
@@ -25,13 +25,11 @@ export const authOptions = {
       console.log("[SIGNIN] DATABASE_URL (slice):", process.env.DATABASE_URL ? process.env.DATABASE_URL.slice(0,50) : "no env");
       
       try {
-        // Verificar si el usuario ya existe
         const existingUser = await prisma.user.findUnique({
           where: { email: user.email }
         });
 
         if (existingUser) {
-          // Usuario existe, actualizar datos si cambió
           await prisma.user.update({
             where: { email: user.email },
             data: {
@@ -41,26 +39,23 @@ export const authOptions = {
           });
           console.log("[SIGNIN] Usuario existente actualizado:", user.email);
         } else {
-          // Usuario nuevo, crearlo en la base de datos
           const newUser = await prisma.user.create({
             data: {
               name: user.name || null,
               email: user.email,
               image: user.image || null,
-              password: 'NEXTAUTH_USER', // Placeholder para usuarios de NextAuth
-              // role no se especifica porque tiene default USER en el schema
+              password: 'NEXTAUTH_USER',
             }
           });
           console.log("[SIGNIN] Usuario nuevo creado:", newUser.email, "ID:", newUser.id);
 
-          // Crear notificación de bienvenida solo para usuarios nuevos
           try {
             await prisma.notification.create({
               data: {
                 userId: newUser.id,
                 title: "¡Bienvenido a Riftea!",
                 message: `¡Bienvenido ${newUser.name ?? "a Riftea"}! Gracias por registrarte.`,
-                type: "SYSTEM_ALERT", // Usando el enum NotificationType
+                type: "SYSTEM_ALERT",
               },
             });
             console.log("[SIGNIN] notificación de bienvenida creada para:", newUser.email);
@@ -72,12 +67,11 @@ export const authOptions = {
         return true;
       } catch (err) {
         console.error("[SIGNIN] error al guardar usuario en DB:", err);
-        return false; // Rechazar login si hay error crítico
+        return false;
       }
     },
     
     async jwt({ token, user }) {
-      // Cuando el usuario recién se loguea, buscar su ID en la DB
       if (user && user.email) {
         try {
           const dbUser = await prisma.user.findUnique({
@@ -85,8 +79,8 @@ export const authOptions = {
           });
           
           if (dbUser) {
-            token.id = dbUser.id; // Asignar el ID real de la DB
-            token.uid = dbUser.id; // Por compatibilidad
+            token.id = dbUser.id;
+            token.uid = dbUser.id;
             console.log("[JWT] token actualizado con DB ID:", dbUser.id);
           }
         } catch (error) {
@@ -94,7 +88,6 @@ export const authOptions = {
         }
       }
       
-      // Asegurar que siempre haya un id en el token
       if (!token.id && token.sub) {
         token.id = token.sub;
       }
@@ -103,28 +96,26 @@ export const authOptions = {
     },
     
     async session({ session, token }) {
-      // Asignar ID del token a la sesión
       if (token?.id) {
         session.user.id = token.id;
-        session.user.dbId = token.id; // Por compatibilidad
+        session.user.dbId = token.id;
       }
       
       if (!session?.user?.email) return session;
       
       try {
-        // Buscar usuario con todos los datos relacionados
         const dbUser = await prisma.user.findUnique({
           where: { email: session.user.email },
           include: {
             tickets: {
-              where: { isUsed: false }, // Solo tickets no usados
+              where: { isUsed: false },
               include: { raffle: true }
             },
             purchases: {
               orderBy: { createdAt: 'desc' },
-              take: 5 // Últimas 5 compras
+              take: 5
             },
-            wonRaffles: true, // Rifas ganadas
+            wonRaffles: true,
             notifications: {
               where: { read: false },
               orderBy: { createdAt: 'desc' }
@@ -133,10 +124,9 @@ export const authOptions = {
         });
         
         if (dbUser) {
-          // Asignar role y datos adicionales
-          session.user.role = dbUser.role.toString().toLowerCase(); // Convertir enum a lowercase
+          session.user.role = dbUser.role.toString().toLowerCase();
           session.user.id = dbUser.id;
-          session.user.dbId = dbUser.id; // Por compatibilidad
+          session.user.dbId = dbUser.id;
           session.user.availableTickets = dbUser.tickets.length;
           session.user.totalPurchases = dbUser.purchases.length;
           session.user.memberSince = dbUser.createdAt;
@@ -158,7 +148,6 @@ export const authOptions = {
     },
   },
   
-  // Eventos para logging adicional
   events: {
     async signIn({ user, account, profile, isNewUser }) {
       console.log(`[EVENT] Usuario ${user.email} se logueó. Cuenta nueva en NextAuth: ${isNewUser}`);
@@ -171,7 +160,7 @@ export const authOptions = {
   
   session: {
     strategy: "jwt",
-    maxAge: 30 * 24 * 60 * 60, // 30 días
+    maxAge: 30 * 24 * 60 * 60,
   },
 };
 
@@ -190,3 +179,42 @@ export async function requireAdmin(req) {
   
   return session;
 }
+
+// ✅ Nuevas funciones para compatibilidad con las rutas API
+export async function getCurrentUser() {
+  try {
+    const session = await getServerSession(authOptions);
+    return session?.user || null;
+  } catch (error) {
+    console.error('Error getting current user:', error);
+    return null;
+  }
+}
+
+export async function requireAuth() {
+  const user = await getCurrentUser();
+  
+  if (!user) {
+    throw new Error('Authentication required');
+  }
+  
+  return user;
+}
+
+export function createErrorResponse(message, status = 400) {
+  return NextResponse.json(
+    { success: false, error: message },
+    { status }
+  );
+}
+
+export function createSuccessResponse(data, message = 'Success') {
+  return NextResponse.json({
+    success: true,
+    message,
+    data
+  });
+}
+
+// ✅ Para compatibilidad con imports antiguos si los hubiera
+export const verifyAuth = getCurrentUser;

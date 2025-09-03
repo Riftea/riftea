@@ -1,6 +1,6 @@
 // app/notificaciones/page.js
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 
@@ -140,18 +140,8 @@ export default function NotificationsPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('todas'); // 'todas', 'no_leidas', 'leidas'
 
-  useEffect(() => {
-    if (status === "unauthenticated") {
-      router.push("/");
-      return;
-    }
-
-    if (status === "loading") return;
-
-    loadNotifications();
-  }, [session, status]);
-
-  const loadNotifications = async () => {
+  // ✅ useCallback para evitar recreación en cada render
+  const loadNotifications = useCallback(async () => {
     if (!session) return;
     
     try {
@@ -167,7 +157,19 @@ export default function NotificationsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [session]);
+
+  // ✅ Incluir todas las dependencias necesarias
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.push("/");
+      return;
+    }
+
+    if (status === "loading") return;
+
+    loadNotifications();
+  }, [session, status, router, loadNotifications]);
 
   const markRead = async (id) => {
     try {

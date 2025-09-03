@@ -1,13 +1,12 @@
 // app/api/users/me/route.js
 import { getServerSession } from 'next-auth'
-import { PrismaClient } from '@prisma/client'
-
-const prisma = new PrismaClient()
+import { authOptions } from '@/lib/auth.js'
+import prisma from '@/lib/prisma.js'
 
 export async function GET(request) {
   try {
-    // En App Router, getServerSession se usa sin parámetros en route handlers
-    const session = await getServerSession()
+    // Usar authOptions para obtener la sesión
+    const session = await getServerSession(authOptions)
     
     if (!session?.user?.email) {
       return Response.json({
@@ -16,7 +15,7 @@ export async function GET(request) {
       }, { status: 401 })
     }
 
-    // Buscar usuario completo en Supabase
+    // Buscar usuario completo en la base de datos
     const user = await prisma.user.findUnique({
       where: { email: session.user.email },
       include: {
@@ -28,7 +27,7 @@ export async function GET(request) {
                 title: true,
                 description: true,
                 endsAt: true,
-                status: true  // ✅ CAMBIADO de isFinished a status
+                status: true
               }
             }
           }
@@ -40,7 +39,7 @@ export async function GET(request) {
                 raffle: {
                   select: { 
                     title: true,
-                    status: true  // ✅ CAMBIADO también aquí si lo necesitas
+                    status: true
                   }
                 }
               }
@@ -52,7 +51,7 @@ export async function GET(request) {
           select: {
             id: true,
             title: true,
-            status: true,  // ✅ CAMBIADO de isFinished a status
+            status: true,
             createdAt: true
           }
         }
@@ -71,9 +70,22 @@ export async function GET(request) {
     const usedTickets = user.tickets.filter(ticket => ticket.isUsed)
     const totalSpent = user.purchases.reduce((sum, purchase) => sum + purchase.amount, 0)
 
-    // Respuesta con datos completos
+    // Calcular estadísticas adicionales para la página de estadísticas
+    const totalRafflesCreated = user.raffles.length
+    const totalTicketsSold = user.raffles.reduce((sum, raffle) => {
+      // Aquí necesitarías hacer otra consulta para obtener el count de tickets por raffle
+      // Por ahora lo dejamos en 0 hasta que agregues esa información
+      return sum + 0
+    }, 0)
+    const totalRevenue = user.raffles.reduce((sum, raffle) => {
+      // Similar al anterior, necesitarías el count de tickets vendidos
+      return sum + 0
+    }, 0)
+
+    // Respuesta con datos completos y estadísticas adicionales
     return Response.json({
       success: true,
+      // Estructura original para compatibilidad
       user: {
         id: user.id,
         name: user.name,
@@ -116,7 +128,17 @@ export async function GET(request) {
           acc[raffleId].tickets.push(ticket)
           return acc
         }, {})
-      }
+      },
+      
+      // Estadísticas adicionales para la página de estadísticas
+      totalRafflesCreated,
+      totalTicketsSold,
+      totalRevenue,
+      totalWins: 0, // Necesitarías agregar lógica para contar victorias
+      totalParticipants: 0, // Necesitarías agregar lógica para contar participantes únicos
+      successRate: totalRafflesCreated > 0 ? Math.round((user.raffles.filter(r => r.status === 'FINISHED').length / totalRafflesCreated) * 100) : 0,
+      topRaffles: [], // Podrías agregar los mejores sorteos
+      recentActivity: [] // Podrías agregar actividad reciente
     })
 
   } catch (error) {

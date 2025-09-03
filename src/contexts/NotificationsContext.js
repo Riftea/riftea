@@ -1,6 +1,6 @@
 // src/contexts/NotificationsContext.js
 "use client";
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
 
 const NotificationsContext = createContext();
@@ -10,8 +10,8 @@ export function NotificationsProvider({ children }) {
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  // Cargar notificaciones
-  const loadNotifications = async () => {
+  // ✅ useCallback para evitar recreación en cada render
+  const loadNotifications = useCallback(async () => {
     if (!session) {
       setNotifications([]);
       return;
@@ -32,12 +32,12 @@ export function NotificationsProvider({ children }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [session]);
 
-  // Cargar cuando cambia la sesión
+  // ✅ Incluir loadNotifications como dependencia
   useEffect(() => {
     loadNotifications();
-  }, [session]);
+  }, [loadNotifications]);
 
   // Marcar como leída
   const markAsRead = async (id) => {

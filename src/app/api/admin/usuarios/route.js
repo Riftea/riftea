@@ -1,8 +1,8 @@
 // src/app/api/admin/usuarios/route.js - LIMPIO SIN DUPLICADOS
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
-import { authOptions } from '../../auth/[...nextauth]/route.js';
-import prisma from '../../../../lib/prisma.js';
+import { authOptions } from '@/lib/auth';
+import prisma from "@/lib/prisma";
 
 export async function GET() {
   try {
