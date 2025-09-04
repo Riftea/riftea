@@ -23,6 +23,8 @@ riftea
 │  │  │  └─ migration.sql
 │  │  ├─ 20250817091509_add_enhanced_raffle_features
 │  │  │  └─ migration.sql
+│  │  ├─ 20250904072220_add_ticket_fields
+│  │  │  └─ migration.sql
 │  │  └─ migration_lock.toml
 │  └─ schema.prisma
 ├─ public
@@ -90,8 +92,6 @@ riftea
 │  │  │  └─ page.js
 │  │  ├─ favicon.ico
 │  │  ├─ globals.css
-│  │  ├─ hooks
-│  │  │  └─ useUser.js
 │  │  ├─ layout.js
 │  │  ├─ mis-sorteos
 │  │  │  └─ page.js
@@ -153,63 +153,6 @@ riftea
 │  └─ workers
 │     └─ worker.js
 ├─ tests
-├─ tsconfig.json
-├─ _backup_app_20250824
-│  ├─ admin
-│  │  ├─ crear-sorteo
-│  │  │  └─ page.js
-│  │  ├─ page.js
-│  │  └─ raffles
-│  │     └─ [id]
-│  │        └─ page.js
-│  ├─ api
-│  │  ├─ auth
-│  │  │  └─ [...nextauth]
-│  │  │     └─ route.js
-│  │  ├─ notifications
-│  │  │  └─ route.js
-│  │  ├─ purchase.js
-│  │  ├─ purchases
-│  │  │  └─ my-sales
-│  │  │     └─ route.js
-│  │  ├─ raffles
-│  │  │  ├─ route.js
-│  │  │  └─ [id]
-│  │  │     ├─ assign-tickets
-│  │  │     │  └─ route.js
-│  │  │     └─ route.js
-│  │  ├─ tickets
-│  │  │  └─ my
-│  │  │     └─ route.js
-│  │  └─ users
-│  │     └─ me
-│  │        └─ route.js
-│  ├─ estadisticas
-│  │  └─ page.js
-│  ├─ favicon.ico
-│  ├─ globals.css
-│  ├─ hooks
-│  │  └─ useUser.js
-│  ├─ layout.js
-│  ├─ mis-sorteos
-│  │  └─ page.js
-│  ├─ mis-tickets
-│  │  └─ page.js
-│  ├─ notificaciones
-│  │  └─ page.js
-│  ├─ page.js
-│  ├─ perfil
-│  │  └─ page.js
-│  ├─ providers.js
-│  ├─ soporte
-│  │  └─ page.js
-│  ├─ sorteo
-│  │  └─ [id]
-│  │     └─ page.js
-│  ├─ terminos
-│  │  └─ page.js
-│  └─ ventas
-│     └─ page.js
-└─ _backup_old_structure
+└─ tsconfig.json
 
 ```

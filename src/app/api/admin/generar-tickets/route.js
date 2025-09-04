@@ -1,16 +1,19 @@
-// src/app/api/admin/generar-tickets/route.js - VERSIÓN CORREGIDA CON HMAC-SHA256 + INT
+// src/app/api/admin/generar-tickets/route.js - CORREGIDA CON HMAC + ENTEROS + GENERATEDAT
+export const runtime = 'nodejs';
+
 import { NextResponse } from 'next/server';
 import { getServerSession } from "next-auth/next";
 import { authOptions } from '@/lib/auth';
 import prisma from "@/lib/prisma";
-import { generateTicketData, validateTicket } from "@/lib/crypto";
+import { generateTicketData, formatTicketPriceInput, validateIntegerPrice } from "@/lib/crypto";
 
 export async function POST(request) {
   try {
     const session = await getServerSession(authOptions);
     
     // Verificar que el usuario esté autenticado y sea SUPERADMIN
-    if (!session || session.user.role !== "superadmin") {
+    const role = String(session?.user?.role || '').toUpperCase();
+    if (!session || role !== "SUPERADMIN") {
       return NextResponse.json(
         { error: "No autorizado. Solo SUPERADMIN puede generar tickets." },
         { status: 403 }
@@ -20,10 +23,11 @@ export async function POST(request) {
     const body = await request.json();
     const { 
       userId, 
-      sorteoId, // Cambiado raffleId por sorteoId para que coincida con el frontend
+      sorteoId, 
       cantidad = 1, 
       crearPurchase = true,
-      ticketPrice = 0
+      ticketPrice = null,
+      ticketPriceInput = null // Nuevo: input desde frontend
     } = body;
 
     // Validaciones básicas
@@ -34,17 +38,11 @@ export async function POST(request) {
       );
     }
 
-    if (cantidad < 1 || cantidad > 100) {
+    // Validación robusta de cantidad
+    const cantidadInt = Number(cantidad);
+    if (!Number.isInteger(cantidadInt) || cantidadInt < 1 || cantidadInt > 100) {
       return NextResponse.json(
-        { error: "La cantidad debe ser entre 1 y 100" },
-        { status: 400 }
-      );
-    }
-
-    // 🔄 VALIDACIÓN NUEVA: Verificar que ticketPrice sea entero
-    if (ticketPrice && (!Number.isInteger(Number(ticketPrice)) || Number(ticketPrice) < 0)) {
-      return NextResponse.json(
-        { error: "El precio del ticket debe ser un número entero mayor o igual a 0" },
+        { error: "La cantidad debe ser un número entero entre 1 y 100" },
         { status: 400 }
       );
     }
@@ -63,6 +61,7 @@ export async function POST(request) {
     }
 
     let raffle = null;
+    let ticketPriceInt = 0;
 
     // Si se especifica sorteoId, validar la raffle
     if (sorteoId) {
@@ -74,7 +73,7 @@ export async function POST(request) {
           status: true, 
           endsAt: true,
           maxTickets: true,
-          ticketPrice: true, // Ahora es Int en la DB
+          ticketPrice: true, // Ya es Int en la DB
           _count: {
             select: { tickets: true }
           }
@@ -95,10 +94,13 @@ export async function POST(request) {
         );
       }
 
+      // Usar precio de la raffle
+      ticketPriceInt = raffle.ticketPrice;
+
       // Verificar límite de tickets si existe
       if (raffle.maxTickets) {
         const ticketsActuales = raffle._count.tickets;
-        if (ticketsActuales + cantidad > raffle.maxTickets) {
+        if (ticketsActuales + cantidadInt > raffle.maxTickets) {
           return NextResponse.json(
             { error: `Excede el límite máximo de tickets. Disponibles: ${raffle.maxTickets - ticketsActuales}` },
             { status: 400 }
@@ -113,14 +115,49 @@ export async function POST(request) {
           { status: 400 }
         );
       }
+    } else {
+      // 🔄 NUEVO: Si no hay sorteo, procesar precio desde input del frontend
+      if (ticketPriceInput) {
+        try {
+          ticketPriceInt = formatTicketPriceInput(ticketPriceInput);
+        } catch (error) {
+          return NextResponse.json(
+            { error: `Error en precio: ${error.message}` },
+            { status: 400 }
+          );
+        }
+      } else if (ticketPrice) {
+        // Fallback al método anterior con nuevas validaciones
+        try {
+          ticketPriceInt = validateIntegerPrice(ticketPrice, "Precio del ticket");
+        } catch (error) {
+          return NextResponse.json(
+            { error: error.message },
+            { status: 400 }
+          );
+        }
+      } else {
+        // 🔄 NUEVO: Leer precio default desde Settings con validación
+        try {
+          const ticketPriceSetting = await prisma.setting.findUnique({
+            where: { key: 'ticketPriceDefault' }
+          });
+          
+          if (ticketPriceSetting?.value) {
+            ticketPriceInt = validateIntegerPrice(Number(ticketPriceSetting.value), "Precio del ticket (default)");
+          } else {
+            ticketPriceInt = 5000; // Default que cumple reglas
+          }
+        } catch (error) {
+          console.warn("Error leyendo ticketPriceDefault, usando default:", error);
+          ticketPriceInt = 5000;
+        }
+      }
     }
 
     const ticketsGenerados = [];
     let purchaseCreada = null;
-    
-    // 🔄 CAMBIO: Usar parseInt para asegurar enteros
-    const ticketPriceInt = sorteoId ? raffle.ticketPrice : parseInt(ticketPrice) || 0;
-    const totalAmount = ticketPriceInt * cantidad;
+    const totalAmount = ticketPriceInt * cantidadInt;
 
     // Usar transacción para crear Purchase + Tickets de forma atómica
     await prisma.$transaction(async (tx) => {
@@ -130,7 +167,7 @@ export async function POST(request) {
         purchaseCreada = await tx.purchase.create({
           data: {
             userId,
-            amount: totalAmount, // Ahora es Int en la DB
+            amount: totalAmount, // Entero en la DB
             currency: "ARS",
             paymentMethod: "ADMIN_GENERATED",
             paymentId: `ADMIN_${Date.now()}`,
@@ -139,24 +176,24 @@ export async function POST(request) {
         });
       }
 
-      // Crear tickets con HMAC seguro
-      for (let i = 0; i < cantidad; i++) {
+      // 🔄 NUEVO: Crear tickets con sistema HMAC y generatedAt
+      for (let i = 0; i < cantidadInt; i++) {
         let attempts = 0;
         let ticketCreated = false;
 
         while (!ticketCreated && attempts < 5) {
           try {
-            // Generar datos del ticket con HMAC
+            // Generar datos del ticket con HMAC seguro
             const ticketData = generateTicketData(userId);
 
             const ticketDBData = {
               uuid: ticketData.uuid,
-              code: ticketData.displayCode, // Usar displayCode como code principal
-              hash: ticketData.hmac, // HMAC seguro en lugar de SHA256
+              code: ticketData.displayCode, // Código display principal
+              hash: ticketData.hmac, // 🔄 HMAC seguro en lugar de SHA256
               userId,
-              status: "AVAILABLE", // Corregido: Cambiado de "ACTIVE" a "AVAILABLE"
+              status: "AVAILABLE",
               metodoPago: "ADMIN_GENERATED",
-              generatedAt: ticketData.generatedAt,
+              generatedAt: ticketData.generatedAt, // 🔄 USAR generatedAt como timestamp
               displayCode: ticketData.displayCode,
               isUsed: false,
               isWinner: false
@@ -193,6 +230,7 @@ export async function POST(request) {
               });
             }
 
+            // 🔄 CAMBIO: No devolver hash/hmac por seguridad
             ticketsGenerados.push({
               id: ticket.id,
               uuid: ticket.uuid,
@@ -200,9 +238,11 @@ export async function POST(request) {
               displayCode: ticket.displayCode,
               status: ticket.status,
               createdAt: ticket.createdAt,
+              generatedAt: ticket.generatedAt, // Incluir generatedAt
               raffleId: ticket.raffleId,
               purchaseId: ticket.purchaseId,
-              hmacSecure: true, // Indicar que usa HMAC
+              hmacSecure: true, // Indicador de que usa HMAC
+              // hash: NO DEVOLVER por seguridad
               purchase: ticket.purchase ? {
                 id: ticket.purchase.id,
                 amount: ticket.purchase.amount,
@@ -232,11 +272,11 @@ export async function POST(request) {
       // Crear notificación
       const notificationTitle = sorteoId 
         ? `¡Tickets comprados para ${raffle.title}!`
-        : `¡Has recibido ${cantidad} tickets!`;
+        : `¡Has recibido ${cantidadInt} tickets!`;
         
       const notificationMessage = sorteoId 
-        ? `Tus ${cantidad} tickets para "${raffle.title}" están listos. ¡Buena suerte!`
-        : `Se han agregado ${cantidad} tickets a tu cuenta.`;
+        ? `Tus ${cantidadInt} tickets para "${raffle.title}" están listos. ¡Buena suerte!`
+        : `Se han agregado ${cantidadInt} tickets a tu cuenta.`;
 
       await tx.notification.create({
         data: {
@@ -249,7 +289,7 @@ export async function POST(request) {
         }
       });
 
-      // Log de auditoría (solo si existe la tabla auditLog)
+      // Log de auditoría
       try {
         await tx.auditLog.create({
           data: {
@@ -259,15 +299,17 @@ export async function POST(request) {
             targetId: purchaseCreada?.id || ticketsGenerados[0]?.id,
             newValues: {
               targetUserId: userId,
-              ticketCount: cantidad,
+              ticketCount: cantidadInt,
               raffleId: sorteoId || null,
               purchaseId: purchaseCreada?.id || null,
               totalAmount,
+              ticketPrice: ticketPriceInt,
               generatedBy: 'SUPERADMIN',
               reason: 'Manual ticket generation',
               realPurchase: crearPurchase,
-              securityLevel: 'HMAC-SHA256', // Nuevo indicador de seguridad
-              priceType: 'INTEGER' // 🔄 NUEVO: Indicar que usa precios enteros
+              securityLevel: 'HMAC-SHA256', 
+              priceType: 'INTEGER',
+              timestamp: new Date().toISOString()
             }
           }
         });
@@ -280,8 +322,8 @@ export async function POST(request) {
     const responseData = {
       success: true,
       mensaje: sorteoId 
-        ? `Se generaron ${cantidad} tickets para ${usuario.name} en el sorteo ${raffle.title}`
-        : `Se generaron ${cantidad} tickets para ${usuario.name}`,
+        ? `Se generaron ${cantidadInt} tickets para ${usuario.name} en el sorteo ${raffle.title}`
+        : `Se generaron ${cantidadInt} tickets para ${usuario.name}`,
       
       tickets: ticketsGenerados,
       
@@ -300,12 +342,14 @@ export async function POST(request) {
       
       resumen: {
         tipo: sorteoId ? 'sorteo_tickets' : 'generic_tickets',
-        cantidad,
+        cantidad: cantidadInt,
         precioTotal: totalAmount,
+        precioUnitario: ticketPriceInt,
         conPurchase: crearPurchase,
-        ticketsConParticipacion: sorteoId ? cantidad : 0,
-        securityLevel: 'HMAC-SHA256', // Nuevo indicador de seguridad
-        priceType: 'INTEGER' // 🔄 NUEVO: Indicar que usa precios enteros
+        ticketsConParticipacion: sorteoId ? cantidadInt : 0,
+        securityLevel: 'HMAC-SHA256',
+        priceType: 'INTEGER',
+        usesGeneratedAt: true // Nuevo indicador
       },
       
       generadoPor: {
@@ -333,6 +377,13 @@ export async function POST(request) {
     if (error.message?.includes('No fue posible generar ticket único')) {
       return NextResponse.json(
         { error: "Error generando tickets únicos. Intenta con menos cantidad." },
+        { status: 400 }
+      );
+    }
+
+    if (error.message?.includes('Error en precio')) {
+      return NextResponse.json(
+        { error: error.message },
         { status: 400 }
       );
     }

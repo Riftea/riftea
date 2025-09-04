@@ -20,7 +20,7 @@ enum RaffleStatus {
   ACTIVE
   FINISHED
   CANCELLED
-  COMPLETED  // ✅ Agregado para rifas completadas
+  COMPLETED // ✅ Agregado para rifas completadas
 }
 
 enum NotificationType {
@@ -28,28 +28,28 @@ enum NotificationType {
   RAFFLE_WINNER
   RAFFLE_CREATED
   SYSTEM_ALERT
-  WINNER_NOTIFICATION  // ✅ Agregado para notificaciones de ganadores
+  WINNER_NOTIFICATION // ✅ Agregado para notificaciones de ganadores
 }
 
 enum TicketStatus {
   PENDING
   ACTIVE
-  AVAILABLE    // ✅ Agregado - tickets disponibles para usar
-  IN_RAFFLE    // ✅ Agregado - tickets participando en una rifa
+  AVAILABLE // ✅ Agregado - tickets disponibles para usar
+  IN_RAFFLE // ✅ Agregado - tickets participando en una rifa
   WINNER
   LOST
-  DELETED      // ✅ Agregado - tickets eliminados por admin
+  DELETED // ✅ Agregado - tickets eliminados por admin
 }
 
 model User {
-  id            String         @id @default(cuid())
-  name          String?
-  email         String         @unique
-  password      String?        // opcional para OAuth
-  image         String?
-  role          Role           @default(USER)
-  isActive      Boolean        @default(true) @map("is_active")
-  
+  id       String  @id @default(cuid())
+  name     String?
+  email    String  @unique
+  password String? // opcional para OAuth
+  image    String?
+  role     Role    @default(USER)
+  isActive Boolean @default(true) @map("is_active")
+
   // Relaciones
   tickets       Ticket[]
   purchases     Purchase[]
@@ -57,51 +57,50 @@ model User {
   notifications Notification[]
   auditLogs     AuditLog[]
   wonRaffles    Raffle[]       @relation("RaffleWinner") // Rifas ganadas
-  
-  createdAt     DateTime       @default(now()) @map("created_at")
-  updatedAt     DateTime       @default(now()) @updatedAt @map("updated_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@map("users")
 }
 
 model Raffle {
-  id             String          @id @default(cuid())
-  title          String
-  description    String
-  ticketPrice    Float           @map("ticket_price")
-  maxTickets     Int?            @map("max_tickets") // límite opcional de tickets
-  imageUrl       String?         @map("image_url")   // imagen del premio
-  
-  // 🆕 CAMPOS PARA PREMIOS
-  prizeTitle     String?         @map("prize_title")        // "iPhone 15 Pro"
-  prizeDescription String?       @map("prize_description")  // "256GB, Color Azul"
-  prizeValue     Float?          @map("prize_value")        // valor del premio
-  prizeImage     String?         @map("prize_image")        // imagen específica del premio
-  prizeCategory  String?         @map("prize_category")     // "ELECTRONICS", "CASH", "VOUCHER"
-  
+  id          String  @id @default(cuid())
+  title       String
+  description String
+  ticketPrice Int     @map("ticket_price") // << Cambiar Float -> Int
+  maxTickets  Int?    @map("max_tickets")
+  imageUrl    String? @map("image_url")
+
+  // Premio
+  prizeTitle       String? @map("prize_title")
+  prizeDescription String? @map("prize_description")
+  prizeValue       Int?    @map("prize_value") // << Cambiar Float? -> Int?
+  prizeImage       String? @map("prize_image")
+  prizeCategory    String? @map("prize_category")
+
+  // (Opcional, recomendado) hasta 3 imágenes procesadas
+  images String[] @default([]) // << NUEVO
+
   // Propietario
-  ownerId        String          @map("owner_id")
-  owner          User            @relation("RaffleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
-  ownerImage     String?         @map("owner_image")        // ← CAMPO AGREGADO AQUÍ
-  
-  // Ganador (opcional)
-  winnerId       String?         @map("winner_id")
-  winner         User?           @relation("RaffleWinner", fields: [winnerId], references: [id], onDelete: SetNull)
-  winningTicket  String?         @map("winning_ticket") // código del ticket ganador
-  
-  // Estado y fechas
-  status         RaffleStatus    @default(DRAFT)
-  createdAt      DateTime        @default(now()) @map("created_at")
-  updatedAt      DateTime        @default(now()) @updatedAt @map("updated_at")
-  publishedAt    DateTime?       @map("published_at")
-  startsAt       DateTime?       @map("starts_at")
-  endsAt         DateTime?       @map("ends_at")  // ✅ Usado por el servicio como 'deadline'
-  drawnAt        DateTime?       @map("drawn_at") // cuándo se realizó el sorteo
-  
-  // ✅ Campo adicional para límite de participantes (usado por el servicio)
-  maxParticipants Int?           @map("max_participants")
-  
-  // Relaciones
+  ownerId    String  @map("owner_id")
+  owner      User    @relation("RaffleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerImage String? @map("owner_image")
+
+  // Ganador
+  winnerId      String? @map("winner_id")
+  winner        User?   @relation("RaffleWinner", fields: [winnerId], references: [id], onDelete: SetNull)
+  winningTicket String? @map("winning_ticket")
+
+  status          RaffleStatus @default(DRAFT)
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @default(now()) @updatedAt @map("updated_at")
+  publishedAt     DateTime?    @map("published_at")
+  startsAt        DateTime?    @map("starts_at")
+  endsAt          DateTime?    @map("ends_at")
+  drawnAt         DateTime?    @map("drawn_at")
+  maxParticipants Int?         @map("max_participants")
+
   tickets        Ticket[]
   participations Participation[]
 
@@ -112,54 +111,51 @@ model Raffle {
 }
 
 model Purchase {
-  id            String   @id @default(cuid())
-  user          User     @relation(fields: [userId], references: [id])
-  userId        String   @map("user_id")
-  
-  amount        Float
-  currency      String   @default("ARS")
-  paymentMethod String?  @map("payment_method") // "credit_card", "bank_transfer", etc.
-  paymentId     String?  @map("payment_id")     // ID del procesador de pagos
-  
-  status        String   @default("pending") // "pending", "completed", "failed", "refunded"
-  
-  tickets       Ticket[]
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+  id     String @id @default(cuid())
+  user   User   @relation(fields: [userId], references: [id])
+  userId String @map("user_id")
+
+  amount        Int // << Cambiar Float -> Int (enteros)
+  currency      String  @default("ARS")
+  paymentMethod String? @map("payment_method")
+  paymentId     String? @map("payment_id")
+
+  status String @default("pending")
+
+  tickets   Ticket[]
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@map("purchases")
 }
 
 model Ticket {
-  id            String         @id @default(cuid())
-  uuid          String         @unique @default(cuid()) // Campo UUID único
-  code          String         @unique
-  hash          String?        // ✅ Agregado para validación SHA256
-  
-  user          User           @relation(fields: [userId], references: [id])
-  userId        String         @map("user_id")
-  
-  // ✅ Hacer raffle opcional para tickets genéricos
-  raffle        Raffle?        @relation(fields: [raffleId], references: [id], onDelete: Cascade)
-  raffleId      String?        @map("raffle_id") // Ahora es opcional
-  
-  purchase      Purchase?      @relation(fields: [purchaseId], references: [id])
-  purchaseId    String?        @map("purchase_id") // Opcional para tickets generados manualmente
-  
-  participation Participation? @relation("TicketParticipation")
-  
-  // Campos para mejorar funcionalidad
-  status        TicketStatus   @default(PENDING)
-  metodoPago    String?        @map("metodo_pago") // "MERCADO_PAGO", "MANUAL_ADMIN", etc.
-  displayCode   String?        @map("display_code") // código para mostrar al usuario
-  generatedAt   DateTime?      @map("generated_at") // cuándo se generó (puede diferir de createdAt)
-  
-  isUsed        Boolean        @default(false) @map("is_used")
-  isWinner      Boolean        @default(false) @map("is_winner")
-  
-  createdAt     DateTime       @default(now()) @map("created_at")
+  id   String  @id @default(cuid())
+  uuid String  @unique @default(cuid())
+  code String  @unique
+  hash String? // seguir usando este campo pero ahora guardá el HMAC aquí
 
-  // Índices para optimizar consultas
+  user   User   @relation(fields: [userId], references: [id])
+  userId String @map("user_id")
+
+  raffle   Raffle? @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId String? @map("raffle_id")
+
+  purchase   Purchase? @relation(fields: [purchaseId], references: [id])
+  purchaseId String?   @map("purchase_id")
+
+  participation Participation? @relation("TicketParticipation")
+
+  status      TicketStatus @default(PENDING)
+  metodoPago  String?      @map("metodo_pago")
+  displayCode String?      @map("display_code")
+  generatedAt DateTime?    @map("generated_at") // Usar este valor como timestamp del HMAC
+
+  isUsed   Boolean @default(false) @map("is_used")
+  isWinner Boolean @default(false) @map("is_winner")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
   @@index([raffleId])
   @@index([userId])
   @@index([status])
@@ -168,65 +164,73 @@ model Ticket {
 }
 
 model Participation {
-  id         String   @id @default(cuid())
-  
-  raffle     Raffle   @relation(fields: [raffleId], references: [id], onDelete: Cascade)
-  raffleId   String   @map("raffle_id")
-  
-  ticket     Ticket   @relation("TicketParticipation", fields: [ticketId], references: [id])
-  ticketId   String   @unique @map("ticket_id")
-  
-  isActive   Boolean  @default(true) @map("is_active") // por si se quiere desactivar una participación
-  isWinner   Boolean  @default(false) @map("is_winner") // ✅ Agregado para marcar participación ganadora
-  createdAt  DateTime @default(now()) @map("created_at")
+  id String @id @default(cuid())
+
+  raffle   Raffle @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId String @map("raffle_id")
+
+  ticket   Ticket @relation("TicketParticipation", fields: [ticketId], references: [id])
+  ticketId String @unique @map("ticket_id")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  isWinner  Boolean  @default(false) @map("is_winner")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@index([raffleId])
   @@map("participations")
 }
 
 model Notification {
-  id        String           @id @default(cuid())
-  userId    String           @map("user_id")
-  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  type      NotificationType @default(SYSTEM_ALERT)
-  title     String
-  message   String
-  
-  read      Boolean          @default(false)
-  readAt    DateTime?        @map("read_at")
-  
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type    NotificationType @default(SYSTEM_ALERT)
+  title   String
+  message String
+
+  read   Boolean   @default(false)
+  readAt DateTime? @map("read_at")
+
   // Datos relacionados opcionales
-  raffleId  String?          @map("raffle_id")
-  ticketId  String?          @map("ticket_id")
-  
-  createdAt DateTime         @default(now()) @map("created_at")
-  expiresAt DateTime?        @map("expires_at")
+  raffleId String? @map("raffle_id")
+  ticketId String? @map("ticket_id")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  expiresAt DateTime? @map("expires_at")
 
   @@index([userId, read])
   @@map("notifications")
 }
 
 model AuditLog {
-  id        String   @id @default(cuid())
-  action    String   // "create_raffle", "buy_ticket", "draw_raffle", etc.
-  
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id])
-  
-  targetType String? @map("target_type") // "raffle", "ticket", "user", etc.
+  id     String @id @default(cuid())
+  action String
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  targetType String? @map("target_type")
   targetId   String? @map("target_id")
-  
-  oldValues  Json?   @map("old_values") // valores anteriores (para updates)
-  newValues  Json?   @map("new_values") // valores nuevos
-  
-  ipAddress  String? @map("ip_address")
-  userAgent  String? @map("user_agent")
-  
+
+  oldValues Json? @map("old_values")
+  newValues Json? @map("new_values")
+
+  ipAddress String? @map("ip_address")
+  userAgent String? @map("user_agent")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([userId])
   @@index([action])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+// NUEVO: tabla de settings
+model Setting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
 }
