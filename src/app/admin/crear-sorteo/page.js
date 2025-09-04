@@ -1,27 +1,109 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
+import Image from "next/image"; 
+
+/* =======================
+   Helpers en scope de módulo
+   ======================= */
+
+// Solo dígitos
+function onlyDigits(s = "") {
+  return String(s).replace(/[^\d]/g, "");
+}
+
+// parseInt seguro → null si no es entero válido
+function parseIntOrNull(v) {
+  if (v === "" || v === null || v === undefined) return null;
+  const n = parseInt(String(v), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+// ¿Desactivar modo "miles"? (4+ dígitos ingresados)
+function shouldDisableThousands(input) {
+  const clean = String(input || "").replace(/[^\d]/g, "");
+  return clean.length >= 4; // 1000 o más
+}
+
+// Normaliza string numérico a entero ARS.
+// Respeta el toggle "inThousands" salvo que el input tenga 4+ dígitos.
+function toInteger(raw, inThousands) {
+  const clean = onlyDigits(raw);
+  if (!clean) return null;
+  const n = parseInt(clean, 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return inThousands && !shouldDisableThousands(raw) ? n * 1000 : n;
+}
 
 export default function CrearSorteoPage() {
   const router = useRouter();
   const { data: session, status } = useSession();
-  
+
+  // ----- estado formulario
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [ticketPrice, setTicketPrice] = useState("");
-  const [participantLimit, setParticipantLimit] = useState("");
+
+  // Entradas crudas (strings) + toggle "en miles"
+  const [ticketPriceInput, setTicketPriceInput] = useState("");
+  const [prizeValueInput, setPrizeValueInput] = useState("");
+  const [inThousands, setInThousands] = useState(true);
+
+  const [maxTickets, setMaxTickets] = useState("");
+  const [startsAt, setStartsAt] = useState("");
   const [endsAt, setEndsAt] = useState("");
+
+  // Imagen: URL directa o archivo a subir
+  const [imageUrl, setImageUrl] = useState("");
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState("");
+
+  // ----- estado UI
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState(false);
 
-  // Verificar autenticación
+  // ---- helpers
+  const moneyFmt = useMemo(
+    () =>
+      new Intl.NumberFormat("es-AR", {
+        style: "currency",
+        currency: "ARS",
+        maximumFractionDigits: 0,
+      }),
+    []
+  );
+
+  // Auto-desactivar "en miles" si tiene más de 3 ceros
+  // (sigue funcionando igual pero usando la versión de módulo)
   useEffect(() => {
-    if (status === "unauthenticated") {
-      router.push("/login");
+    if (shouldDisableThousands(ticketPriceInput) || shouldDisableThousands(prizeValueInput)) {
+      setInThousands(false);
     }
+  }, [ticketPriceInput, prizeValueInput]);
+
+  // participantes necesarios según backend (ceil(prize / ticketPrice))
+  const participantsNeeded = useMemo(() => {
+    const price = toInteger(ticketPriceInput, inThousands);
+    const prize = toInteger(prizeValueInput, inThousands);
+    if (!price || !prize) return null;
+    return Math.ceil(prize / price);
+  }, [ticketPriceInput, prizeValueInput, inThousands]);
+
+  // preview de imagen local
+  useEffect(() => {
+    if (!file) {
+      setPreview("");
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  // ----- auth
+  useEffect(() => {
+    if (status === "unauthenticated") router.push("/login");
   }, [status, router]);
 
   // Mostrar loading mientras se verifica la sesión
@@ -42,118 +124,154 @@ export default function CrearSorteoPage() {
     );
   }
 
-  // Redirigir si no está autenticado
-  if (status === "unauthenticated") {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center p-4">
-        <div className="text-center">
-          <div className="bg-gray-800 border-l-4 border-orange-500 text-orange-200 p-4 rounded-r-lg mb-6 max-w-md">
-            <div className="flex">
-              <div className="ml-3">
-                <h3 className="font-medium">Sesión no iniciada</h3>
-                <div className="mt-2 text-sm">
-                  <p>Redirigiendo al login para acceder al panel de administración...</p>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="mt-4">
-            <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-orange-500 mx-auto"></div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // -------- validaciones espejo del backend (CORREGIDAS)
+  const validate = () => {
+    // Título/desc requeridos
+    if (!title.trim()) return "El título es requerido";
+    if (!description.trim()) return "La descripción no puede estar vacía";
 
+    // ticketPrice: validar con el valor FINAL normalizado (no el crudo)
+    const ticketFinal = toInteger(ticketPriceInput, inThousands);
+    if (!ticketFinal || ticketFinal <= 0) {
+      return "El precio del ticket debe ser un número mayor a 0";
+    }
+
+    // prizeValue: opcional, pero si está debe ser válido
+    if (prizeValueInput.trim()) {
+      const prizeFinal = toInteger(prizeValueInput, inThousands);
+      if (!prizeFinal || prizeFinal <= 0) {
+        return "El valor del premio debe ser un número mayor a 0";
+      }
+    }
+
+    // maxTickets entero opcional
+    let maxTicketsInt = null;
+    if (String(maxTickets).trim() !== "") {
+      const mt = parseIntOrNull(maxTickets);
+      if (!mt || mt <= 0) return "El máximo de tickets debe ser un número entero mayor a 0";
+      maxTicketsInt = mt;
+    }
+
+    // Fechas opcionales, con reglas
+    const now = new Date();
+    const endDate = endsAt ? new Date(endsAt) : null;
+    const startDate = startsAt ? new Date(startsAt) : null;
+
+    if (endDate && isNaN(endDate.getTime())) return "Fecha de finalización inválida";
+    if (startDate && isNaN(startDate.getTime())) return "Fecha de inicio inválida";
+    if (endDate && endDate <= now) return "La fecha de finalización debe ser futura";
+    if (startDate && startDate <= now) return "La fecha de inicio debe ser futura";
+    if (startDate && endDate && startDate >= endDate)
+      return "La fecha de inicio debe ser anterior a la fecha de finalización";
+
+    // Coherencia premio / maxTickets
+    const prizeValueInt = toInteger(prizeValueInput, inThousands);
+    if (prizeValueInt && maxTicketsInt && ticketFinal) {
+      const needed = Math.ceil(prizeValueInt / ticketFinal);
+      if (maxTicketsInt < needed) {
+        return `El máximo de tickets (${maxTicketsInt}) es insuficiente para cubrir el premio de ${moneyFmt.format(
+          prizeValueInt
+        )}. Se necesitan al menos ${needed} participantes.`;
+      }
+    }
+
+    return null;
+  };
+
+  // -------- subir imagen si corresponde
+  const maybeUploadImage = async () => {
+    if (!file) return imageUrl?.trim() || null;
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/uploads", { method: "POST", body: fd });
+      if (!res.ok) {
+        // no bloquear si no existe el endpoint; podés agregarlo más tarde
+        return imageUrl?.trim() || null;
+      }
+      const data = await res.json();
+      return data?.url || imageUrl?.trim() || null;
+    } catch {
+      return imageUrl?.trim() || null;
+    }
+  };
+
+  // -------- submit (CORREGIDO)
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true);
     setError("");
-    setSuccess(false);
 
-    // Validación de sesión adicional
+    // Validar sesión
     if (!session?.user?.id) {
       setError("Sesión no válida. Por favor, inicia sesión nuevamente.");
-      setLoading(false);
       router.push("/login");
       return;
     }
 
-    // Validaciones básicas
-    if (!title.trim() || !description.trim() || !ticketPrice) {
-      setError("Todos los campos obligatorios deben ser completados");
-      setLoading(false);
+    // Validaciones espejo backend
+    const v = validate();
+    if (v) {
+      setError(v);
       return;
     }
 
-    // 🔄 VALIDACIÓN NUEVA: Verificar que ticketPrice sea entero
-    const ticketPriceInt = parseInt(ticketPrice);
-    if (!Number.isInteger(ticketPriceInt) || ticketPriceInt <= 0) {
-      setError("El precio del ticket debe ser un número entero mayor a 0");
-      setLoading(false);
+    // Calcular valores finales normalizados
+    const ticketFinal = toInteger(ticketPriceInput, inThousands); // Number (ARS)
+    if (!ticketFinal || ticketFinal <= 0) {
+      setError("El precio del ticket debe ser un número mayor a 0");
       return;
     }
 
-    // 🔄 VALIDACIÓN NUEVA: Verificar que participantLimit sea entero si se proporciona
-    let participantLimitInt = null;
-    if (participantLimit) {
-      participantLimitInt = parseInt(participantLimit);
-      if (!Number.isInteger(participantLimitInt) || participantLimitInt <= 0) {
-        setError("El límite de participantes debe ser un número entero mayor a 0");
-        setLoading(false);
-        return;
-      }
-    }
+    const prizeFinal = toInteger(prizeValueInput, inThousands); // Number o null
+    const maxTicketsInt = String(maxTickets).trim() === "" ? null : parseInt(maxTickets, 10);
 
-    // Validación de fecha
-    if (endsAt && new Date(endsAt) <= new Date()) {
-      setError("La fecha de finalización debe ser futura");
-      setLoading(false);
-      return;
-    }
-
+    setLoading(true);
     try {
-      const res = await fetch("/api/raffles", {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          // Incluir token si tu NextAuth lo provee
-          ...(session?.accessToken && { "Authorization": `Bearer ${session.accessToken}` })
-        },
-        credentials: 'include',
-        body: JSON.stringify({ 
-          title: title.trim(), 
-          description: description.trim(), 
-          ticketPrice: ticketPriceInt, // 🔄 CAMBIO: Enviar como entero
-          participantLimit: participantLimitInt, // 🔄 CAMBIO: Enviar como entero o null
-          endsAt: endsAt || null,
-          publishedAt: new Date(),
-          userId: session.user.id
-        }),
+      const finalImageUrl = await maybeUploadImage();
+
+      const payload = {
+        title: title.trim(),
+        description: description.trim(),
+        ticketPrice: ticketFinal, // ✅ valor final, entero ARS
+        ...(prizeFinal ? { prizeValue: prizeFinal } : {}),
+        ...(maxTicketsInt && { maxTickets: maxTicketsInt }),
+        ...(finalImageUrl && { imageUrl: finalImageUrl }),
+        ...(startsAt && { startsAt: startsAt }),
+        ...(endsAt && { endsAt: endsAt }),
+      };
+
+      // Debug: mostrar valores enviados
+      console.log({
+        ticketPriceInputRaw: ticketPriceInput,
+        ticketFinal: toInteger(ticketPriceInput, inThousands),
+        prizeInputRaw: prizeValueInput,
+        prizeFinal: toInteger(prizeValueInput, inThousands),
+        payload,
       });
 
-      const data = await res.json();
+      const res = await fetch("/api/raffles", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
 
       if (res.ok) {
-        setSuccess(true);
-        // Reset form
-        resetFormFields();
-        
-        // Redirigir después de 2 segundos a /mis-sorteos
-        setTimeout(() => {
-          router.push("/mis-sorteos");
-        }, 2000);
-      } else {
-        // Manejar errores específicos de autenticación
-        if (res.status === 401) {
-          setError("Sesión expirada. Por favor, inicia sesión nuevamente.");
-          setTimeout(() => {
-            router.push("/login");
-          }, 2000);
-        } else {
-          setError(data?.error || data?.message || "Error al crear el sorteo");
-        }
+        router.push("/mis-sorteos");
+        return;
       }
+
+      if (res.status === 401) {
+        setError("No autorizado. Debes iniciar sesión.");
+        router.push("/login");
+        return;
+      }
+
+      setError(data?.error || data?.message || "Error al crear el sorteo");
     } catch (err) {
       console.error("Error creating raffle:", err);
       setError("Error de conexión. Verifica tu red e inténtalo de nuevo.");
@@ -162,78 +280,52 @@ export default function CrearSorteoPage() {
     }
   };
 
-  const resetFormFields = () => {
-    setTitle("");
-    setDescription("");
-    setTicketPrice("");
-    setParticipantLimit("");
-    setEndsAt("");
-  };
+  // -------- handlers de inputs numéricos
+  const onChangePrice = (e) => setTicketPriceInput(onlyDigits(e.target.value));
+  const onChangePrize = (e) => setPrizeValueInput(onlyDigits(e.target.value));
+  const onChangeMaxTickets = (e) => setMaxTickets(onlyDigits(e.target.value));
 
-  const resetForm = () => {
-    resetFormFields();
-    setError("");
-    setSuccess(false);
-  };
+  // Determinar si el toggle de miles está deshabilitado
+  const isThousandsDisabled =
+    shouldDisableThousands(ticketPriceInput) || shouldDisableThousands(prizeValueInput);
 
-  // 🔄 NUEVA: Función para formatear el precio en tiempo real
-  const handleTicketPriceChange = (e) => {
-    const value = e.target.value;
-    // Solo permitir números enteros
-    const numericValue = value.replace(/[^0-9]/g, '');
-    setTicketPrice(numericValue);
-  };
+  // Verificar si el formulario puede enviarse
+  const ticketFinal = toInteger(ticketPriceInput, inThousands);
+  const canSubmit = !!ticketFinal && ticketFinal > 0 && !!title.trim() && !!description.trim();
 
-  // 🔄 NUEVA: Función para formatear el límite de participantes
-  const handleParticipantLimitChange = (e) => {
-    const value = e.target.value;
-    // Solo permitir números enteros
-    const numericValue = value.replace(/[^0-9]/g, '');
-    setParticipantLimit(numericValue);
-  };
-
-  // 🔄 NUEVA: Función para mostrar precio formateado
-  const formatPrice = (price) => {
-    if (!price) return '';
-    const priceInt = parseInt(price);
-    if (!Number.isInteger(priceInt)) return price;
-    
-    return new Intl.NumberFormat('es-AR', {
-      style: 'currency',
-      currency: 'ARS',
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0
-    }).format(priceInt);
-  };
-
+  // -------- UI
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 to-gray-900 text-gray-100">
       <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-2xl overflow-hidden shadow-2xl">
-          {/* Encabezado con efecto de gradiente */}
+          {/* Header */}
           <div className="relative p-8 bg-gradient-to-r from-gray-800 to-gray-800/90 border-b border-gray-700">
             <div className="absolute inset-0 bg-gradient-to-r from-orange-500/5 to-transparent pointer-events-none"></div>
             <div className="relative">
               <div className="flex items-center mb-4">
                 <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center mr-4">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-5 w-5 text-white"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                   </svg>
                 </div>
                 <h1 className="text-2xl font-bold text-white">Crear Nuevo Sorteo</h1>
               </div>
-              
               <p className="text-gray-300 mb-4 max-w-2xl">
-                Completa los datos para crear un nuevo sorteo con las mejores condiciones
+                Completa los datos para crear un sorteo alineado al backend (enteros, premio opcional, coherencia y fechas).
               </p>
-              
               <div className="flex items-center bg-gray-700/50 border border-gray-600 rounded-lg p-3">
                 <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
-                <span className="text-gray-200 font-medium">Sesión activa como:</span>
-                <span className="text-orange-400 ml-2">{session?.user?.name || 'Administrador'}</span>
+                <span className="text-gray-200 font-medium">Sesión: </span>
+                <span className="text-orange-400 ml-2">{session?.user?.name || "Usuario"}</span>
                 {session?.user?.role && (
                   <span className="ml-3 px-2 py-0.5 bg-orange-500/20 text-orange-300 text-xs rounded-full">
-                    {session.user.role.toLowerCase()}
+                    {String(session.user.role).toLowerCase()}
                   </span>
                 )}
               </div>
@@ -241,36 +333,21 @@ export default function CrearSorteoPage() {
           </div>
 
           <div className="p-8">
-            {/* Mensajes de estado */}
+            {/* Mensaje de error */}
             {error && (
               <div className="mb-6 p-5 bg-red-900/30 border border-red-800 rounded-xl">
                 <div className="flex items-start">
                   <svg className="h-5 w-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    <path
+                      fillRule="evenodd"
+                      d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
+                      clipRule="evenodd"
+                    />
                   </svg>
                   <div>
                     <h3 className="text-lg font-medium text-red-200">Error al crear sorteo</h3>
                     <div className="mt-2 text-red-300">
                       <p>{error}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {success && (
-              <div className="mb-6 p-5 bg-emerald-900/30 border border-emerald-800 rounded-xl">
-                <div className="flex items-start">
-                  <svg className="h-5 w-5 text-emerald-400 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                  </svg>
-                  <div>
-                    <h3 className="text-lg font-medium text-emerald-200">¡Sorteo creado exitosamente!</h3>
-                    <div className="mt-2 text-emerald-300">
-                      <p>Redirigiendo a tus sorteos en 2 segundos...</p>
-                    </div>
-                    <div className="mt-3 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                      <div className="h-full bg-emerald-500 w-1/2 animate-pulse"></div>
                     </div>
                   </div>
                 </div>
@@ -286,24 +363,16 @@ export default function CrearSorteoPage() {
                   </label>
                   <span className="text-xs text-gray-400">{title.length}/100</span>
                 </div>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                    </svg>
-                  </div>
-                  <input
-                    type="text"
-                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl pl-10 pr-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 focus:outline-none transition-all text-white placeholder-gray-400"
-                    placeholder="Ej: iPhone 15 Pro Max"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    disabled={loading}
-                    maxLength={100}
-                    required
-                  />
-                </div>
-                <p className="text-xs text-gray-400 mt-1">Un título atractivo ayuda a captar más participantes</p>
+                <input
+                  type="text"
+                  className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
+                  placeholder="Ej: iPhone 15 Pro Max"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  disabled={loading}
+                  maxLength={100}
+                  required
+                />
               </div>
 
               {/* Descripción */}
@@ -314,133 +383,183 @@ export default function CrearSorteoPage() {
                   </label>
                   <span className="text-xs text-gray-400">{description.length}/500</span>
                 </div>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-start pt-3 pointer-events-none">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                    </svg>
-                  </div>
-                  <textarea
-                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl pl-10 pr-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 focus:outline-none transition-all text-white placeholder-gray-400 min-h-[140px]"
-                    placeholder="Describe el premio y las condiciones del sorteo..."
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    disabled={loading}
-                    maxLength={500}
-                    required
-                  />
-                </div>
-                <p className="text-xs text-gray-400 mt-1">Sé específico sobre el premio, fechas y condiciones</p>
+                <textarea
+                  className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400 min-h-[140px]"
+                  placeholder="Describe el premio y las condiciones del sorteo..."
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  disabled={loading}
+                  maxLength={500}
+                  required
+                />
               </div>
 
-              {/* Precio del ticket - ACTUALIZADO PARA INT */}
-              <div>
-                <label className="block text-sm font-medium text-gray-200 mb-2">
-                  Precio del Ticket <span className="text-orange-400">*</span>
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
+              {/* Precio / Premio / Miles toggle */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">
+                    Precio del Ticket <span className="text-orange-400">*</span>
+                  </label>
                   <input
                     type="text"
                     inputMode="numeric"
                     pattern="[0-9]*"
-                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl pl-10 pr-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 focus:outline-none transition-all text-white placeholder-gray-400"
-                    placeholder="1000"
-                    value={ticketPrice}
-                    onChange={handleTicketPriceChange}
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
+                    placeholder={inThousands && !isThousandsDisabled ? "Ej: 2 (→ $2.000)" : "Ej: 2000"}
+                    value={ticketPriceInput}
+                    onChange={onChangePrice}
                     disabled={loading}
                     required
                   />
-                  {ticketPrice && (
-                    <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                      <span className="text-sm text-gray-400">
-                        {formatPrice(ticketPrice)}
-                      </span>
-                    </div>
-                  )}
+                  <p className="text-xs text-gray-400 mt-1">
+                    {inThousands && !isThousandsDisabled
+                      ? `Se enviará: ${moneyFmt.format(toInteger(ticketPriceInput, inThousands) || 0)}`
+                      : `Entero sin puntos. Se enviará: ${moneyFmt.format(toInteger(ticketPriceInput, inThousands) || 0)}`}
+                  </p>
                 </div>
-                <div className="flex items-center justify-between mt-1">
-                  <p className="text-xs text-gray-400">Solo números enteros (ej: 1000, 2500, 5000)</p>
-                  {ticketPrice && (
-                    <p className="text-xs text-orange-400 font-medium">
-                      Precio: {formatPrice(ticketPrice)}
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Valor del Premio (opcional)</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
+                    placeholder={inThousands && !isThousandsDisabled ? "Ej: 500 (→ $500.000)" : "Ej: 500000"}
+                    value={prizeValueInput}
+                    onChange={onChangePrize}
+                    disabled={loading}
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    {prizeValueInput
+                      ? `Se enviará: ${moneyFmt.format(toInteger(prizeValueInput, inThousands) || 0)}`
+                      : "Dejalo vacío si no querés calcular cobertura"}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Máximo de Tickets (opcional)</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
+                    placeholder="Ej: 1000"
+                    value={maxTickets}
+                    onChange={onChangeMaxTickets}
+                    disabled={loading}
+                  />
+                  {participantsNeeded && (
+                    <p className="text-xs mt-1">
+                      Participantes necesarios para cubrir el premio:{" "}
+                      <b className="text-orange-300">{participantsNeeded}</b>
                     </p>
                   )}
                 </div>
               </div>
 
+              {/* Toggle miles */}
+              <div className="flex items-center gap-3">
+                <input
+                  id="inThousands"
+                  type="checkbox"
+                  checked={inThousands}
+                  onChange={(e) => setInThousands(e.target.checked)}
+                  className="h-4 w-4 text-orange-600 rounded border-gray-600"
+                  disabled={loading || isThousandsDisabled}
+                />
+                <label
+                  htmlFor="inThousands"
+                  className={`text-sm ${isThousandsDisabled ? "text-gray-500" : "text-gray-300"}`}
+                >
+                  Ingresar en miles (1 → 1000)
+                  {isThousandsDisabled && <span className="ml-2 text-xs">(Desactivado: más de 3 dígitos)</span>}
+                </label>
+              </div>
+
+              {/* Fechas */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Límite de participantes - ACTUALIZADO PARA INT */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">
-                    Límite de Participantes
-                  </label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                      </svg>
-                    </div>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      className="w-full bg-gray-700/50 border border-gray-600 rounded-xl pl-10 pr-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 focus:outline-none transition-all text-white placeholder-gray-400"
-                      placeholder="Sin límite"
-                      value={participantLimit}
-                      onChange={handleParticipantLimitChange}
-                      disabled={loading}
-                    />
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1">Si no se especifica, no habrá límite</p>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Fecha de Inicio (opcional)</label>
+                  <input
+                    type="datetime-local"
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white"
+                    value={startsAt}
+                    onChange={(e) => setStartsAt(e.target.value)}
+                    disabled={loading}
+                    min={new Date().toISOString().slice(0, 16)}
+                  />
                 </div>
 
-                {/* Fecha de finalización */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">
-                    Fecha de Finalización
-                  </label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                      </svg>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Fecha de Finalización (opcional)</label>
+                  <input
+                    type="datetime-local"
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white"
+                    value={endsAt}
+                    onChange={(e) => setEndsAt(e.target.value)}
+                    disabled={loading}
+                    min={new Date().toISOString().slice(0, 16)}
+                  />
+                </div>
+              </div>
+
+              {/* Imagen */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">URL de Imagen (opcional)</label>
+                  <input
+                    type="url"
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
+                    placeholder="https://..."
+                    value={imageUrl}
+                    onChange={(e) => setImageUrl(e.target.value)}
+                    disabled={loading}
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Si subís archivo, usará el archivo en lugar de esta URL.</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Subir / Sacar foto (opcional)</label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={(e) => setFile(e.target.files?.[0] || null)}
+                    disabled={loading}
+                    className="block w-full text-sm text-gray-300
+                      file:mr-4 file:py-2.5 file:px-4
+                      file:rounded-lg file:border-0
+                      file:text-sm file:font-semibold
+                      file:bg-orange-600 file:text-white
+                      hover:file:bg-orange-700"
+                  />
+                  {(preview || imageUrl) && (
+                    <div className="mt-3">
+                      <p className="text-xs text-gray-400 mb-2">Previsualización:</p>
+                      <div className="relative w-full h-56">
+                        <Image
+                          src={preview || imageUrl}
+                          alt="Preview"
+                          fill
+                          sizes="(max-width: 768px) 100vw, 50vw"
+                          className="object-cover rounded-lg border border-gray-700"
+                          unoptimized
+                        />
+                      </div>
                     </div>
-                    <input
-                      type="datetime-local"
-                      className="w-full bg-gray-700/50 border border-gray-600 rounded-xl pl-10 pr-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 focus:outline-none transition-all text-white"
-                      value={endsAt}
-                      onChange={(e) => setEndsAt(e.target.value)}
-                      disabled={loading}
-                      min={new Date().toISOString().slice(0, 16)}
-                    />
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1">Si no se especifica, no tendrá fecha límite</p>
+                  )}
                 </div>
               </div>
 
               {/* Botones */}
-              <div className="flex flex-col sm:flex-row gap-4 pt-6 border-t border-gray-700 pt-6">
+              <div className="flex flex-col sm:flex-row gap-4 pt-6 border-t border-gray-700">
                 <button
                   type="submit"
-                  disabled={loading}
-                  className="flex-1 px-6 py-3.5 bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-xl font-medium hover:from-orange-600 hover:to-orange-700 focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-60 disabled:cursor-not-allowed transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+                  disabled={loading || !canSubmit}
+                  className="flex-1 px-6 py-3.5 bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-xl font-medium hover:from-orange-600 hover:to-orange-700 focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-60 disabled:cursor-not-allowed transition-all"
                 >
-                  {loading ? (
-                    <span className="flex items-center justify-center">
-                      <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      Creando Sorteo...
-                    </span>
-                  ) : (
-                    "Crear Sorteo"
-                  )}
+                  {loading ? "Creando sorteo..." : "Crear Sorteo"}
                 </button>
 
                 <button
@@ -454,25 +573,40 @@ export default function CrearSorteoPage() {
 
                 <button
                   type="button"
-                  onClick={resetForm}
+                  onClick={() => {
+                    setTitle("");
+                    setDescription("");
+                    setTicketPriceInput("");
+                    setPrizeValueInput("");
+                    setMaxTickets("");
+                    setStartsAt("");
+                    setEndsAt("");
+                    setImageUrl("");
+                    setFile(null);
+                    setPreview("");
+                    setError("");
+                    setInThousands(true); // Reset toggle
+                  }}
                   disabled={loading}
                   className="px-4 py-3.5 text-gray-400 hover:text-white hover:bg-gray-700/50 rounded-xl transition-all"
                   title="Limpiar formulario"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
+                  Limpiar
                 </button>
               </div>
             </form>
           </div>
 
-          {/* Información contextual actualizada */}
+          {/* Tips */}
           <div className="px-8 pb-6 bg-gray-800/30 border-t border-gray-700">
             <div className="flex items-start p-4 bg-gray-700/30 rounded-xl border border-gray-600">
               <div className="flex-shrink-0 mt-0.5">
                 <svg className="h-5 w-5 text-orange-400" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                  <path
+                    fillRule="evenodd"
+                    d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                    clipRule="evenodd"
+                  />
                 </svg>
               </div>
               <div className="ml-3 flex-1">
@@ -480,24 +614,25 @@ export default function CrearSorteoPage() {
                 <ul className="mt-1 text-sm text-gray-300 space-y-1">
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>Usa títulos llamativos y descriptivos para aumentar la participación</span>
+                    <span>Usá títulos claros y una buena imagen del premio.</span>
                   </li>
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>Describe claramente el premio y las condiciones del sorteo</span>
+                    <span>Definí un precio de ticket competitivo y coherente con el premio.</span>
                   </li>
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>Establece precios redondos (1000, 2500, 5000) para facilitar los pagos</span>
+                    <span>Si cargás premio y máximo, te mostramos cuántos participantes cubren el premio.</span>
                   </li>
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>Los precios ahora son números enteros sin centavos para mayor simplicidad</span>
+                    <span>El modo &quot;miles&quot; se desactiva automáticamente si ingresás 4 o más dígitos.</span>
                   </li>
                 </ul>
               </div>
             </div>
           </div>
+          {/* /Tips */}
         </div>
       </div>
     </div>

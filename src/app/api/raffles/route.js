@@ -1,9 +1,8 @@
-// app/api/raffles/route.js
+// app/api/raffles/route.js - VERSIÓN COMPLETA CON POST SIMPLIFICADO
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-
 
 function normalizeRole(session) {
   const r = session?.user?.role;
@@ -53,10 +52,10 @@ export async function POST(request) {
 
     console.log("session POST:", !!session, session?.user?.email);
 
-    // 2. ✅ OBTENER EL USER ID DESDE LA BASE DE DATOS
+    // 2. Obtener el USER ID desde la base de datos
     const dbUser = await prisma.user.findUnique({
       where: { email: session.user.email },
-      select: { id: true, role: true, image: true } // ✅ Incluir image del usuario
+      select: { id: true, role: true, image: true }
     });
 
     if (!dbUser) {
@@ -74,13 +73,51 @@ export async function POST(request) {
       title,
       description,
       ticketPrice,
+      prizeValue,
       endsAt,
       maxTickets,
       imageUrl,
       startsAt
     } = body;
 
-    // 4. Validaciones básicas
+    // 4. VALIDACIÓN UNIFICADA DE PRECIO - Solo acepta ticketPrice (Number)
+    let price = Number.isFinite(body.ticketPrice) ? Math.trunc(body.ticketPrice) : NaN;
+
+    // Fallback temporal para compatibilidad con ticketPriceInput (legacy)
+    if (!Number.isFinite(price) && body.ticketPriceInput) {
+      console.warn("⚠️ Usando ticketPriceInput legacy, migrar a ticketPrice");
+      const raw = String(body.ticketPriceInput || "").replace(/[^\d]/g, "");
+      price = raw ? parseInt(raw, 10) : NaN;
+    }
+
+    if (!Number.isFinite(price) || price <= 0) {
+      return NextResponse.json({ 
+        error: 'El precio del ticket debe ser un número mayor a 0',
+        code: 'VALIDATION_ERROR' 
+      }, { status: 400 });
+    }
+
+    // 5. VALIDACIÓN DE PREMIO (opcional, pero si viene debe ser válido)
+    let prizeValueInt = null;
+    if (body.prizeValue !== undefined && body.prizeValue !== null) {
+      prizeValueInt = Number.isFinite(body.prizeValue) ? Math.trunc(body.prizeValue) : NaN;
+      
+      // Fallback temporal para prizeValueInput (legacy)
+      if (!Number.isFinite(prizeValueInt) && body.prizeValueInput) {
+        console.warn("⚠️ Usando prizeValueInput legacy, migrar a prizeValue");
+        const raw = String(body.prizeValueInput || "").replace(/[^\d]/g, "");
+        prizeValueInt = raw ? parseInt(raw, 10) : NaN;
+      }
+      
+      if (!Number.isFinite(prizeValueInt) || prizeValueInt <= 0) {
+        return NextResponse.json({ 
+          error: 'El valor del premio debe ser un número mayor a 0',
+          code: 'VALIDATION_ERROR' 
+        }, { status: 400 });
+      }
+    }
+
+    // 6. Validaciones básicas
     if (!title?.trim()) {
       return NextResponse.json({ 
         error: 'El título es requerido',
@@ -88,15 +125,33 @@ export async function POST(request) {
       }, { status: 400 });
     }
 
-    const ticketPriceNum = Number(ticketPrice);
-    if (!Number.isFinite(ticketPriceNum) || ticketPriceNum <= 0) {
+    if (!description?.trim()) {
       return NextResponse.json({ 
-        error: 'El precio del ticket debe ser un número mayor a 0',
+        error: 'La descripción no puede estar vacía',
         code: 'VALIDATION_ERROR' 
       }, { status: 400 });
     }
 
-    // 5. ✅ VALIDAR FECHAS - Ahora son opcionales
+    // 7. VALIDACIÓN DE COHERENCIA PREMIO/MAXTICKETS (sin helpers externos)
+    const maxTicketsInt = maxTickets ? parseInt(maxTickets, 10) : null;
+    if (maxTicketsInt && maxTicketsInt <= 0) {
+      return NextResponse.json({ 
+        error: 'El máximo de tickets debe ser un número entero mayor a 0',
+        code: 'VALIDATION_ERROR' 
+      }, { status: 400 });
+    }
+
+    if (prizeValueInt && maxTicketsInt && price) {
+      const participantsNeeded = Math.ceil(prizeValueInt / price);
+      if (maxTicketsInt < participantsNeeded) {
+        return NextResponse.json({ 
+          error: `El máximo de tickets (${maxTicketsInt}) es insuficiente para cubrir el premio. Se necesitan al menos ${participantsNeeded} participantes.`,
+          code: 'VALIDATION_ERROR' 
+        }, { status: 400 });
+      }
+    }
+
+    // 8. VALIDAR FECHAS - Ahora son opcionales
     let processedStartDate = null;
     let processedEndDate = null;
     
@@ -112,26 +167,33 @@ export async function POST(request) {
       processedEndDate = dateValidation.endDate;
     }
 
-    // 6. ✅ CREAR LA RIFA - UNA SOLA VEZ CON OWNER IMAGE
+    // 9. CREAR LA RIFA - CON VALORES NORMALIZADOS
     let raffle;
     
     try {
+      const raffleData = {
+        title: title.trim(),
+        description: description.trim(),
+        ticketPrice: price, // Siempre entero, en ARS
+        endsAt: processedEndDate,
+        status: 'DRAFT',
+        maxTickets: maxTicketsInt,
+        imageUrl: imageUrl?.trim() || null,
+        startsAt: processedStartDate,
+        publishedAt: null,
+        ownerImage: dbUser.image || session.user.image || null,
+        owner: {
+          connect: { id: dbUser.id }
+        }
+      };
+
+      // Solo agregar prizeValue si está definido
+      if (prizeValueInt) {
+        raffleData.prizeValue = prizeValueInt;
+      }
+
       raffle = await prisma.raffle.create({
-        data: {
-          title: title.trim(),
-          description: description.trim(),
-          ticketPrice: ticketPriceNum,
-          endsAt: processedEndDate, // Can be null now
-          status: 'DRAFT',
-          maxTickets: maxTickets ? parseInt(maxTickets, 10) : null,
-          imageUrl: imageUrl?.trim() || null,
-          startsAt: processedStartDate, // Can be null
-          publishedAt: null,
-          ownerImage: dbUser.image || session.user.image || null, // ✅ GUARDAR IMAGEN DEL OWNER
-          owner: {
-            connect: { id: dbUser.id }
-          }
-        },
+        data: raffleData,
         include: {
           owner: {
             select: {
@@ -151,14 +213,18 @@ export async function POST(request) {
         }
       });
 
-      console.log("✅ Rifa creada exitosamente:", raffle);
+      console.log("✅ Rifa creada exitosamente:", {
+        id: raffle.id,
+        ticketPrice: raffle.ticketPrice,
+        prizeValue: raffle.prizeValue || 'no definido'
+      });
 
     } catch (createError) {
       console.error('Error en creación de rifa:', createError);
       throw createError;
     }
 
-    // 7. Crear log de auditoría
+    // 10. Crear log de auditoría
     try {
       await prisma.auditLog.create({
         data: {
@@ -169,6 +235,7 @@ export async function POST(request) {
           newValues: {
             title: raffle.title,
             ticketPrice: raffle.ticketPrice,
+            prizeValue: raffle.prizeValue,
             maxTickets: raffle.maxTickets,
             status: raffle.status
           }
@@ -178,7 +245,7 @@ export async function POST(request) {
       console.warn('auditLog create failed (ignored):', e?.message || e);
     }
 
-    // 8. Crear notificación para el owner
+    // 11. Crear notificación para el owner
     try {
       await prisma.notification.create({
         data: {
@@ -239,14 +306,14 @@ export async function GET(request) {
     const status = searchParams.get('status');
     const ownerId = searchParams.get('ownerId');
     const search = searchParams.get('search');
-    const mine = searchParams.get('mine'); // ✅ NUEVO: Detectar parámetro "mine"
+    const mine = searchParams.get('mine');
 
     const skip = Math.max(0, (Math.max(1, page) - 1) * limit);
 
     // Construir filtros
     const where = {};
 
-    // ✅ NUEVO: Si se pide "mine=1", obtener sorteos del usuario actual
+    // Si se pide "mine=1", obtener sorteos del usuario actual
     if (mine === '1') {
       const session = await getServerSession(authOptions);
       
@@ -257,7 +324,6 @@ export async function GET(request) {
         }, { status: 401 });
       }
 
-      // Obtener el user ID desde la base de datos
       const dbUser = await prisma.user.findUnique({
         where: { email: session.user.email },
         select: { id: true }
@@ -270,7 +336,7 @@ export async function GET(request) {
         }, { status: 400 });
       }
 
-      where.ownerId = dbUser.id; // Filtrar por sorteos del usuario actual
+      where.ownerId = dbUser.id;
     } else if (ownerId) {
       where.ownerId = ownerId;
     } else {
@@ -380,7 +446,6 @@ export async function PUT(request) {
       }, { status: 401 });
     }
 
-    // ✅ OBTENER USER ID DE LA BASE DE DATOS TAMBIÉN EN PUT
     const dbUser = await prisma.user.findUnique({
       where: { email: session.user.email },
       select: { id: true, role: true }
@@ -472,7 +537,7 @@ export async function PUT(request) {
         break;
         
       default:
-        // Actualización general de campos
+        // Actualización general de campos con validación simplificada
         if (updateData.title !== undefined) {
           const titleTrimmed = String(updateData.title).trim();
           if (!titleTrimmed) {
@@ -495,15 +560,31 @@ export async function PUT(request) {
           updateObject.description = descTrimmed;
         }
         
+        // VALIDAR PRECIO CON LÓGICA SIMPLIFICADA (como en POST)
         if (updateData.ticketPrice !== undefined) {
-          const tp = Number(updateData.ticketPrice);
+          const tp = Number.isFinite(updateData.ticketPrice) ? Math.trunc(updateData.ticketPrice) : NaN;
           if (!Number.isFinite(tp) || tp <= 0) {
             return NextResponse.json({ 
-              error: 'Precio de ticket inválido',
+              error: 'El precio del ticket debe ser un número mayor a 0',
               code: 'VALIDATION_ERROR' 
             }, { status: 400 });
           }
           updateObject.ticketPrice = tp;
+        }
+
+        // VALIDAR PREMIO CON LÓGICA SIMPLIFICADA
+        if (updateData.prizeValue !== undefined) {
+          let newPrizeValue = null;
+          if (updateData.prizeValue !== null) {
+            newPrizeValue = Number.isFinite(updateData.prizeValue) ? Math.trunc(updateData.prizeValue) : NaN;
+            if (!Number.isFinite(newPrizeValue) || newPrizeValue <= 0) {
+              return NextResponse.json({ 
+                error: 'El valor del premio debe ser un número mayor a 0',
+                code: 'VALIDATION_ERROR' 
+              }, { status: 400 });
+            }
+          }
+          updateObject.prizeValue = newPrizeValue;
         }
         
         if (updateData.maxTickets !== undefined) {
@@ -561,7 +642,8 @@ export async function PUT(request) {
           oldValues: { 
             status: existingRaffle.status, 
             title: existingRaffle.title,
-            ticketPrice: existingRaffle.ticketPrice
+            ticketPrice: existingRaffle.ticketPrice,
+            prizeValue: existingRaffle.prizeValue
           },
           newValues: updateObject
         }
@@ -580,7 +662,6 @@ export async function PUT(request) {
   } catch (error) {
     console.error('Error updating raffle:', error);
     
-    // Manejo específico de errores de Prisma
     if (error?.code === 'P2025') {
       return NextResponse.json({ 
         error: 'Rifa no encontrada',
@@ -607,7 +688,6 @@ export async function DELETE(request) {
       }, { status: 401 });
     }
 
-    // ✅ OBTENER USER ID DE LA BASE DE DATOS TAMBIÉN EN DELETE
     const dbUser = await prisma.user.findUnique({
       where: { email: session.user.email },
       select: { id: true, role: true }
@@ -672,7 +752,9 @@ export async function DELETE(request) {
           targetId: id.trim(),
           oldValues: {
             title: existingRaffle.title,
-            status: existingRaffle.status
+            status: existingRaffle.status,
+            ticketPrice: existingRaffle.ticketPrice,
+            prizeValue: existingRaffle.prizeValue
           }
         }
       });
