@@ -56,7 +56,7 @@ export async function POST(request) {
     // 2. ✅ OBTENER EL USER ID DESDE LA BASE DE DATOS
     const dbUser = await prisma.user.findUnique({
       where: { email: session.user.email },
-      select: { id: true, role: true }
+      select: { id: true, role: true, image: true } // ✅ Incluir image del usuario
     });
 
     if (!dbUser) {
@@ -112,7 +112,7 @@ export async function POST(request) {
       processedEndDate = dateValidation.endDate;
     }
 
-    // 6. ✅ CREAR LA RIFA - UNA SOLA VEZ
+    // 6. ✅ CREAR LA RIFA - UNA SOLA VEZ CON OWNER IMAGE
     let raffle;
     
     try {
@@ -127,6 +127,7 @@ export async function POST(request) {
           imageUrl: imageUrl?.trim() || null,
           startsAt: processedStartDate, // Can be null
           publishedAt: null,
+          ownerImage: dbUser.image || session.user.image || null, // ✅ GUARDAR IMAGEN DEL OWNER
           owner: {
             connect: { id: dbUser.id }
           }

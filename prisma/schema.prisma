@@ -72,9 +72,17 @@ model Raffle {
   maxTickets     Int?            @map("max_tickets") // límite opcional de tickets
   imageUrl       String?         @map("image_url")   // imagen del premio
   
+  // 🆕 CAMPOS PARA PREMIOS
+  prizeTitle     String?         @map("prize_title")        // "iPhone 15 Pro"
+  prizeDescription String?       @map("prize_description")  // "256GB, Color Azul"
+  prizeValue     Float?          @map("prize_value")        // valor del premio
+  prizeImage     String?         @map("prize_image")        // imagen específica del premio
+  prizeCategory  String?         @map("prize_category")     // "ELECTRONICS", "CASH", "VOUCHER"
+  
   // Propietario
   ownerId        String          @map("owner_id")
   owner          User            @relation("RaffleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerImage     String?         @map("owner_image")        // ← CAMPO AGREGADO AQUÍ
   
   // Ganador (opcional)
   winnerId       String?         @map("winner_id")

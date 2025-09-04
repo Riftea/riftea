@@ -22,7 +22,8 @@ export async function GET(req, { params }) {
         owner: {
           select: {
             name: true,
-            email: true
+            email: true,
+            image: true, 
           }
         }
       },
@@ -137,7 +138,8 @@ export async function PUT(req, { params }) {
         owner: {
           select: {
             name: true,
-            email: true
+            email: true,
+            image: true, 
           }
         }
       }

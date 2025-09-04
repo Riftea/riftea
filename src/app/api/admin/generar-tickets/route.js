@@ -1,21 +1,9 @@
-// src/app/api/admin/generar-tickets/route.js - VERSIÓN COMPLETA CORREGIDA CON RUTAS RELATIVAS
+// src/app/api/admin/generar-tickets/route.js - VERSIÓN CORREGIDA CON HMAC-SHA256
 import { NextResponse } from 'next/server';
 import { getServerSession } from "next-auth/next";
 import { authOptions } from '@/lib/auth';
 import prisma from "@/lib/prisma";
-import crypto from 'crypto';
-
-// Función para generar UUID único para tickets
-function generateTicketUUID() {
-  return crypto.randomUUID();
-}
-
-// Función para generar código de ticket único
-function generateTicketCode() {
-  const timestamp = Date.now().toString(36).toUpperCase();
-  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-  return `TK-${timestamp}-${random}`;
-}
+import { generateTicketData, validateTicket } from "@/lib/crypto";
 
 export async function POST(request) {
   try {
@@ -143,38 +131,41 @@ export async function POST(request) {
         });
       }
 
-      // Crear tickets
+      // Crear tickets con HMAC seguro
       for (let i = 0; i < cantidad; i++) {
         let attempts = 0;
         let ticketCreated = false;
 
         while (!ticketCreated && attempts < 5) {
           try {
-            const uuid = generateTicketUUID();
-            const code = generateTicketCode();
+            // Generar datos del ticket con HMAC
+            const ticketData = generateTicketData(userId);
 
-            const ticketData = {
-              uuid,
-              code,
+            const ticketDBData = {
+              uuid: ticketData.uuid,
+              code: ticketData.displayCode, // Usar displayCode como code principal
+              hash: ticketData.hmac, // HMAC seguro en lugar de SHA256
               userId,
-              status: "ACTIVE",
+              status: "AVAILABLE", // Corregido: Cambiado de "ACTIVE" a "AVAILABLE"
               metodoPago: "ADMIN_GENERATED",
-              generatedAt: new Date(),
-              displayCode: code,
+              generatedAt: ticketData.generatedAt,
+              displayCode: ticketData.displayCode,
               isUsed: false,
               isWinner: false
             };
 
             if (purchaseCreada) {
-              ticketData.purchaseId = purchaseCreada.id;
+              ticketDBData.purchaseId = purchaseCreada.id;
             }
 
             if (sorteoId) {
-              ticketData.raffleId = sorteoId;
+              ticketDBData.raffleId = sorteoId;
+              // Si es para un sorteo específico, cambiar estado a ACTIVE
+              ticketDBData.status = "ACTIVE";
             }
 
             const ticket = await tx.ticket.create({
-              data: ticketData,
+              data: ticketDBData,
               include: {
                 purchase: true,
                 raffle: {
@@ -203,6 +194,7 @@ export async function POST(request) {
               createdAt: ticket.createdAt,
               raffleId: ticket.raffleId,
               purchaseId: ticket.purchaseId,
+              hmacSecure: true, // Indicar que usa HMAC
               purchase: ticket.purchase ? {
                 id: ticket.purchase.id,
                 amount: ticket.purchase.amount,
@@ -265,7 +257,8 @@ export async function POST(request) {
               totalAmount,
               generatedBy: 'SUPERADMIN',
               reason: 'Manual ticket generation',
-              realPurchase: crearPurchase
+              realPurchase: crearPurchase,
+              securityLevel: 'HMAC-SHA256' // Nuevo indicador de seguridad
             }
           }
         });
@@ -301,7 +294,8 @@ export async function POST(request) {
         cantidad,
         precioTotal: totalAmount,
         conPurchase: crearPurchase,
-        ticketsConParticipacion: sorteoId ? cantidad : 0
+        ticketsConParticipacion: sorteoId ? cantidad : 0,
+        securityLevel: 'HMAC-SHA256' // Nuevo indicador de seguridad
       },
       
       generadoPor: {

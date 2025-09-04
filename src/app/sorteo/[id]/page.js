@@ -210,6 +210,22 @@ export default function SorteoPage({ params }) {
     }
   };
 
+  // ✅ FUNCIÓN HELPER PARA DETERMINAR LA IMAGEN DEL OWNER
+  const getOwnerImage = () => {
+    // 1. Usar ownerImage si existe (guardado al crear el sorteo)
+    if (raffle.ownerImage) {
+      return raffle.ownerImage;
+    }
+    
+    // 2. Usar imagen actual del owner si existe
+    if (raffle.owner?.image) {
+      return raffle.owner.image;
+    }
+    
+    // 3. Fallback al favicon de la aplicación
+    return '/favicon.ico';
+  };
+
   // Estados de carga
   if (loading) {
     return (
@@ -381,19 +397,20 @@ export default function SorteoPage({ params }) {
               </div>
             )}
 
-            {/* Información del Dueño */}
+            {/* Información del Dueño - ✅ CORREGIDO PARA USAR OWNER IMAGE CON FALLBACK */}
             {raffle.owner && (
               <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20">
                 <h3 className="text-xl font-bold text-white mb-4">Organizador</h3>
                 <div className="flex items-center gap-4">
                   <Image
-                    src={raffle.owner.image || '/avatar-default.png'}
+                    src={getOwnerImage()}
                     alt={raffle.owner.name || 'Usuario'}
                     width={48}
                     height={48}
                     className="rounded-full border-2 border-white/20"
                     onError={(e) => {
-                      e.target.src = '/avatar-default.png';
+                      // Si falla, usar el favicon como último recurso
+                      e.target.src = '/favicon.ico';
                     }}
                   />
                   <div>
