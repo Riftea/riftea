@@ -33,6 +33,21 @@ riftea
 │  ├─ globe.svg
 │  ├─ logo.png
 │  ├─ next.svg
+│  ├─ uploads
+│  │  ├─ 4d1083518c414a9281a617c68a1fc3cb.webp
+│  │  ├─ 4d1083518c414a9281a617c68a1fc3cb_thumb.webp
+│  │  ├─ 71b88485515b4bd6ad50397d9ac408c4.webp
+│  │  ├─ 71b88485515b4bd6ad50397d9ac408c4_thumb.webp
+│  │  ├─ bab06c9715e9453faa9db34188dcc3dd.webp
+│  │  ├─ bab06c9715e9453faa9db34188dcc3dd_thumb.webp
+│  │  ├─ c8724f1f575c4e71a144be367b279580.webp
+│  │  ├─ c8724f1f575c4e71a144be367b279580_thumb.webp
+│  │  ├─ d80d1f1345ab4974b7c19ac9c9b10956.webp
+│  │  ├─ d80d1f1345ab4974b7c19ac9c9b10956_thumb.webp
+│  │  ├─ f4ced4d12032470bbeae02ab69b6d042.webp
+│  │  ├─ f4ced4d12032470bbeae02ab69b6d042_thumb.webp
+│  │  ├─ fd8b55917af6410c89b9d2618b88b5f9.webp
+│  │  └─ fd8b55917af6410c89b9d2618b88b5f9_thumb.webp
 │  ├─ vercel.svg
 │  └─ window.svg
 ├─ scripts
@@ -85,6 +100,8 @@ riftea
 │  │  │  │  ├─ route.js
 │  │  │  │  └─ use
 │  │  │  │     └─ route.js
+│  │  │  ├─ uploads
+│  │  │  │  └─ route.js
 │  │  │  └─ users
 │  │  │     └─ me
 │  │  │        └─ route.js
@@ -136,6 +153,7 @@ riftea
 │  ├─ lib
 │  │  ├─ auth-utils.js
 │  │  ├─ auth.js
+│  │  ├─ authz.js
 │  │  ├─ crypto.js
 │  │  ├─ generateTickets.js
 │  │  ├─ prisma.js
