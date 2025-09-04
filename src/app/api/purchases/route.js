@@ -1,4 +1,4 @@
-// app/api/purchases/route.js
+// app/api/purchases/route.js - ACTUALIZADO PARA INT
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { getServerSession } from 'next-auth';
@@ -12,7 +12,231 @@ function normalizeRole(session) {
 export async function POST(request) {
   try {
     // 1. Verificar autenticación
+    const updatedPurchase = await prisma.$transaction(async (tx) => {
+      // Actualizar la compra
+      const purchase = await tx.purchase.update({
+        where: { id: id.trim() },
+        data: updateObject,
+        include: {
+          user: { // Corregido: buyer → user
+            select: {
+              id: true,
+              name: true,
+              email: true
+            }
+          },
+          tickets: {
+            select: {
+              id: true,
+              code: true, // Corregido: ticketNumber → code
+              status: true,
+              raffle: {
+                select: {
+                  id: true,
+                  title: true,
+                  status: true
+                }
+              }
+            }
+          }
+        }
+      });
+
+      // Si es cancelación o reembolso, actualizar los tickets
+      if (['cancel', 'refund'].includes(action)) {
+        await tx.ticket.updateMany({
+          where: {
+            purchaseId: purchase.id
+          },
+          data: {
+            status: 'DELETED', // Usando status del enum TicketStatus
+            updatedAt: new Date()
+          }
+        });
+      }
+
+      return purchase;
+    });
+
+    // Crear log de auditoría
+    try {
+      await prisma.auditLog.create({
+        data: {
+          action: `purchase_${action}`,
+          userId: dbUser.id,
+          targetType: 'purchase',
+          targetId: id.trim(),
+          oldValues: {
+            status: existingPurchase.status
+          },
+          newValues: {
+            ...updateObject,
+            priceType: 'INTEGER' // 🔄 NUEVO: Indicar que usa precios enteros
+          }
+        }
+      });
+    } catch (e) {
+      console.warn('auditLog update failed (ignored):', e?.message || e);
+    }
+
+    // Crear notificación
+    try {
+      const notificationMessages = {
+        cancel: 'Tu compra ha sido cancelada',
+        refund: 'Tu compra ha sido reembolsada',
+        complete: 'Tu compra ha sido completada'
+      };
+
+      const raffleTitle = existingPurchase.tickets[0]?.raffle?.title || 'Sorteo';
+
+      await prisma.notification.create({
+        data: {
+          userId: existingPurchase.userId, // Corregido: buyerId → userId
+          type: 'SYSTEM_ALERT', // Usando tipo existente del enum
+          title: notificationMessages[action] || 'Compra actualizada',
+          message: `Tu compra para "${raffleTitle}" ha sido ${action === 'cancel' ? 'cancelada' : action === 'refund' ? 'reembolsada' : 'completada'}.`,
+          raffleId: existingPurchase.tickets[0]?.raffleId
+        }
+      });
+    } catch (e) {
+      console.warn('notification create failed (ignored):', e?.message || e);
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: `Compra ${action === 'cancel' ? 'cancelada' : action === 'refund' ? 'reembolsada' : 'completada'} exitosamente`,
+      purchase: updatedPurchase,
+      code: `PURCHASE_${action.toUpperCase()}ED`
+    });
+
+  } catch (error) {
+    console.error('Error updating purchase:', error);
+
+    if (error?.code === 'P2025') {
+      return NextResponse.json({
+        error: 'Compra no encontrada',
+        code: 'PURCHASE_NOT_FOUND'
+      }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      error: 'Error al actualizar la compra',
+      code: 'UPDATE_ERROR',
+      details: process.env.NODE_ENV === 'development' ? String(error.message || error) : undefined
+    }, { status: 500 });
+  }
+}
+
+export async function DELETE(request) {
+  try {
     const session = await getServerSession(authOptions);
+
+    if (!session?.user?.email) {
+      return NextResponse.json({
+        error: 'No autorizado',
+        code: 'UNAUTHORIZED'
+      }, { status: 401 });
+    }
+
+    const dbUser = await prisma.user.findUnique({
+      where: { email: session.user.email },
+      select: { id: true, role: true }
+    });
+
+    if (!dbUser) {
+      return NextResponse.json({
+        error: 'Usuario no encontrado en la base de datos',
+        code: 'USER_NOT_FOUND'
+      }, { status: 400 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get('id');
+
+    if (!id?.trim()) {
+      return NextResponse.json({
+        error: 'ID de compra requerido',
+        code: 'VALIDATION_ERROR'
+      }, { status: 400 });
+    }
+
+    const existingPurchase = await prisma.purchase.findUnique({
+      where: { id: id.trim() },
+      include: { 
+        tickets: {
+          include: {
+            raffle: true
+          }
+        }
+      }
+    });
+
+    if (!existingPurchase) {
+      return NextResponse.json({
+        error: 'Compra no encontrada',
+        code: 'PURCHASE_NOT_FOUND'
+      }, { status: 404 });
+    }
+
+    const role = dbUser.role?.toUpperCase();
+    
+    // Solo ADMIN y SUPERADMIN pueden eliminar compras
+    if (role !== 'ADMIN' && role !== 'SUPERADMIN') {
+      return NextResponse.json({
+        error: 'No tienes permisos para eliminar compras',
+        code: 'FORBIDDEN'
+      }, { status: 403 });
+    }
+
+    if (existingPurchase.status === 'completed') {
+      return NextResponse.json({
+        error: 'No se pueden eliminar compras completadas',
+        code: 'PURCHASE_COMPLETED'
+      }, { status: 400 });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Primero desvinculamos los tickets
+      await tx.ticket.updateMany({
+        where: {
+          purchaseId: existingPurchase.id
+        },
+        data: {
+          purchaseId: null,
+          status: 'AVAILABLE', // Usar status del enum
+          updatedAt: new Date()
+        }
+      });
+
+      // Luego eliminamos la compra
+      await tx.purchase.delete({ 
+        where: { id: id.trim() } 
+      });
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'Compra eliminada exitosamente',
+      code: 'PURCHASE_DELETED'
+    });
+
+  } catch (error) {
+    console.error('Error deleting purchase:', error);
+
+    if (error?.code === 'P2025') {
+      return NextResponse.json({
+        error: 'Compra no encontrada',
+        code: 'PURCHASE_NOT_FOUND'
+      }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      error: 'Error al eliminar la compra',
+      code: 'DELETE_ERROR',
+      details: process.env.NODE_ENV === 'development' ? String(error.message || error) : undefined
+    }, { status: 500 });
+  }
+} session = await getServerSession(authOptions);
 
     if (!session?.user?.email) {
       return NextResponse.json({
@@ -63,10 +287,11 @@ export async function POST(request) {
       }, { status: 400 });
     }
 
-    const totalAmountNum = Number(totalAmount);
-    if (!Number.isFinite(totalAmountNum) || totalAmountNum <= 0) {
+    // 🔄 VALIDACIÓN NUEVA: Verificar que totalAmount sea entero
+    const totalAmountInt = parseInt(totalAmount);
+    if (!Number.isInteger(totalAmountInt) || totalAmountInt <= 0) {
       return NextResponse.json({
-        error: 'Monto total inválido',
+        error: 'El monto total debe ser un número entero positivo',
         code: 'VALIDATION_ERROR'
       }, { status: 400 });
     }
@@ -78,7 +303,7 @@ export async function POST(request) {
         id: true,
         title: true,
         status: true,
-        ticketPrice: true,
+        ticketPrice: true, // Ahora es Int en la DB
         ownerId: true
       }
     });
@@ -95,7 +320,7 @@ export async function POST(request) {
       where: {
         id: { in: ticketIds },
         raffleId: raffle.id,
-        buyerId: dbUser.id,
+        userId: dbUser.id, // Corregido: buyerId → userId
         status: 'ACTIVE'
       }
     });
@@ -107,11 +332,11 @@ export async function POST(request) {
       }, { status: 400 });
     }
 
-    // 7. Calcular y verificar el monto total
+    // 7. Calcular y verificar el monto total (ahora con enteros)
     const calculatedTotal = tickets.length * raffle.ticketPrice;
-    if (Math.abs(calculatedTotal - totalAmountNum) > 0.01) {
+    if (calculatedTotal !== totalAmountInt) {
       return NextResponse.json({
-        error: `El monto total no coincide. Esperado: ${calculatedTotal}, Recibido: ${totalAmountNum}`,
+        error: `El monto total no coincide. Esperado: ${calculatedTotal}, Recibido: ${totalAmountInt}`,
         code: 'AMOUNT_MISMATCH'
       }, { status: 400 });
     }
@@ -124,14 +349,13 @@ export async function POST(request) {
         // Crear el registro de compra
         const newPurchase = await tx.purchase.create({
           data: {
-            buyerId: dbUser.id,
-            raffleId: raffle.id,
-            totalAmount: totalAmountNum,
-            ticketCount: tickets.length,
-            status: 'COMPLETED',
+            userId: dbUser.id, // Corregido: buyerId → userId
+            // raffleId: raffle.id, // Comentado si no existe en el modelo Purchase
+            amount: totalAmountInt, // Ahora es Int
+            currency: "ARS",
             paymentMethod,
-            paymentDetails: paymentDetails || {},
-            purchaseDate: new Date()
+            paymentId: `MANUAL_${Date.now()}`,
+            status: "completed"
           }
         });
 
@@ -160,7 +384,7 @@ export async function POST(request) {
     const completePurchase = await prisma.purchase.findUnique({
       where: { id: purchase.id },
       include: {
-        buyer: {
+        user: { // Corregido: buyer → user
           select: {
             id: true,
             name: true,
@@ -168,19 +392,19 @@ export async function POST(request) {
             image: true
           }
         },
-        raffle: {
-          select: {
-            id: true,
-            title: true,
-            ticketPrice: true,
-            imageUrl: true
-          }
-        },
         tickets: {
           select: {
             id: true,
-            ticketNumber: true,
-            status: true
+            code: true, // Corregido: ticketNumber → code
+            status: true,
+            raffle: {
+              select: {
+                id: true,
+                title: true,
+                ticketPrice: true,
+                imageUrl: true
+              }
+            }
           }
         }
       }
@@ -196,9 +420,10 @@ export async function POST(request) {
           targetId: purchase.id,
           newValues: {
             raffleId: raffle.id,
-            totalAmount: totalAmountNum,
+            totalAmount: totalAmountInt,
             ticketCount: tickets.length,
-            paymentMethod
+            paymentMethod,
+            priceType: 'INTEGER' // 🔄 NUEVO: Indicar que usa precios enteros
           }
         }
       });
@@ -211,7 +436,7 @@ export async function POST(request) {
       await prisma.notification.create({
         data: {
           userId: dbUser.id,
-          type: 'PURCHASE_COMPLETED',
+          type: 'PURCHASE_CONFIRMATION', // Corregido: PURCHASE_COMPLETED → PURCHASE_CONFIRMATION
           title: 'Compra procesada exitosamente',
           message: `Tu compra de ${tickets.length} ticket(s) para "${raffle.title}" ha sido procesada exitosamente.`,
           raffleId: raffle.id
@@ -293,27 +518,32 @@ export async function GET(request) {
         }, { status: 400 });
       }
 
-      where.buyerId = dbUser.id;
+      where.userId = dbUser.id; // Corregido: buyerId → userId
     } else if (buyerId) {
-      where.buyerId = buyerId;
+      where.userId = buyerId; // Corregido: buyerId → userId
     }
 
     if (raffleId) {
-      where.raffleId = raffleId;
+      // Filtrar por raffleId a través de los tickets
+      where.tickets = {
+        some: {
+          raffleId: raffleId
+        }
+      };
     }
 
-    if (status && ['PENDING', 'COMPLETED', 'CANCELLED', 'REFUNDED'].includes(status)) {
+    if (status && ['pending', 'completed', 'failed', 'refunded'].includes(status)) {
       where.status = status;
     }
 
     // Filtros de fecha
     if (dateFrom || dateTo) {
-      where.purchaseDate = {};
+      where.createdAt = {}; // Corregido: purchaseDate → createdAt
       if (dateFrom) {
-        where.purchaseDate.gte = new Date(dateFrom);
+        where.createdAt.gte = new Date(dateFrom);
       }
       if (dateTo) {
-        where.purchaseDate.lte = new Date(dateTo);
+        where.createdAt.lte = new Date(dateTo);
       }
     }
 
@@ -323,10 +553,10 @@ export async function GET(request) {
         skip,
         take: limit,
         orderBy: [
-          { purchaseDate: 'desc' }
+          { createdAt: 'desc' } // Corregido: purchaseDate → createdAt
         ],
         include: {
-          buyer: {
+          user: { // Corregido: buyer → user
             select: {
               id: true,
               name: true,
@@ -334,21 +564,21 @@ export async function GET(request) {
               image: true
             }
           },
-          raffle: {
-            select: {
-              id: true,
-              title: true,
-              status: true,
-              ticketPrice: true,
-              imageUrl: true,
-              endsAt: true
-            }
-          },
           tickets: {
             select: {
               id: true,
-              ticketNumber: true,
-              status: true
+              code: true, // Corregido: ticketNumber → code
+              status: true,
+              raffle: {
+                select: {
+                  id: true,
+                  title: true,
+                  status: true,
+                  ticketPrice: true,
+                  imageUrl: true,
+                  endsAt: true
+                }
+              }
             }
           }
         }
@@ -356,11 +586,11 @@ export async function GET(request) {
       prisma.purchase.count({ where })
     ]);
 
-    // Calcular estadísticas adicionales
+    // Calcular estadísticas adicionales (ahora con enteros)
     const stats = purchases.length > 0 ? {
-      totalAmount: purchases.reduce((sum, p) => sum + (p.totalAmount || 0), 0),
-      totalTickets: purchases.reduce((sum, p) => sum + (p.ticketCount || 0), 0),
-      averagePurchase: purchases.length > 0 ? purchases.reduce((sum, p) => sum + (p.totalAmount || 0), 0) / purchases.length : 0
+      totalAmount: purchases.reduce((sum, p) => sum + (p.amount || 0), 0),
+      totalTickets: purchases.reduce((sum, p) => sum + (p.tickets?.length || 0), 0),
+      averagePurchase: purchases.length > 0 ? Math.round(purchases.reduce((sum, p) => sum + (p.amount || 0), 0) / purchases.length) : 0
     } : null;
 
     return NextResponse.json({
@@ -426,15 +656,19 @@ export async function PUT(request) {
       return NextResponse.json({
         error: 'ID de compra requerido',
         code: 'VALIDATION_ERROR'
-      }, { status: 400 });
+      }, { status: 400 }
+      );
     }
 
     const existingPurchase = await prisma.purchase.findUnique({
       where: { id: id.trim() },
       include: { 
-        raffle: true,
-        buyer: true,
-        tickets: true
+        user: true, // Corregido: buyer → user
+        tickets: {
+          include: {
+            raffle: true
+          }
+        }
       }
     });
 
@@ -446,8 +680,9 @@ export async function PUT(request) {
     }
 
     const role = dbUser.role?.toUpperCase();
-    const isOwner = existingPurchase.buyerId === dbUser.id;
-    const isRaffleOwner = existingPurchase.raffle.ownerId === dbUser.id;
+    const isOwner = existingPurchase.userId === dbUser.id; // Corregido: buyerId → userId
+    const raffleOwnerId = existingPurchase.tickets[0]?.raffle?.ownerId;
+    const isRaffleOwner = raffleOwnerId === dbUser.id;
     
     if (!isOwner && !isRaffleOwner && role !== 'ADMIN' && role !== 'SUPERADMIN') {
       return NextResponse.json({
@@ -460,21 +695,20 @@ export async function PUT(request) {
 
     switch (action) {
       case 'cancel':
-        if (existingPurchase.status !== 'PENDING') {
+        if (existingPurchase.status !== 'pending') {
           return NextResponse.json({
             error: 'Solo se pueden cancelar compras pendientes',
             code: 'INVALID_STATUS'
           }, { status: 400 });
         }
         updateObject = { 
-          status: 'CANCELLED',
-          cancelledAt: new Date(),
-          cancelReason: refundReason || 'Cancelada por el usuario'
+          status: 'failed', // Usando status existente del enum
+          updatedAt: new Date()
         };
         break;
 
       case 'refund':
-        if (!['COMPLETED', 'PENDING'].includes(existingPurchase.status)) {
+        if (!['completed', 'pending'].includes(existingPurchase.status)) {
           return NextResponse.json({
             error: 'Solo se pueden reembolsar compras completadas o pendientes',
             code: 'INVALID_STATUS'
@@ -489,22 +723,21 @@ export async function PUT(request) {
         }
         
         updateObject = { 
-          status: 'REFUNDED',
-          refundedAt: new Date(),
-          refundReason: refundReason || 'Reembolso procesado'
+          status: 'refunded',
+          updatedAt: new Date()
         };
         break;
 
       case 'complete':
-        if (existingPurchase.status !== 'PENDING') {
+        if (existingPurchase.status !== 'pending') {
           return NextResponse.json({
             error: 'Solo se pueden completar compras pendientes',
             code: 'INVALID_STATUS'
           }, { status: 400 });
         }
         updateObject = { 
-          status: 'COMPLETED',
-          completedAt: new Date()
+          status: 'completed',
+          updatedAt: new Date()
         };
         break;
 
@@ -515,221 +748,4 @@ export async function PUT(request) {
         }, { status: 400 });
     }
 
-    const updatedPurchase = await prisma.$transaction(async (tx) => {
-      // Actualizar la compra
-      const purchase = await tx.purchase.update({
-        where: { id: id.trim() },
-        data: updateObject,
-        include: {
-          buyer: {
-            select: {
-              id: true,
-              name: true,
-              email: true
-            }
-          },
-          raffle: {
-            select: {
-              id: true,
-              title: true,
-              status: true
-            }
-          },
-          tickets: {
-            select: {
-              id: true,
-              ticketNumber: true,
-              status: true
-            }
-          }
-        }
-      });
-
-      // Si es cancelación o reembolso, actualizar los tickets
-      if (['cancel', 'refund'].includes(action)) {
-        await tx.ticket.updateMany({
-          where: {
-            purchaseId: purchase.id
-          },
-          data: {
-            status: 'CANCELLED',
-            updatedAt: new Date()
-          }
-        });
-      }
-
-      return purchase;
-    });
-
-    // Crear log de auditoría
-    try {
-      await prisma.auditLog.create({
-        data: {
-          action: `purchase_${action}`,
-          userId: dbUser.id,
-          targetType: 'purchase',
-          targetId: id.trim(),
-          oldValues: {
-            status: existingPurchase.status
-          },
-          newValues: updateObject
-        }
-      });
-    } catch (e) {
-      console.warn('auditLog update failed (ignored):', e?.message || e);
-    }
-
-    // Crear notificación
-    try {
-      const notificationMessages = {
-        cancel: 'Tu compra ha sido cancelada',
-        refund: 'Tu compra ha sido reembolsada',
-        complete: 'Tu compra ha sido completada'
-      };
-
-      await prisma.notification.create({
-        data: {
-          userId: existingPurchase.buyerId,
-          type: `PURCHASE_${action.toUpperCase()}ED`,
-          title: notificationMessages[action] || 'Compra actualizada',
-          message: `Tu compra para "${existingPurchase.raffle.title}" ha sido ${action === 'cancel' ? 'cancelada' : action === 'refund' ? 'reembolsada' : 'completada'}.`,
-          raffleId: existingPurchase.raffleId
-        }
-      });
-    } catch (e) {
-      console.warn('notification create failed (ignored):', e?.message || e);
-    }
-
-    return NextResponse.json({
-      success: true,
-      message: `Compra ${action === 'cancel' ? 'cancelada' : action === 'refund' ? 'reembolsada' : 'completada'} exitosamente`,
-      purchase: updatedPurchase,
-      code: `PURCHASE_${action.toUpperCase()}ED`
-    });
-
-  } catch (error) {
-    console.error('Error updating purchase:', error);
-
-    if (error?.code === 'P2025') {
-      return NextResponse.json({
-        error: 'Compra no encontrada',
-        code: 'PURCHASE_NOT_FOUND'
-      }, { status: 404 });
-    }
-
-    return NextResponse.json({
-      error: 'Error al actualizar la compra',
-      code: 'UPDATE_ERROR',
-      details: process.env.NODE_ENV === 'development' ? String(error.message || error) : undefined
-    }, { status: 500 });
-  }
-}
-
-export async function DELETE(request) {
-  try {
-    const session = await getServerSession(authOptions);
-
-    if (!session?.user?.email) {
-      return NextResponse.json({
-        error: 'No autorizado',
-        code: 'UNAUTHORIZED'
-      }, { status: 401 });
-    }
-
-    const dbUser = await prisma.user.findUnique({
-      where: { email: session.user.email },
-      select: { id: true, role: true }
-    });
-
-    if (!dbUser) {
-      return NextResponse.json({
-        error: 'Usuario no encontrado en la base de datos',
-        code: 'USER_NOT_FOUND'
-      }, { status: 400 });
-    }
-
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-
-    if (!id?.trim()) {
-      return NextResponse.json({
-        error: 'ID de compra requerido',
-        code: 'VALIDATION_ERROR'
-      }, { status: 400 });
-    }
-
-    const existingPurchase = await prisma.purchase.findUnique({
-      where: { id: id.trim() },
-      include: { 
-        raffle: true,
-        tickets: true
-      }
-    });
-
-    if (!existingPurchase) {
-      return NextResponse.json({
-        error: 'Compra no encontrada',
-        code: 'PURCHASE_NOT_FOUND'
-      }, { status: 404 });
-    }
-
-    const role = dbUser.role?.toUpperCase();
-    const isOwner = existingPurchase.buyerId === dbUser.id;
-    
-    // Solo ADMIN y SUPERADMIN pueden eliminar compras
-    if (role !== 'ADMIN' && role !== 'SUPERADMIN') {
-      return NextResponse.json({
-        error: 'No tienes permisos para eliminar compras',
-        code: 'FORBIDDEN'
-      }, { status: 403 });
-    }
-
-    if (existingPurchase.status === 'COMPLETED') {
-      return NextResponse.json({
-        error: 'No se pueden eliminar compras completadas',
-        code: 'PURCHASE_COMPLETED'
-      }, { status: 400 });
-    }
-
-    await prisma.$transaction(async (tx) => {
-      // Primero desvinculamos los tickets
-      await tx.ticket.updateMany({
-        where: {
-          purchaseId: existingPurchase.id
-        },
-        data: {
-          purchaseId: null,
-          status: 'ACTIVE',
-          updatedAt: new Date()
-        }
-      });
-
-      // Luego eliminamos la compra
-      await tx.purchase.delete({ 
-        where: { id: id.trim() } 
-      });
-    });
-
-    return NextResponse.json({
-      success: true,
-      message: 'Compra eliminada exitosamente',
-      code: 'PURCHASE_DELETED'
-    });
-
-  } catch (error) {
-    console.error('Error deleting purchase:', error);
-
-    if (error?.code === 'P2025') {
-      return NextResponse.json({
-        error: 'Compra no encontrada',
-        code: 'PURCHASE_NOT_FOUND'
-      }, { status: 404 });
-    }
-
-    return NextResponse.json({
-      error: 'Error al eliminar la compra',
-      code: 'DELETE_ERROR',
-      details: process.env.NODE_ENV === 'development' ? String(error.message || error) : undefined
-    }, { status: 500 });
-  }
-}
+    const

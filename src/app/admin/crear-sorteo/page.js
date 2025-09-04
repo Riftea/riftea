@@ -86,16 +86,23 @@ export default function CrearSorteoPage() {
       return;
     }
 
-    if (Number(ticketPrice) <= 0) {
-      setError("El precio debe ser mayor a 0");
+    // 🔄 VALIDACIÓN NUEVA: Verificar que ticketPrice sea entero
+    const ticketPriceInt = parseInt(ticketPrice);
+    if (!Number.isInteger(ticketPriceInt) || ticketPriceInt <= 0) {
+      setError("El precio del ticket debe ser un número entero mayor a 0");
       setLoading(false);
       return;
     }
 
-    if (participantLimit && Number(participantLimit) <= 0) {
-      setError("El límite de participantes debe ser mayor a 0");
-      setLoading(false);
-      return;
+    // 🔄 VALIDACIÓN NUEVA: Verificar que participantLimit sea entero si se proporciona
+    let participantLimitInt = null;
+    if (participantLimit) {
+      participantLimitInt = parseInt(participantLimit);
+      if (!Number.isInteger(participantLimitInt) || participantLimitInt <= 0) {
+        setError("El límite de participantes debe ser un número entero mayor a 0");
+        setLoading(false);
+        return;
+      }
     }
 
     // Validación de fecha
@@ -117,8 +124,8 @@ export default function CrearSorteoPage() {
         body: JSON.stringify({ 
           title: title.trim(), 
           description: description.trim(), 
-          ticketPrice: Number(ticketPrice),
-          participantLimit: participantLimit ? Number(participantLimit) : null,
+          ticketPrice: ticketPriceInt, // 🔄 CAMBIO: Enviar como entero
+          participantLimit: participantLimitInt, // 🔄 CAMBIO: Enviar como entero o null
           endsAt: endsAt || null,
           publishedAt: new Date(),
           userId: session.user.id
@@ -167,6 +174,36 @@ export default function CrearSorteoPage() {
     resetFormFields();
     setError("");
     setSuccess(false);
+  };
+
+  // 🔄 NUEVA: Función para formatear el precio en tiempo real
+  const handleTicketPriceChange = (e) => {
+    const value = e.target.value;
+    // Solo permitir números enteros
+    const numericValue = value.replace(/[^0-9]/g, '');
+    setTicketPrice(numericValue);
+  };
+
+  // 🔄 NUEVA: Función para formatear el límite de participantes
+  const handleParticipantLimitChange = (e) => {
+    const value = e.target.value;
+    // Solo permitir números enteros
+    const numericValue = value.replace(/[^0-9]/g, '');
+    setParticipantLimit(numericValue);
+  };
+
+  // 🔄 NUEVA: Función para mostrar precio formateado
+  const formatPrice = (price) => {
+    if (!price) return '';
+    const priceInt = parseInt(price);
+    if (!Number.isInteger(priceInt)) return price;
+    
+    return new Intl.NumberFormat('es-AR', {
+      style: 'currency',
+      currency: 'ARS',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0
+    }).format(priceInt);
   };
 
   return (
@@ -296,7 +333,7 @@ export default function CrearSorteoPage() {
                 <p className="text-xs text-gray-400 mt-1">Sé específico sobre el premio, fechas y condiciones</p>
               </div>
 
-              {/* Precio del ticket */}
+              {/* Precio del ticket - ACTUALIZADO PARA INT */}
               <div>
                 <label className="block text-sm font-medium text-gray-200 mb-2">
                   Precio del Ticket <span className="text-orange-400">*</span>
@@ -308,22 +345,36 @@ export default function CrearSorteoPage() {
                     </svg>
                   </div>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     className="w-full bg-gray-700/50 border border-gray-600 rounded-xl pl-10 pr-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 focus:outline-none transition-all text-white placeholder-gray-400"
-                    placeholder="0.00"
+                    placeholder="1000"
                     value={ticketPrice}
-                    onChange={(e) => setTicketPrice(e.target.value)}
+                    onChange={handleTicketPriceChange}
                     disabled={loading}
-                    min="0.01"
-                    step="0.01"
                     required
                   />
+                  {ticketPrice && (
+                    <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                      <span className="text-sm text-gray-400">
+                        {formatPrice(ticketPrice)}
+                      </span>
+                    </div>
+                  )}
                 </div>
-                <p className="text-xs text-gray-400 mt-1">El precio debe ser mayor a $0.01</p>
+                <div className="flex items-center justify-between mt-1">
+                  <p className="text-xs text-gray-400">Solo números enteros (ej: 1000, 2500, 5000)</p>
+                  {ticketPrice && (
+                    <p className="text-xs text-orange-400 font-medium">
+                      Precio: {formatPrice(ticketPrice)}
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Límite de participantes */}
+                {/* Límite de participantes - ACTUALIZADO PARA INT */}
                 <div>
                   <label className="block text-sm font-medium text-gray-200 mb-2">
                     Límite de Participantes
@@ -335,12 +386,13 @@ export default function CrearSorteoPage() {
                       </svg>
                     </div>
                     <input
-                      type="number"
-                      min="1"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       className="w-full bg-gray-700/50 border border-gray-600 rounded-xl pl-10 pr-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 focus:outline-none transition-all text-white placeholder-gray-400"
                       placeholder="Sin límite"
                       value={participantLimit}
-                      onChange={(e) => setParticipantLimit(e.target.value)}
+                      onChange={handleParticipantLimitChange}
                       disabled={loading}
                     />
                   </div>
@@ -415,7 +467,7 @@ export default function CrearSorteoPage() {
             </form>
           </div>
 
-          {/* Información contextual */}
+          {/* Información contextual actualizada */}
           <div className="px-8 pb-6 bg-gray-800/30 border-t border-gray-700">
             <div className="flex items-start p-4 bg-gray-700/30 rounded-xl border border-gray-600">
               <div className="flex-shrink-0 mt-0.5">
@@ -436,7 +488,11 @@ export default function CrearSorteoPage() {
                   </li>
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>Establece un precio de ticket acorde al valor del premio</span>
+                    <span>Establece precios redondos (1000, 2500, 5000) para facilitar los pagos</span>
+                  </li>
+                  <li className="flex items-start">
+                    <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
+                    <span>Los precios ahora son números enteros sin centavos para mayor simplicidad</span>
                   </li>
                 </ul>
               </div>

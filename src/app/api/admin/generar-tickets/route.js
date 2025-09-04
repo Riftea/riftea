@@ -1,4 +1,4 @@
-// src/app/api/admin/generar-tickets/route.js - VERSIÓN CORREGIDA CON HMAC-SHA256
+// src/app/api/admin/generar-tickets/route.js - VERSIÓN CORREGIDA CON HMAC-SHA256 + INT
 import { NextResponse } from 'next/server';
 import { getServerSession } from "next-auth/next";
 import { authOptions } from '@/lib/auth';
@@ -41,6 +41,14 @@ export async function POST(request) {
       );
     }
 
+    // 🔄 VALIDACIÓN NUEVA: Verificar que ticketPrice sea entero
+    if (ticketPrice && (!Number.isInteger(Number(ticketPrice)) || Number(ticketPrice) < 0)) {
+      return NextResponse.json(
+        { error: "El precio del ticket debe ser un número entero mayor o igual a 0" },
+        { status: 400 }
+      );
+    }
+
     // Verificar que el usuario existe
     const usuario = await prisma.user.findUnique({
       where: { id: userId },
@@ -66,7 +74,7 @@ export async function POST(request) {
           status: true, 
           endsAt: true,
           maxTickets: true,
-          ticketPrice: true,
+          ticketPrice: true, // Ahora es Int en la DB
           _count: {
             select: { tickets: true }
           }
@@ -110,9 +118,9 @@ export async function POST(request) {
     const ticketsGenerados = [];
     let purchaseCreada = null;
     
-    const totalAmount = sorteoId ? 
-      (raffle.ticketPrice * cantidad) : 
-      (ticketPrice * cantidad);
+    // 🔄 CAMBIO: Usar parseInt para asegurar enteros
+    const ticketPriceInt = sorteoId ? raffle.ticketPrice : parseInt(ticketPrice) || 0;
+    const totalAmount = ticketPriceInt * cantidad;
 
     // Usar transacción para crear Purchase + Tickets de forma atómica
     await prisma.$transaction(async (tx) => {
@@ -122,7 +130,7 @@ export async function POST(request) {
         purchaseCreada = await tx.purchase.create({
           data: {
             userId,
-            amount: totalAmount,
+            amount: totalAmount, // Ahora es Int en la DB
             currency: "ARS",
             paymentMethod: "ADMIN_GENERATED",
             paymentId: `ADMIN_${Date.now()}`,
@@ -258,7 +266,8 @@ export async function POST(request) {
               generatedBy: 'SUPERADMIN',
               reason: 'Manual ticket generation',
               realPurchase: crearPurchase,
-              securityLevel: 'HMAC-SHA256' // Nuevo indicador de seguridad
+              securityLevel: 'HMAC-SHA256', // Nuevo indicador de seguridad
+              priceType: 'INTEGER' // 🔄 NUEVO: Indicar que usa precios enteros
             }
           }
         });
@@ -295,7 +304,8 @@ export async function POST(request) {
         precioTotal: totalAmount,
         conPurchase: crearPurchase,
         ticketsConParticipacion: sorteoId ? cantidad : 0,
-        securityLevel: 'HMAC-SHA256' // Nuevo indicador de seguridad
+        securityLevel: 'HMAC-SHA256', // Nuevo indicador de seguridad
+        priceType: 'INTEGER' // 🔄 NUEVO: Indicar que usa precios enteros
       },
       
       generadoPor: {

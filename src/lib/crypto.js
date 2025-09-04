@@ -1,4 +1,4 @@
-// src/lib/crypto.js - SISTEMA UNIFICADO CON HMAC-SHA256
+// src/lib/crypto.js - SISTEMA UNIFICADO CON HMAC-SHA256 + INT
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 
@@ -97,16 +97,81 @@ export function validateTicket(ticketData, userId) {
 
 /**
  * Calcula división 50/50 automática para fondos
+ * 🔄 ACTUALIZADO: Trabaja con enteros, sin decimales
  */
 export function calculateFundSplit(totalAmount) {
-  const ticketFund = Math.floor(totalAmount * 0.5 * 100) / 100;
-  const platformFund = totalAmount - ticketFund;
+  // Asegurar que totalAmount sea entero
+  const totalInt = parseInt(totalAmount);
+  
+  if (!Number.isInteger(totalInt) || totalInt <= 0) {
+    throw new Error("El monto total debe ser un número entero positivo");
+  }
+  
+  // División entera: la mitad va al fondo de tickets
+  const ticketFund = Math.floor(totalInt / 2);
+  const platformFund = totalInt - ticketFund;
   
   return {
-    ticketFund,
-    platformFund,
-    splitPercentage: 50
+    ticketFund,       // Entero
+    platformFund,     // Entero
+    splitPercentage: 50,
+    totalAmount: totalInt,
+    priceType: 'INTEGER' // Nuevo: indicar que es entero
   };
+}
+
+/**
+ * 🔄 NUEVA: Función para validar precios como enteros
+ */
+export function validateIntegerPrice(price, fieldName = "precio") {
+  const priceInt = parseInt(price);
+  
+  if (!Number.isInteger(priceInt)) {
+    throw new Error(`${fieldName} debe ser un número entero`);
+  }
+  
+  if (priceInt < 0) {
+    throw new Error(`${fieldName} no puede ser negativo`);
+  }
+  
+  return priceInt;
+}
+
+/**
+ * 🔄 NUEVA: Función para calcular totales con validación de enteros
+ */
+export function calculateTicketTotal(ticketPrice, quantity) {
+  const priceInt = validateIntegerPrice(ticketPrice, "Precio del ticket");
+  const qtyInt = parseInt(quantity);
+  
+  if (!Number.isInteger(qtyInt) || qtyInt <= 0) {
+    throw new Error("La cantidad debe ser un número entero positivo");
+  }
+  
+  return {
+    ticketPrice: priceInt,
+    quantity: qtyInt,
+    totalAmount: priceInt * qtyInt,
+    priceType: 'INTEGER'
+  };
+}
+
+/**
+ * 🔄 NUEVA: Función para formatear precios como enteros para mostrar
+ */
+export function formatIntegerPrice(price, currency = 'ARS') {
+  const priceInt = parseInt(price);
+  
+  if (!Number.isInteger(priceInt)) {
+    return '0';
+  }
+  
+  return new Intl.NumberFormat('es-AR', {
+    style: 'currency',
+    currency: currency,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(priceInt);
 }
 
 // Función para validar la configuración
