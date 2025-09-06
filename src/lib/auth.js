@@ -2,9 +2,17 @@
 import GoogleProvider from "next-auth/providers/google";
 import { getServerSession } from 'next-auth/next'; // ✅ Import correcto
 import { NextResponse } from 'next/server'; // ✅ NextResponse en lugar de Response
-import prisma from "./prisma.js";
+import prisma from "@/lib/prisma";
+
+// ✅ Aviso útil en dev si faltan envs críticas
+const missing = ['NEXTAUTH_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']
+  .filter((k) => !process.env[k]);
+if (missing.length) {
+  console.warn('[AUTH] Faltan variables .env:', missing.join(', '));
+}
 
 export const authOptions = {
+  trustHost: true,
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID,
@@ -156,7 +164,7 @@ export const authOptions = {
         });
         
         if (dbUser) {
-          session.user.role = dbUser.role.toString().toLowerCase();
+          session.user.role = (dbUser.role ?? 'USER').toString().toLowerCase();
           session.user.id = dbUser.id;
           session.user.dbId = dbUser.id;
           session.user.isActive = dbUser.isActive;

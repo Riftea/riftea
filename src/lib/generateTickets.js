@@ -1,84 +1,26 @@
-// lib/generateTickets.js
-import prisma from "@/src/lib/prisma";
-import { v4 as uuidv4 } from "uuid";
-import crypto from "crypto";
+// src/lib/generateTickets.js
+import { TicketsService } from '@/services/tickets.service';
 
-/**
- * Genera SHA256 hex a partir de input
- */
-function sha256(input) {
-  return crypto.createHash("sha256").update(String(input)).digest("hex");
+export async function createTickets({ userId, raffleId = null, quantity = 1, purchaseId = null }) {
+  return TicketsService.createTickets({ userId, purchaseId, quantity, raffleId });
 }
 
-/**
- * createTickets
- * - userId: id del usuario dueño
- * - raffleId: id de la rifa
- * - quantity: cantidad de tickets a crear
- * - purchaseId: id de la compra asociada (opcional, en devMode puede ser null)
- * - options: { devMode: boolean } -> si true permite generar sin purchaseId
- */
-export async function createTickets({
-  userId,
-  raffleId,
-  quantity = 1,
-  purchaseId = null,
-  options = { devMode: false },
-}) {
-  if (!userId || !raffleId) {
-    throw new Error("userId y raffleId son requeridos");
-  }
-  if (!options.devMode && !purchaseId) {
-    throw new Error("purchaseId requerido en modo no-dev");
-  }
-
-  const created = [];
-
-  // Ejecutamos en transacción para evitar inconsistencias
-  await prisma.$transaction(async (tx) => {
-    for (let i = 0; i < quantity; i++) {
-      let code = uuidv4();
-      let attempts = 0;
-
-      // asegurar no colisión (aunque uuidv4 tiene probabilidad mínima)
-      while (attempts < 5) {
-        const exists = await tx.ticket.findUnique({ where: { code } });
-        if (!exists) break;
-        code = uuidv4();
-        attempts++;
-      }
-      if (attempts >= 5) {
-        throw new Error("No fue posible generar un código único para el ticket");
-      }
-
-      const hash = sha256(code + "|" + userId); // ligado a userId
-
-      const ticketData = {
-        code,
-        hash,
-        raffleId,
-        userId,
-        purchaseId,
-      };
-
-      const t = await tx.ticket.create({ data: ticketData });
-      created.push(t);
-    }
-  });
-
-  return created;
+export async function createDevTickets({ userId, raffleId = null, quantity = 1 }) {
+  return TicketsService.createTickets({ userId, raffleId, quantity, purchaseId: null });
 }
 
-/**
- * helper para generar tickets en modo desarrollo sin compra
- * conveniente para pruebas locales
- */
-export async function createDevTickets({ userId, raffleId, quantity = 1 }) {
-  return createTickets({
-    userId,
-    raffleId,
-    quantity,
-    purchaseId: null,
-    options: { devMode: true },
-  });
+export async function createGenericTickets({ userId, quantity = 1, purchaseId = null }) {
+  return TicketsService.createTickets({ userId, raffleId: null, quantity, purchaseId });
+}
+
+// (Opcional) Stats ya delegadas:
+export async function getTicketStats(userId) {
+  const all = await TicketsService.getUserTickets(userId);
+  const result = {
+    total: all.length,
+    PENDING: 0, ACTIVE: 0, AVAILABLE: 0, IN_RAFFLE: 0,
+    WINNER: 0, LOST: 0, DELETED: 0,
+  };
+  for (const t of all) result[t.status] = (result[t.status] ?? 0) + 1;
+  return result;
 }

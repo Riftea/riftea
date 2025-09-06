@@ -100,7 +100,8 @@ export default function ParticipateModal({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ticketId: selectedTicket.id
+          ticketId: selectedTicket.id,
+          ticketCode: selectedTicket.code // compat/fallback
         })
       });
 
@@ -108,7 +109,14 @@ export default function ParticipateModal({
       console.log('Participate response:', data);
 
       if (!res.ok) {
-        throw new Error(data.error || `Error ${res.status}: Error al participar en el sorteo`);
+        const msg = data?.error || `Error ${res.status}: Error al participar en el sorteo`;
+        // No tiramos throw: mostramos mensaje en UI
+        if (/hash|firma|hmac|inválid/i.test(msg)) {
+          setError('No pudimos validar la firma del ticket. Si generaste estos tickets antes de la clave actual, pedí re-emisión o intenta con otro ticket.');
+        } else {
+          setError(msg);
+        }
+        return;
       }
 
       // Éxito
@@ -120,7 +128,12 @@ export default function ParticipateModal({
       
     } catch (err) {
       console.error('Error participating:', err);
-      setError(err.message);
+      const msg = err?.message || 'Error inesperado al participar';
+      if (/hash|firma|hmac|inválid/i.test(msg)) {
+        setError('No pudimos validar la firma del ticket. Si generaste estos tickets antes de la clave actual, pedí re-emisión o intenta con otro ticket.');
+      } else {
+        setError(msg);
+      }
     } finally {
       setParticipating(false);
     }
