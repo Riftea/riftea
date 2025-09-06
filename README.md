@@ -56,7 +56,8 @@ riftea
 │  └─ window.svg
 ├─ scripts
 │  ├─ listUsers.js
-│  └─ updateImports.js
+│  ├─ updateImports.js
+│  └─ verifyTicket.js
 ├─ src
 │  ├─ app
 │  │  ├─ admin
@@ -65,9 +66,11 @@ riftea
 │  │  │  ├─ generar-tickets
 │  │  │  │  └─ page.js
 │  │  │  ├─ page.js
-│  │  │  └─ raffles
-│  │  │     └─ [id]
-│  │  │        └─ page.js
+│  │  │  ├─ raffles
+│  │  │  │  └─ [id]
+│  │  │  │     └─ page.js
+│  │  │  └─ usuarios
+│  │  │     └─ page.js
 │  │  ├─ api
 │  │  │  ├─ admin
 │  │  │  │  ├─ generar-tickets
@@ -159,6 +162,7 @@ riftea
 │  │  ├─ auth.js
 │  │  ├─ authz.js
 │  │  ├─ crypto.js
+│  │  ├─ crypto.server.js
 │  │  ├─ generateTickets.js
 │  │  ├─ prisma.js
 │  │  └─ queue.js
@@ -166,8 +170,8 @@ riftea
 │  ├─ services
 │  │  ├─ audit.service.js
 │  │  ├─ purchases.service.js
+│  │  ├─ raffles.service.js
 │  │  └─ tickets.service.js
-│  ├─ styles
 │  ├─ tests
 │  ├─ types
 │  ├─ utils
@@ -175,6 +179,7 @@ riftea
 │  └─ workers
 │     └─ worker.js
 ├─ tests
+│  └─ scripts
 └─ tsconfig.json
 
 ```
