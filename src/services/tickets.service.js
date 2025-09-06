@@ -1,318 +1,227 @@
 // src/services/tickets.service.js
-import {
-  generateTicketUUID,
-  generateTicketCode,
-  createTicketHMAC,
-  verifyTicketHMAC,
-} from '@/lib/crypto.server';
+import prisma from "@/lib/prisma";
+import { generateTicketData, validateTicket } from "@/lib/crypto.server";
 
-import crypto from 'crypto';
-import prisma from '@/lib/prisma';
+/**
+ * Tickets:
+ * - Creación: SIEMPRE genéricos → raffleId = null, status = "AVAILABLE".
+ * - Uso en rifa: pasa a "IN_RAFFLE" + se setea raffleId y se crea Participation.
+ */
 
-// ---- Compatibilidad de firmas (acepta variantes históricas) ----
-async function verifyTicketAny(ticket, userId, { verifyTicketHMAC }, legacyValidate) {
-  if (!ticket) return false;
-  const { uuid, code, hash } = ticket;
-  const genAt = ticket.generatedAt ?? ticket.createdAt ?? new Date();
+export const TicketsService = {
+  /**
+   * Crea N tickets genéricos (sin rifa asignada).
+   * @param {{ userId: string, quantity?: number }}
+   * @returns {Promise<Array<{id:string, uuid:string, code:string, generatedAt:Date, userId:string, status:string}>>}
+   */
+  async createTickets({ userId, quantity = 1 }) {
+    if (!userId) throw new Error("userId es requerido");
 
-  // Canónico v2
-  try { if (verifyTicketHMAC(uuid, userId, hash, genAt.getTime())) return true; } catch {}
-  // Con createdAt explícito
-  try { if (ticket.createdAt && verifyTicketHMAC(uuid, userId, hash, ticket.createdAt.getTime())) return true; } catch {}
-  // Variantes de issuedAt
-  try {
-    const iso = new Date(genAt).toISOString();
-    if (verifyTicketHMAC(uuid, userId, hash, iso)) return true;
-    if (verifyTicketHMAC(uuid, userId, hash, Number(new Date(genAt).getTime()))) return true;
-  } catch {}
-  // Variante “code|user|createdAt” que viste en código viejo
-  try {
-    if (code && ticket.createdAt && verifyTicketHMAC(code, userId, hash, ticket.createdAt.getTime())) return true;
-  } catch {}
-  // Legacy SHA256(userId+uuid)
-  try { if (legacyValidate(userId, uuid, hash)) return true; } catch {}
-  return false;
-}
+    const qty = Number.parseInt(quantity ?? 1, 10);
+    if (!Number.isInteger(qty) || qty <= 0 || qty > 50) {
+      throw new Error("quantity debe ser un entero entre 1 y 50");
+    }
 
-// Backfill opcional para destrabar tickets antiguos (controlado por env)
-async function backfillTicketHMACIfAllowed(ticket, userId, tx) {
-  try {
-    if (process.env.ALLOW_HMAC_BACKFILL !== 'true') return false;
-    if (!ticket || ticket.userId !== userId) return false;
-    if (ticket.status !== 'AVAILABLE') return false;
+    // Validar usuario
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    if (!user) throw new Error(`Usuario con ID ${userId} no encontrado`);
 
-    const ts = (ticket.generatedAt ?? ticket.createdAt ?? new Date()).getTime();
-    const newHash = createTicketHMAC(ticket.uuid, userId, ts);
-    if (ticket.hash === newHash) return true;
-
-    await (tx || prisma).ticket.update({
-      where: { id: ticket.id },
-      data: { hash: newHash },
+    // Crear genéricos
+    const items = await prisma.$transaction(async (tx) => {
+      const out = [];
+      for (let i = 0; i < qty; i++) {
+        const t = generateTicketData(userId); // { uuid, displayCode, hmac, generatedAt }
+        const created = await tx.ticket.create({
+          data: {
+            uuid: t.uuid,
+            code: t.displayCode,
+            hash: t.hmac,
+            generatedAt: t.generatedAt,
+            userId,
+            raffleId: null,
+            status: "AVAILABLE",
+          },
+          select: { id: true, uuid: true, code: true, generatedAt: true, userId: true, status: true },
+        });
+        out.push(created);
+      }
+      return out;
     });
-    return true;
-  } catch (e) {
-    console.error('[BACKFILL] Error:', e);
-    return false;
-  }
-}
 
-export class TicketsService {
-  // Legacy SHA256 (compat)
-  static generateTicketHash(userId, ticketUuid) {
-    const data = `${userId}${ticketUuid}`;
-    return crypto.createHash('sha256').update(data).digest('hex');
-  }
-  static validateTicket(userId, ticketUuid, hash) {
-    const expected = this.generateTicketHash(userId, ticketUuid);
-    return expected === hash;
-  }
+    return items;
+  },
 
   /**
-   * Crear tickets (genérico o asignado a rifa).
+   * Atajo para 1 ticket (admin/superadmin).
    */
-  static async createTickets({ userId, purchaseId = null, quantity = 1, raffleId = null, tx = null }) {
-    const db = tx || prisma;
-    const out = [];
+  async generateTicket(userId, generatedBy = "system") {
+    const [ticket] = await this.createTickets({ userId, quantity: 1 });
 
-    // Validaciones mínimas
-    const user = await db.user.findUnique({ where: { id: userId }, select: { id: true } });
-    if (!user) throw new Error(`Usuario con ID ${userId} no encontrado`);
-    if (raffleId) {
-      const raffle = await db.raffle.findUnique({
-        where: { id: raffleId },
-        select: { id: true, status: true, endsAt: true },
+    // Notificación best-effort
+    try {
+      await prisma.notification.create({
+        data: {
+          userId,
+          title: generatedBy === "superadmin" ? "Ticket generado por superadmin" : "Nuevo ticket recibido",
+          message: "Se generó un ticket genérico disponible para usar en cualquier sorteo.",
+          type: "SYSTEM_ALERT",
+        },
       });
-      if (!raffle) throw new Error(`Rifa con ID ${raffleId} no encontrada`);
-      if (!['PUBLISHED', 'ACTIVE'].includes(raffle.status)) throw new Error('Rifa no disponible');
-      if (raffle.endsAt && new Date() > new Date(raffle.endsAt)) throw new Error('Rifa finalizada');
-    }
+    } catch (_) {}
 
-    for (let i = 0; i < quantity; i++) {
-      let done = false, attempts = 0;
-      while (!done && attempts < 5) {
-        attempts++;
-        try {
-          const now = new Date();
-          const uuid = generateTicketUUID();
-          const code = generateTicketCode();
-          const hash = createTicketHMAC(uuid, userId, now.getTime());
+    return ticket;
+  },
 
-          const ticket = await db.ticket.create({
-            data: {
-              uuid,
-              code,
-              hash,
-              userId,
-              purchaseId,
-              raffleId,
-              status: 'AVAILABLE',
-              generatedAt: now,
-            },
-          });
-          out.push(ticket);
-          done = true;
-        } catch (e) {
-          if (e?.code === 'P2002' && attempts < 5) continue;
-          throw e;
-        }
-      }
-    }
-    return out;
-  }
-
-  static async generateTicket(userId, generatedBy = 'system', raffleId = null) {
-    const [ticket] = await this.createTickets({ userId, quantity: 1, raffleId });
-    const full = await prisma.ticket.findUnique({
-      where: { id: ticket.id },
-      include: {
-        user: { select: { id: true, email: true, name: true } },
-        raffle: raffleId ? { select: { id: true, title: true, status: true } } : undefined,
-      },
-    });
-
-    await prisma.notification.create({
-      data: {
-        userId,
-        title: generatedBy === 'superadmin' ? 'Ticket generado por superadmin' : 'Nuevo ticket recibido',
-        message:
-          generatedBy === 'superadmin'
-            ? 'Un superadministrador ha generado un ticket para ti'
-            : `Has recibido un nuevo ticket${raffleId ? ' para una rifa específica' : ''}`,
-        type: 'SYSTEM_ALERT',
-        raffleId,
-      },
-    });
-
-    return full;
-  }
-
-  static async verifyTicketOwnership(ticketUuid, userId) {
+  /**
+   * Verifica que el ticket pertenece al user y su HMAC sea válido.
+   */
+  async verifyTicketOwnership(ticketUuid, userId) {
     const ticket = await prisma.ticket.findUnique({
       where: { uuid: ticketUuid },
-      include: {
-        user: { select: { id: true, email: true } },
-        raffle: { select: { id: true, title: true, status: true } },
-      },
+      select: { uuid: true, code: true, hash: true, generatedAt: true, userId: true, raffleId: true },
     });
-    if (!ticket) return { valid: false, error: 'Ticket no encontrado' };
-    if (ticket.userId !== userId) return { valid: false, error: 'Ticket no pertenece al usuario' };
+    if (!ticket) return { valid: false, error: "Ticket no encontrado" };
+    if (ticket.userId !== userId) return { valid: false, error: "Ticket no pertenece al usuario" };
 
-    const valid = await verifyTicketAny(ticket, userId, { verifyTicketHMAC }, this.validateTicket.bind(this));
-    if (!valid) return { valid: false, error: 'Hash de seguridad inválido' };
+    const res = validateTicket(
+      { uuid: ticket.uuid, hmac: ticket.hash, generatedAt: ticket.generatedAt },
+      ticket.userId
+    );
+    if (!res.valid) return { valid: false, error: res.error || "Firma HMAC inválida" };
 
     return {
       valid: true,
       ticket: {
         uuid: ticket.uuid,
         code: ticket.code,
-        status: ticket.status,
-        createdAt: ticket.generatedAt || ticket.createdAt,
-        isGeneric: !ticket.raffleId,
-        raffle: ticket.raffle,
+        createdAt: ticket.generatedAt,
+        isGeneric: ticket.raffleId == null, // debería ser true siempre hasta que lo use
       },
     };
-  }
+  },
 
-  static async canApplyTicketToRaffle(ticketId, raffleId, userId) {
-    const ticket = await prisma.ticket.findUnique({
-      where: { id: ticketId },
-      select: { id: true, userId: true, raffleId: true, status: true },
+  /**
+   * Lista tickets disponibles (genéricos) de un usuario.
+   */
+  async getAvailableTicketsForUser(userId) {
+    if (!userId) throw new Error("userId es requerido");
+    return prisma.ticket.findMany({
+      where: { userId, status: "AVAILABLE" },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, uuid: true, code: true, generatedAt: true, status: true },
     });
-    if (!ticket || ticket.userId !== userId) return { canUse: false, reason: 'Ticket no válido o no pertenece al usuario' };
+  },
 
-    const dup = await prisma.participation.findFirst({
-      where: { ticketId, raffleId, isActive: true },
-      select: { id: true },
-    });
-    if (dup) return { canUse: false, reason: 'Este ticket ya está participando en esta rifa' };
-
-    if (!['AVAILABLE', 'IN_RAFFLE'].includes(ticket.status)) {
-      return { canUse: false, reason: 'Ticket no disponible' };
+  /**
+   * Chequea si el ticket se puede aplicar a una rifa (desde AVAILABLE).
+   */
+  async canApplyTicketToRaffle(ticketId, raffleId, userId) {
+    if (!ticketId || !raffleId || !userId) {
+      return { canUse: false, reason: "Parámetros incompletos" };
     }
-    if (ticket.raffleId && ticket.raffleId !== raffleId) {
-      return { canUse: false, reason: 'Ticket asignado a otra rifa' };
-    }
 
-    const raffle = await prisma.raffle.findUnique({
-      where: { id: raffleId },
-      select: {
-        id: true,
-        ownerId: true,
-        status: true,
-        endsAt: true,
-        maxParticipants: true,
-        _count: { select: { participations: true } },
-      },
-    });
-    if (!raffle) return { canUse: false, reason: 'Rifa no encontrada' };
-    if (!['PUBLISHED', 'ACTIVE'].includes(raffle.status)) {
-      return { canUse: false, reason: 'La rifa no está disponible' };
+    const [ticket, raffle] = await Promise.all([
+      prisma.ticket.findUnique({
+        where: { id: ticketId },
+        select: { id: true, userId: true, raffleId: true, status: true, uuid: true, hash: true, generatedAt: true },
+      }),
+      prisma.raffle.findUnique({
+        where: { id: raffleId },
+        select: {
+          id: true,
+          status: true,
+          endsAt: true,
+          ownerId: true,
+          maxParticipants: true,
+          _count: { select: { participations: true } },
+        },
+      }),
+    ]);
+
+    if (!ticket) return { canUse: false, reason: "Ticket no encontrado" };
+    if (ticket.userId !== userId) return { canUse: false, reason: "Este ticket no te pertenece" };
+
+    // HMAC válido
+    const res = validateTicket(
+      { uuid: ticket.uuid, hmac: ticket.hash, generatedAt: ticket.generatedAt },
+      userId
+    );
+    if (!res.valid) return { canUse: false, reason: "Ticket inválido (firma HMAC inválida)" };
+
+    if (!raffle) return { canUse: false, reason: "Rifa no encontrada" };
+    if (!["PUBLISHED", "ACTIVE"].includes(raffle.status)) {
+      return { canUse: false, reason: "Rifa no disponible" };
     }
     if (raffle.endsAt && new Date() > new Date(raffle.endsAt)) {
-      return { canUse: false, reason: 'La rifa ya terminó' };
+      return { canUse: false, reason: "La rifa ya ha finalizado" };
     }
     if (raffle.ownerId && raffle.ownerId === userId) {
-      return { canUse: false, reason: 'El propietario no puede participar en su propia rifa' };
+      return { canUse: false, reason: "El propietario no puede participar en su propia rifa" };
     }
     if (raffle.maxParticipants && raffle._count.participations >= raffle.maxParticipants) {
-      return { canUse: false, reason: 'La rifa alcanzó el límite máximo de participantes' };
+      return { canUse: false, reason: "La rifa alcanzó el límite máximo de participantes" };
     }
 
-    return { canUse: true, reason: 'Ticket compatible con la rifa' };
-  }
-
-  static async getAvailableTicketsForUser(userId, raffleId = null) {
-    const where = { userId };
-    if (!raffleId) {
-      where.status = 'AVAILABLE';
-    } else {
-      where.AND = [
-        { status: { in: ['AVAILABLE', 'IN_RAFFLE'] } },
-        { OR: [{ raffleId: null }, { raffleId }] },
-      ];
+    // Solo desde AVAILABLE
+    if (ticket.status !== "AVAILABLE") {
+      return { canUse: false, reason: "El ticket no está disponible para usar" };
+    }
+    if (ticket.raffleId) {
+      return { canUse: false, reason: "El ticket ya está asociado a una rifa" };
     }
 
-    return prisma.ticket.findMany({
-      where,
-      include: {
-        raffle: { select: { id: true, title: true, status: true, endsAt: true } },
-        participation: raffleId ? { select: { id: true, raffleId: true, isActive: true } } : undefined,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
+    return { canUse: true };
+  },
 
-  static async applyTicketToRaffle(ticketId, raffleId, userId) {
-    // 1) reglas/cupo
+  /**
+   * Aplica ticket genérico a una rifa: set raffleId, status IN_RAFFLE y crea Participation.
+   */
+  async applyTicketToRaffle(ticketId, raffleId, userId) {
     const compat = await this.canApplyTicketToRaffle(ticketId, raffleId, userId);
-    if (!compat.canUse) throw new Error(compat.reason);
+    if (!compat.canUse) throw new Error(compat.reason || "Ticket no disponible");
 
-    // 2) traer ticket completo
-    const ticket = await prisma.ticket.findUnique({
-      where: { id: ticketId },
-      include: { user: { select: { id: true, name: true, email: true } }, raffle: true },
-    });
-    if (!ticket) throw new Error('Ticket no encontrado');
+    const part = await prisma.$transaction(async (tx) => {
+      await tx.ticket.update({
+        where: { id: ticketId },
+        data: { raffleId, status: "IN_RAFFLE" },
+      });
 
-    // 3) validar integridad con compat + backfill (si permitido)
-    let valid = await verifyTicketAny(ticket, userId, { verifyTicketHMAC }, this.validateTicket.bind(this));
-    if (!valid) {
-      const didBackfill = await backfillTicketHMACIfAllowed(ticket, userId, null);
-      if (didBackfill) {
-        const refreshed = await prisma.ticket.findUnique({ where: { id: ticketId } });
-        valid = await verifyTicketAny(refreshed, userId, { verifyTicketHMAC }, this.validateTicket.bind(this));
-      }
-    }
-    if (!valid) throw new Error('Ticket inválido - hash no coincide');
+      const created = await tx.participation.create({
+        data: { raffleId, ticketId, isActive: true },
+        include: {
+          raffle: { select: { id: true, title: true, endsAt: true } },
+          ticket: { select: { id: true, code: true, uuid: true, raffleId: true } },
+        },
+      });
 
-    const raffle = await prisma.raffle.findUnique({ where: { id: raffleId } });
-
-    // 4) transacción
-    const result = await prisma.$transaction(async (tx) => {
-      await tx.ticket.update({ where: { id: ticketId }, data: { status: 'IN_RAFFLE', raffleId } });
-
-      let participation;
+      // Notificación / auditoría best-effort
       try {
-        participation = await tx.participation.create({
-          data: { ticketId, raffleId, isActive: true },
-          include: {
-            ticket: { include: { user: { select: { id: true, name: true, email: true } } } },
-            raffle: true,
+        await tx.notification.create({
+          data: {
+            userId,
+            title: "Ticket usado en sorteo",
+            message: `Tu ticket ${created.ticket.code} fue usado en el sorteo "${created.raffle.title}"`,
+            type: "SYSTEM_ALERT",
+            raffleId,
           },
         });
-      } catch (e) {
-        if (e?.code === 'P2002') throw new Error('Este ticket ya está participando en esta rifa');
-        throw e;
-      }
+      } catch (_) {}
 
-      await tx.notification.create({
-        data: {
-          userId,
-          title: 'Ticket usado en sorteo',
-          message: `Tu ticket ${ticket.code} fue usado en el sorteo "${raffle?.title ?? ''}"`,
-          type: 'SYSTEM_ALERT',
-          raffleId,
-        },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          action: 'USE_TICKET_IN_RAFFLE',
-          userId,
-          targetType: 'ticket',
-          targetId: ticketId,
-          newValues: {
-            ticketId,
-            raffleId,
-            wasGeneric: !ticket.raffleId,
-            ticketCode: ticket.code,
+      try {
+        await tx.auditLog.create({
+          data: {
+            action: "USE_TICKET_IN_RAFFLE",
+            userId,
+            targetType: "ticket",
+            targetId: ticketId,
+            newValues: { ticketId, raffleId, ticketCode: created.ticket.code },
           },
-        },
-      });
+        });
+      } catch (_) {}
 
-      return participation;
+      return created;
     });
 
-    return result;
-  }
-}
+    return part;
+  },
+};

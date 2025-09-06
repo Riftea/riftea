@@ -1,88 +1,95 @@
-// src/app/api/tickets/use/route.js - UBICACIÓN CORRECTA para App Router
-import { getServerSession } from 'next-auth/next';
-import { TicketsService } from '@/services/tickets.service'; // ✅ Ruta correcta desde src/
-import { authOptions } from '@/lib/auth';
+// src/app/api/tickets/use/route.js
+export const runtime = "nodejs";
 
+import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "@/lib/auth";
+import { TicketsService } from "@/services/tickets.service";
 
+/**
+ * POST /api/tickets/use
+ * Body: { ticketId: string, raffleId: string }
+ * - Aplica un ticket GENÉRICO (status: AVAILABLE) a una rifa.
+ * - Cambia el ticket a IN_RAFFLE, setea raffleId y crea Participation.
+ * - Valida HMAC internamente vía TicketsService.
+ */
 export async function POST(request) {
   try {
     const session = await getServerSession(authOptions);
-    
-    if (!session) {
-      return Response.json(
-        { error: 'No autorizado' },
-        { status: 401 }
-      );
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { ticketId, raffleId } = body;
-
+    const { ticketId, raffleId } = await request.json();
     if (!ticketId || !raffleId) {
-      return Response.json(
-        { error: 'ticketId y raffleId son requeridos' },
+      return NextResponse.json(
+        { error: "ticketId y raffleId son requeridos" },
         { status: 400 }
       );
     }
 
-    // ✅ Verificar compatibilidad antes de usar
+    // 1) Compatibilidad y reglas antes de aplicar
     const compatibility = await TicketsService.canApplyTicketToRaffle(
-      ticketId, 
-      raffleId, 
+      ticketId,
+      raffleId,
       session.user.id
     );
 
     if (!compatibility.canUse) {
-      return Response.json(
+      return NextResponse.json(
         {
           error: compatibility.reason,
-          canRetry: compatibility.reason.includes('no disponible')
+          canRetry: /no disponible|límite máximo|finalizado/i.test(compatibility.reason) ? false : true,
         },
         { status: 400 }
       );
     }
 
-    // Usar el ticket en el sorteo
+    // 2) Aplicar ticket a la rifa
     const participation = await TicketsService.applyTicketToRaffle(
-      ticketId, 
-      raffleId, 
+      ticketId,
+      raffleId,
       session.user.id
     );
 
-    return Response.json({
+    return NextResponse.json({
       success: true,
+      message: "Ticket usado exitosamente en el sorteo",
       participation,
-      message: 'Ticket usado exitosamente en el sorteo',
       ticketInfo: {
         id: participation.ticket.id,
-        code: participation.ticket.displayCode || participation.ticket.code,
-        wasGeneric: !participation.ticket.raffleId || participation.ticket.raffleId === raffleId
+        code: participation.ticket.code,
+        wasGeneric: participation.ticket.raffleId === raffleId, // debe ser true tras aplicar
       },
       raffleInfo: {
         id: participation.raffle.id,
         title: participation.raffle.title,
-        endsAt: participation.raffle.endsAt
-      }
+        endsAt: participation.raffle.endsAt,
+      },
     });
-
   } catch (error) {
-    console.error('Error using ticket:', error);
-    
-    // Mejor manejo de errores
-    const errorMap = {
-      'Ticket no encontrado': 404,
-      'Este ticket no te pertenece': 403,
-      'Ticket ya en uso': 409,
-      'Rifa no encontrada': 404,
-      'Rifa no disponible': 400
+    console.error("[tickets/use] error:", error);
+
+    const map = {
+      "Ticket no encontrado": 404,
+      "Este ticket no te pertenece": 403,
+      "Ticket inválido (firma HMAC inválida)": 400,
+      "Rifa no encontrada": 404,
+      "Rifa no disponible": 400,
+      "La rifa ya ha finalizado": 400,
+      "El propietario no puede participar en su propia rifa": 403,
+      "La rifa alcanzó el límite máximo de participantes": 400,
+      "El ticket no está disponible para usar": 409,
+      "El ticket ya está asociado a una rifa": 409,
+      "Este ticket ya está participando en esta rifa": 409,
     };
 
-    const statusCode = errorMap[error.message] || 400;
-    
-    return Response.json(
-      { 
-        error: error.message,
-        timestamp: new Date().toISOString()
+    const statusCode = map[error?.message] || 400;
+
+    return NextResponse.json(
+      {
+        error: error?.message || "Error al usar el ticket",
+        timestamp: new Date().toISOString(),
       },
       { status: statusCode }
     );

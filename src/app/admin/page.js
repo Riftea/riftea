@@ -44,7 +44,7 @@ export default function AdminPage() {
     clearMsgRef.current = setTimeout(() => setMessage(""), 5000);
   };
 
-  // --- Generar 1 ticket directo (para SuperAdmin)
+  // --- Generar 1 ticket genérico para el usuario actual (SUPERADMIN)
   const generateDirectTicket = async () => {
     if (!session?.user?.id) {
       setAutoClearMessage("❌ Error: No se puede identificar el usuario");
@@ -55,22 +55,21 @@ export default function AdminPage() {
     setMessage("");
 
     try {
-      const response = await fetch("/api/admin/generar-tickets", {
+      const response = await fetch("/api/admin/tickets/issue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: session.user.id,
-          cantidad: 1,
-          crearPurchase: true,
-          ticketPrice: 0,
+          userId: session.user.id, // para mí
+          quantity: 1,             // un solo ticket
         }),
       });
 
       const result = await response.json();
 
-      if (response.ok) {
-        const uuid = result?.tickets?.[0]?.uuid || "N/A";
-        setAutoClearMessage(`✅ Ticket generado exitosamente. UUID: ${uuid}`);
+      if (response.ok && result?.ok) {
+        const t = result?.tickets?.items?.[0];
+        const codeOrUuid = t?.code || t?.uuid || "N/A";
+        setAutoClearMessage(`✅ Ticket generado: ${codeOrUuid}`);
       } else {
         setAutoClearMessage(`❌ Error: ${result?.error || "Operación fallida"}`);
       }
@@ -250,8 +249,12 @@ export default function AdminPage() {
                       )}
                     </div>
                     <div>
-                      <p className="text-lg font-semibold text-white">{generating ? "Generando..." : "Generar Ticket"}</p>
-                      <p className="text-sm text-gray-400">{generating ? "Espere un momento..." : "Crea un ticket de prueba"}</p>
+                      <p className="text-lg font-semibold text-white">
+                        {generating ? "Generando..." : "Generar Ticket (para mí)"}
+                      </p>
+                      <p className="text-sm text-gray-400">
+                        {generating ? "Espere un momento..." : "Crea un ticket genérico para tu usuario"}
+                      </p>
                     </div>
                   </div>
                 </button>

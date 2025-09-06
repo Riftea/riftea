@@ -6,27 +6,34 @@ import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 
 const ROLE_OPTIONS = ["USER", "ADMIN"]; // SUPERADMIN no editable desde UI
+const PAGE_SIZE_OPTIONS = [10, 25, 50];
+const DEFAULT_SORT_BY = "name";
+const DEFAULT_SORT_DIR = "asc";
 
 export default function UsuariosAdminPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
 
+  // --- UI State
   const [loading, setLoading] = useState(true);
-  const [users, setUsers] = useState([]);
-  const [filter, setFilter] = useState("");
-  const [savingId, setSavingId] = useState(null);
+  const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(0);
   const [message, setMessage] = useState("");
   const clearMsgRef = useRef(null);
 
-  // --- Tabla: estado de orden y paginación
-  const [sortBy, setSortBy] = useState("name"); // name | email | role | isActive
-  const [sortDir, setSortDir] = useState("asc"); // asc | desc
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10); // 10 | 25 | 50
+  // --- Table controls (server-driven)
+  const [filter, setFilter] = useState("");
+  const [debouncedFilter, setDebouncedFilter] = useState("");
+  const [sortBy, setSortBy] = useState(DEFAULT_SORT_BY);   // name | email | role | isActive
+  const [sortDir, setSortDir] = useState(DEFAULT_SORT_DIR); // asc | desc
+  const [page, setPage] = useState(1);                      // 1-based
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
+
+  const [savingId, setSavingId] = useState(null);
 
   const isSuperAdmin = (session?.user?.role || "").toUpperCase() === "SUPERADMIN";
 
-  // Limpieza de mensajes al desmontar
+  // --- Limpieza de mensajes al desmontar
   useEffect(() => {
     return () => {
       if (clearMsgRef.current) clearTimeout(clearMsgRef.current);
@@ -39,24 +46,13 @@ export default function UsuariosAdminPage() {
     clearMsgRef.current = setTimeout(() => setMessage(""), ms);
   };
 
-  // Función para recargar usuarios (memorizada)
-  const reload = useCallback(async () => {
-    const res = await fetch("/api/admin/usuarios", { cache: "no-store" });
+  // --- Debounce del filtro (300ms)
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedFilter(filter.trim()), 300);
+    return () => clearTimeout(t);
+  }, [filter]);
 
-    // Manejo de 401/403 - redirigir si no autorizado
-    if (res.status === 401 || res.status === 403) {
-      router.replace("/");
-      return;
-    }
-
-    const data = await res.json();
-    if (!res.ok || !data?.success) {
-      throw new Error(data?.error || "No se pudo cargar usuarios");
-    }
-    setUsers(data.users || []);
-  }, [router]);
-
-  // Guardas: solo SUPERADMIN entra
+  // --- Guardas: solo SUPERADMIN entra
   useEffect(() => {
     if (status === "loading") return;
     if (status === "unauthenticated") {
@@ -69,7 +65,33 @@ export default function UsuariosAdminPage() {
     }
   }, [status, isSuperAdmin, router]);
 
-  // Cargar usuarios al montar / cuando cambie reload
+  // --- Carga de datos (server-side pagination/sort/search)
+  const reload = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (debouncedFilter) params.set("search", debouncedFilter);
+    if (sortBy) params.set("sortBy", sortBy);
+    if (sortDir) params.set("sortDir", sortDir);
+    params.set("page", String(page));
+    params.set("pageSize", String(pageSize));
+
+    const url = `/api/admin/usuarios?${params.toString()}`;
+    const res = await fetch(url, { cache: "no-store" });
+
+    if (res.status === 401 || res.status === 403) {
+      router.replace("/");
+      return;
+    }
+
+    const data = await res.json();
+    if (!res.ok || !data?.success) {
+      throw new Error(data?.error || "No se pudo cargar usuarios");
+    }
+
+    setRows(Array.isArray(data.users) ? data.users : []);
+    setTotal(Number.isFinite(data.total) ? data.total : (Array.isArray(data.users) ? data.users.length : 0));
+  }, [router, debouncedFilter, sortBy, sortDir, page, pageSize]);
+
+  // --- Ejecutar carga cuando cambian los controles o se habilita el acceso
   useEffect(() => {
     if (!isSuperAdmin) return;
     (async () => {
@@ -84,85 +106,14 @@ export default function UsuariosAdminPage() {
     })();
   }, [isSuperAdmin, reload]);
 
-  // Resetear a página 1 cuando cambia el filtro
+  // --- Reset de página cuando cambian criterios base
   useEffect(() => {
     setPage(1);
-  }, [filter]);
+  }, [debouncedFilter, sortBy, sortDir, pageSize]);
 
-  // --- Filtro
-  const filtered = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return users;
-    return users.filter(
-      (u) =>
-        u.name?.toLowerCase().includes(q) ||
-        u.email?.toLowerCase().includes(q) ||
-        (u.role || "").toLowerCase().includes(q)
-    );
-  }, [users, filter]);
-
-  // --- Orden
-  const compare = useCallback(
-    (a, b) => {
-      const dir = sortDir === "asc" ? 1 : -1;
-
-      if (sortBy === "name") {
-        const A = (a.name || "").toLowerCase();
-        const B = (b.name || "").toLowerCase();
-        return A.localeCompare(B) * dir;
-      }
-
-      if (sortBy === "email") {
-        const A = (a.email || "").toLowerCase();
-        const B = (b.email || "").toLowerCase();
-        return A.localeCompare(B) * dir;
-      }
-
-      if (sortBy === "role") {
-        // SUPERADMIN > ADMIN > USER (o alfabético si querés)
-        const rank = (r) => {
-          const R = (r || "").toUpperCase();
-          if (R === "SUPERADMIN") return 3;
-          if (R === "ADMIN") return 2;
-          return 1; // USER u otros
-        };
-        const A = rank(a.role);
-        const B = rank(b.role);
-        if (A === B) {
-          // desempate por email
-          return ((a.email || "").toLowerCase().localeCompare((b.email || "").toLowerCase())) * dir;
-        }
-        return (A - B) * dir;
-      }
-
-      if (sortBy === "isActive") {
-        // Activo primero si asc
-        const A = a.isActive ? 1 : 0;
-        const B = b.isActive ? 1 : 0;
-        if (A === B) {
-          return ((a.email || "").toLowerCase().localeCompare((b.email || "").toLowerCase())) * dir;
-        }
-        return (A - B) * dir;
-      }
-
-      return 0;
-    },
-    [sortBy, sortDir]
-  );
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort(compare);
-    return arr;
-  }, [filtered, compare]);
-
-  // --- Paginación
-  const totalRows = sorted.length;
-  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
-  const currentPage = Math.min(page, totalPages);
-  const startIndex = (currentPage - 1) * pageSize;
-  const endIndex = Math.min(startIndex + pageSize, totalRows);
-  const pageRows = useMemo(() => sorted.slice(startIndex, endIndex), [sorted, startIndex, endIndex]);
+  // --- Helpers UI
+  const currentPage = Math.max(1, page);
+  const totalPages = Math.max(1, Math.ceil((total || 0) / pageSize));
 
   const handleSort = (key) => {
     if (sortBy === key) {
@@ -171,11 +122,24 @@ export default function UsuariosAdminPage() {
       setSortBy(key);
       setSortDir("asc");
     }
-    setPage(1);
+    // page reset -> handled by effect
+  };
+
+  const SortIcon = ({ col }) => {
+    const active = sortBy === col;
+    const dir = active ? sortDir : "asc";
+    return (
+      <span className={`inline-flex items-center ml-1 ${active ? "text-orange-400" : "text-gray-500"}`}>
+        {dir === "asc" ? (
+          <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M3 12l7-8 7 8H3z" /></svg>
+        ) : (
+          <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M17 8l-7 8-7-8h14z" /></svg>
+        )}
+      </span>
+    );
   };
 
   const handleChangeRole = async (user, nextRole) => {
-    // bloqueos de UI (la API igual refuerza)
     const currentRole = (user.role || "").toUpperCase();
     const myId = session?.user?.id;
 
@@ -188,9 +152,9 @@ export default function UsuariosAdminPage() {
       return;
     }
 
-    // Optimistic update
-    const prev = [...users];
-    setUsers((arr) => arr.map((u) => (u.id === user.id ? { ...u, role: nextRole } : u)));
+    // Optimistic UI
+    const prevRows = [...rows];
+    setRows((arr) => arr.map((u) => (u.id === user.id ? { ...u, role: nextRole } : u)));
     setSavingId(user.id);
     setMessage("");
 
@@ -201,30 +165,28 @@ export default function UsuariosAdminPage() {
         body: JSON.stringify({ userId: user.id, role: nextRole }),
       });
 
-      // Manejo de 401/403
       if (res.status === 401 || res.status === 403) {
         router.replace("/");
         return;
       }
 
       const data = await res.json();
-
       if (!res.ok || !data?.success) {
         throw new Error(data?.error || "Error al actualizar rol");
       }
 
-      // Refetch tras éxito para reflejar el estado real del backend
+      // Vuelve a pedir al server para ver el estado real (respetando paginación/orden)
       await reload();
       setAutoClearMessage(`✅ Rol actualizado a ${nextRole} para ${user.email}`);
     } catch (e) {
-      // revertir en caso de error
-      setUsers(prev);
+      setRows(prevRows); // revert
       setAutoClearMessage(`❌ ${e.message}`);
     } finally {
       setSavingId(null);
     }
   };
 
+  // --- Loading
   if (status === "loading" || loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-950 to-gray-900 flex items-center justify-center p-6">
@@ -241,25 +203,6 @@ export default function UsuariosAdminPage() {
 
   if (!isSuperAdmin) return null;
 
-  // UI helpers
-  const SortIcon = ({ col }) => {
-    const active = sortBy === col;
-    const dir = active ? sortDir : "asc";
-    return (
-      <span className={`inline-flex items-center ml-1 ${active ? "text-orange-400" : "text-gray-500"}`}>
-        {dir === "asc" ? (
-          <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M3 12l7-8 7 8H3z" />
-          </svg>
-        ) : (
-          <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M17 8l-7 8-7-8h14z" />
-          </svg>
-        )}
-      </span>
-    );
-  };
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 to-gray-900 text-gray-100">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -271,7 +214,7 @@ export default function UsuariosAdminPage() {
               <div>
                 <h1 className="text-2xl md:text-3xl font-bold text-white">Gestión de Usuarios</h1>
                 <p className="text-gray-300 mt-2">
-                  Cambia roles de usuarios (solo SUPERADMIN). Estilo tipo Prisma Studio.
+                  Paginación, orden y búsqueda en servidor (solo SUPERADMIN).
                 </p>
               </div>
               <button
@@ -296,17 +239,13 @@ export default function UsuariosAdminPage() {
             </div>
           )}
 
-          {/* Filtros y controles de tabla */}
+          {/* Controles */}
           <div className="p-6 pt-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="text-sm text-gray-400">
-                Total: <span className="text-gray-200 font-medium">{users.length}</span>
-                {" · "}
-                Mostrando:{" "}
-                <span className="text-gray-200 font-medium">
-                  {totalRows === 0 ? 0 : startIndex + 1}–{endIndex}
-                </span>{" "}
-                de <span className="text-gray-200 font-medium">{totalRows}</span>
+                Página <span className="text-gray-200 font-medium">{currentPage}</span> de{" "}
+                <span className="text-gray-200 font-medium">{totalPages}</span> ·{" "}
+                Total: <span className="text-gray-200 font-medium">{total}</span>
               </div>
 
               <div className="flex items-center gap-3">
@@ -314,15 +253,12 @@ export default function UsuariosAdminPage() {
                   Filas por página:{" "}
                   <select
                     value={pageSize}
-                    onChange={(e) => {
-                      setPageSize(Number(e.target.value));
-                      setPage(1);
-                    }}
+                    onChange={(e) => setPageSize(Number(e.target.value))}
                     className="ml-1 bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/40"
                   >
-                    <option value={10}>10</option>
-                    <option value={25}>25</option>
-                    <option value={50}>50</option>
+                    {PAGE_SIZE_OPTIONS.map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
                   </select>
                 </label>
 
@@ -372,7 +308,7 @@ export default function UsuariosAdminPage() {
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 placeholder="Buscar por nombre, email o rol…"
-                className="w-full sm:w-80 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/40 transition-colors"
+                className="w-full sm:w-96 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/40 transition-colors"
               />
               {filter && (
                 <button
@@ -393,38 +329,22 @@ export default function UsuariosAdminPage() {
                 <thead className="bg-gray-800/70 border-b border-gray-700/60">
                   <tr>
                     <th className="text-left px-4 py-3 font-semibold text-gray-300">
-                      <button
-                        onClick={() => handleSort("name")}
-                        className="inline-flex items-center hover:text-white"
-                        title="Ordenar por nombre"
-                      >
+                      <button onClick={() => handleSort("name")} className="inline-flex items-center hover:text-white" title="Ordenar por nombre">
                         Nombre <SortIcon col="name" />
                       </button>
                     </th>
                     <th className="text-left px-4 py-3 font-semibold text-gray-300">
-                      <button
-                        onClick={() => handleSort("email")}
-                        className="inline-flex items-center hover:text-white"
-                        title="Ordenar por email"
-                      >
+                      <button onClick={() => handleSort("email")} className="inline-flex items-center hover:text-white" title="Ordenar por email">
                         Email <SortIcon col="email" />
                       </button>
                     </th>
                     <th className="text-left px-4 py-3 font-semibold text-gray-300">
-                      <button
-                        onClick={() => handleSort("role")}
-                        className="inline-flex items-center hover:text-white"
-                        title="Ordenar por rol"
-                      >
+                      <button onClick={() => handleSort("role")} className="inline-flex items-center hover:text-white" title="Ordenar por rol">
                         Rol <SortIcon col="role" />
                       </button>
                     </th>
                     <th className="text-left px-4 py-3 font-semibold text-gray-300">
-                      <button
-                        onClick={() => handleSort("isActive")}
-                        className="inline-flex items-center hover:text-white"
-                        title="Ordenar por estado"
-                      >
+                      <button onClick={() => handleSort("isActive")} className="inline-flex items-center hover:text-white" title="Ordenar por estado">
                         Estado <SortIcon col="isActive" />
                       </button>
                     </th>
@@ -432,7 +352,7 @@ export default function UsuariosAdminPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-700/60">
-                  {pageRows.map((u) => {
+                  {rows.map((u) => {
                     const isSelf = u.id === session?.user?.id;
                     const role = (u.role || "").toUpperCase();
                     const editable = role !== "SUPERADMIN" && !isSelf; // UI guard
@@ -469,9 +389,7 @@ export default function UsuariosAdminPage() {
                                   className="bg-gray-800 border border-gray-700 rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                                 >
                                   {ROLE_OPTIONS.map((r) => (
-                                    <option key={r} value={r}>
-                                      {r}
-                                    </option>
+                                    <option key={r} value={r}>{r}</option>
                                   ))}
                                 </select>
                                 {isBeingUpdated && (
@@ -509,14 +427,10 @@ export default function UsuariosAdminPage() {
                     );
                   })}
 
-                  {pageRows.length === 0 && (
+                  {rows.length === 0 && (
                     <tr>
                       <td colSpan={5} className="px-4 py-10 text-center text-gray-400">
-                        {filtered.length === 0
-                          ? users.length === 0
-                            ? "No hay usuarios disponibles."
-                            : `Sin resultados para "${filter}".`
-                          : "No hay elementos en esta página."}
+                        {debouncedFilter ? `Sin resultados para "${debouncedFilter}".` : "No hay usuarios disponibles."}
                       </td>
                     </tr>
                   )}
@@ -524,14 +438,12 @@ export default function UsuariosAdminPage() {
               </table>
             </div>
 
-            {/* Footer de paginación (duplicado para comodidad al final) */}
+            {/* Footer de paginación */}
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="text-sm text-gray-400">
-                Mostrando{" "}
-                <span className="text-gray-200 font-medium">
-                  {totalRows === 0 ? 0 : startIndex + 1}–{endIndex}
-                </span>{" "}
-                de <span className="text-gray-200 font-medium">{totalRows}</span>
+                Página <span className="text-gray-200 font-medium">{currentPage}</span> de{" "}
+                <span className="text-gray-200 font-medium">{totalPages}</span> ·{" "}
+                Total: <span className="text-gray-200 font-medium">{total}</span>
               </div>
               <div className="flex items-center gap-1">
                 <button
