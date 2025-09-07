@@ -1,4 +1,5 @@
-﻿"use client";
+﻿// src/app/admin/page.js
+"use client";
 
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
@@ -12,7 +13,6 @@ export default function AdminPage() {
   const [message, setMessage] = useState("");
   const clearMsgRef = useRef(null);
 
-  // --- Derivados de sesión
   const userRole = useMemo(
     () => String(session?.user?.role || "").toUpperCase(),
     [session?.user?.role]
@@ -20,7 +20,6 @@ export default function AdminPage() {
   const isAdmin = userRole === "ADMIN";
   const isSuperAdmin = userRole === "SUPERADMIN";
 
-  // --- Guardas de acceso
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/");
@@ -31,7 +30,6 @@ export default function AdminPage() {
     }
   }, [status, isAdmin, isSuperAdmin, router]);
 
-  // --- Limpieza de mensajes
   useEffect(() => {
     return () => {
       if (clearMsgRef.current) clearTimeout(clearMsgRef.current);
@@ -44,7 +42,7 @@ export default function AdminPage() {
     clearMsgRef.current = setTimeout(() => setMessage(""), 5000);
   };
 
-  // --- Generar 1 ticket genérico para el usuario actual (SUPERADMIN)
+  // ✅ Generar 1 ticket genérico para el usuario actual (vía /api/admin/tickets/issue)
   const generateDirectTicket = async () => {
     if (!session?.user?.id) {
       setAutoClearMessage("❌ Error: No se puede identificar el usuario");
@@ -55,24 +53,31 @@ export default function AdminPage() {
     setMessage("");
 
     try {
-      const response = await fetch("/api/admin/tickets/issue", {
+      const res = await fetch("/api/admin/tickets/issue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: session.user.id, // para mí
-          quantity: 1,             // un solo ticket
+          userId: session.user.id,
+          cantidad: 1,
+          status: "AVAILABLE",
         }),
       });
 
-      const result = await response.json();
+      const data = await res.json();
 
-      if (response.ok && result?.ok) {
-        const t = result?.tickets?.items?.[0];
-        const codeOrUuid = t?.code || t?.uuid || "N/A";
-        setAutoClearMessage(`✅ Ticket generado: ${codeOrUuid}`);
-      } else {
-        setAutoClearMessage(`❌ Error: ${result?.error || "Operación fallida"}`);
+      if (!res.ok || data?.ok === false) {
+        const errMsg = data?.error || "Operación fallida";
+        setAutoClearMessage(`❌ Error: ${errMsg}`);
+        return;
       }
+
+      // data.tickets es un array [{ id, uuid, code, generatedAt, userId }]
+      const t = Array.isArray(data?.tickets) ? data.tickets[0] : null;
+
+      const uuid = t?.uuid ?? "—";
+      const code = t?.code ?? t?.displayCode ?? "—";
+
+      setAutoClearMessage(`✅ Ticket generado. CODE: ${code} • UUID: ${uuid}`);
     } catch (err) {
       console.error("Error generating ticket:", err);
       setAutoClearMessage("❌ Error de conexión");
@@ -81,7 +86,6 @@ export default function AdminPage() {
     }
   };
 
-  // --- Vista de carga
   if (status === "loading") {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-950 to-gray-900 flex items-center justify-center p-4">
@@ -100,7 +104,6 @@ export default function AdminPage() {
     <div className="min-h-screen bg-gradient-to-br from-gray-950 to-gray-900 text-gray-100">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-2xl overflow-hidden shadow-2xl">
-          {/* Encabezado */}
           <div className="relative p-6 bg-gradient-to-r from-gray-800 to-gray-800/90 border-b border-gray-700">
             <div className="absolute inset-0 bg-gradient-to-r from-orange-500/5 to-transparent pointer-events-none"></div>
             <div className="relative">
@@ -128,7 +131,6 @@ export default function AdminPage() {
             </div>
           </div>
 
-          {/* Mensaje de estado */}
           {message && (
             <div
               className={`mx-6 mt-6 p-4 rounded-xl border-l-4 transition-all duration-300 ${
@@ -164,7 +166,6 @@ export default function AdminPage() {
             </div>
           )}
 
-          {/* Acciones principales */}
           <div className="p-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
               <button
@@ -201,7 +202,6 @@ export default function AdminPage() {
                 </div>
               </button>
 
-              {/* Ruta correcta para Mis Tickets */}
               <button
                 onClick={() => router.push("/mis-tickets")}
                 className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-emerald-500/10 to-emerald-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(16,185,129,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500/50 focus:ring-offset-gray-900"
@@ -249,12 +249,8 @@ export default function AdminPage() {
                       )}
                     </div>
                     <div>
-                      <p className="text-lg font-semibold text-white">
-                        {generating ? "Generando..." : "Generar Ticket (para mí)"}
-                      </p>
-                      <p className="text-sm text-gray-400">
-                        {generating ? "Espere un momento..." : "Crea un ticket genérico para tu usuario"}
-                      </p>
+                      <p className="text-lg font-semibold text-white">{generating ? "Generando..." : "Generar Ticket"}</p>
+                      <p className="text-sm text-gray-400">{generating ? "Espere un momento..." : "Crea un ticket de prueba"}</p>
                     </div>
                   </div>
                 </button>
@@ -299,7 +295,6 @@ export default function AdminPage() {
               )}
             </div>
 
-            {/* Tarjetas informativas */}
             <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="bg-gray-800/50 rounded-xl p-5 border border-gray-700/50">
                 <div className="flex items-center gap-3 mb-3">
@@ -379,7 +374,6 @@ export default function AdminPage() {
             </div>
           </div>
 
-          {/* Información contextual */}
           <div className="px-6 pb-6 bg-gray-800/30 border-t border-gray-700/50">
             <div className="flex items-start p-4 bg-gray-800/50 rounded-xl border border-gray-700/50">
               <div className="flex-shrink-0 mt-0.5">
@@ -396,25 +390,13 @@ export default function AdminPage() {
                 <ul className="mt-1 text-sm text-gray-300 space-y-1.5">
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2.5 flex-shrink-0"></span>
-                    <span>Utiliza el modo oscuro para sesiones de trabajo prolongadas y mayor concentración</span>
-                  </li>
-                  <li className="flex items-start">
-                    <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2.5 flex-shrink-0"></span>
-                    <span>Los tickets de prueba son útiles para verificar el flujo de participación</span>
-                  </li>
-                  <li className="flex items-start">
-                    <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2.5 flex-shrink-0"></span>
-                    <span>Revisa regularmente el panel de estadísticas para monitorear el rendimiento</span>
-                  </li>
-                  <li className="flex items-start">
-                    <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2.5 flex-shrink-0"></span>
-                    <span>El módulo de usuarios permite gestionar roles y permisos de forma centralizada</span>
+                    <span>Los tickets “directos” se emiten como GENERIC/AVAILABLE y no quedan pegados a ningún sorteo.</span>
                   </li>
                 </ul>
               </div>
             </div>
           </div>
-          {/* Fin contextual */}
+
         </div>
       </div>
     </div>

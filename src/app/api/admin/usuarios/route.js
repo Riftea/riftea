@@ -1,4 +1,3 @@
-// src/app/api/admin/usuarios/route.js
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
@@ -7,31 +6,34 @@ import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { authorize, isSuperAdmin, ROLES, normalizeRole } from "@/lib/authz";
 
-// Utils
+/* Utils */
 const intOr = (v, fallback) => {
   const n = Number.parseInt(String(v ?? ""), 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
-const parseSortBy = (v) => (["name", "email", "role", "isActive"].includes(v) ? v : "name");
+const parseSortBy = (v) => (["name", "email", "role", "isActive", "createdAt"].includes(v) ? v : "name");
 const parseSortDir = (v) => (v === "desc" ? "desc" : "asc");
 
 /**
  * GET /api/admin/usuarios
  * Query:
+ *  - lite=1                -> devuelve hasta 200 usuarios, campos mínimos (para autocompletar)
  *  - search: string
- *  - sortBy: "name" | "email" | "role" | "isActive"
+ *  - sortBy: "name" | "email" | "role" | "isActive" | "createdAt"
  *  - sortDir: "asc" | "desc"
  *  - page: 1-based
- *  - pageSize: 10 | 25 | 50
+ *  - pageSize: 10 | 25 | 50 | 100 (capado a 100)
  *
- * Respuesta: { success: true, users: [...], total: number }
+ * Respuestas:
+ *  - lite: { users: [...] }
+ *  - full: { success: true, users: [...], total: number, page, pageSize }
  */
 export async function GET(req) {
   try {
     const session = await getServerSession(authOptions);
 
-    // Si querés que ADMIN también pueda ver la lista, cambiá a [ROLES.SUPERADMIN, ROLES.ADMIN]
+    // Si querés que ADMIN también vea la lista, cambiá a [ROLES.SUPERADMIN, ROLES.ADMIN]
     const auth = authorize(session, [ROLES.SUPERADMIN]);
     if (!auth.ok) {
       const status = auth.reason === "NO_SESSION" ? 401 : 403;
@@ -48,6 +50,32 @@ export async function GET(req) {
     }
 
     const { searchParams } = new URL(req.url);
+    const lite = searchParams.get("lite") === "1";
+
+    // --- MODO LITE (autocompletar): rápido y sin paginar
+    if (lite) {
+      const search = (searchParams.get("search") || "").trim();
+      const whereLite = search
+        ? {
+            OR: [
+              { name: { contains: search, mode: "insensitive" } },
+              { email: { contains: search, mode: "insensitive" } },
+            ],
+          }
+        : {};
+
+      const users = await prisma.user.findMany({
+        where: whereLite,
+        orderBy: { createdAt: "desc" },
+        take: 200,
+        select: { id: true, name: true, email: true, role: true, createdAt: true },
+      });
+
+      // Respuesta sencilla (lo que consumen tus pantallas de emitir tickets)
+      return NextResponse.json({ users });
+    }
+
+    // --- MODO COMPLETO: con paginación/orden
     const search = (searchParams.get("search") || "").trim();
     const sortBy = parseSortBy(searchParams.get("sortBy") || "name");
     const sortDir = parseSortDir(searchParams.get("sortDir") || "asc");
@@ -55,20 +83,17 @@ export async function GET(req) {
     const rawPageSize = intOr(searchParams.get("pageSize"), 10);
     const pageSize = clamp(rawPageSize, 1, 100);
 
-    // Filtro
-    const where = search
-      ? {
-          OR: [
-            { name: { contains: search, mode: "insensitive" } },
-            { email: { contains: search, mode: "insensitive" } },
-            { role: { contains: search, mode: "insensitive" } },
-          ],
-        }
-      : {};
+    const where =
+      search.length > 0
+        ? {
+            OR: [
+              { name: { contains: search, mode: "insensitive" } },
+              { email: { contains: search, mode: "insensitive" } },
+              { role: { contains: search, mode: "insensitive" } },
+            ],
+          }
+        : {};
 
-    // Orden
-    // Nota: si querés ranking custom por rol (SUPERADMIN > ADMIN > USER) habría que usar queryRaw o ordenar luego,
-    // acá usamos orden directo por el campo.
     const orderBy =
       sortBy === "isActive"
         ? { isActive: sortDir }
@@ -76,6 +101,8 @@ export async function GET(req) {
         ? { email: sortDir }
         : sortBy === "role"
         ? { role: sortDir }
+        : sortBy === "createdAt"
+        ? { createdAt: sortDir }
         : { name: sortDir };
 
     const [total, users] = await Promise.all([
@@ -96,23 +123,21 @@ export async function GET(req) {
       }),
     ]);
 
-    return NextResponse.json({ success: true, users, total });
+    return NextResponse.json({ success: true, users, total, page, pageSize });
   } catch (error) {
-    console.error("Error fetching users:", error);
-    return NextResponse.json(
-      { success: false, error: "Error interno del servidor" },
-      { status: 500 }
-    );
+    console.error("[ADMIN/USUARIOS] GET error:", error);
+    return NextResponse.json({ success: false, error: "Error interno del servidor" }, { status: 500 });
   }
 }
 
 /**
  * PATCH /api/admin/usuarios
  * Body: { userId: string, role: "USER" | "ADMIN" }
- * - Solo SUPERADMIN
- * - No puede cambiarse a sí mismo
- * - No tocar a otro SUPERADMIN
- * - No degradar al último SUPERADMIN
+ * Reglas:
+ *  - Solo SUPERADMIN
+ *  - No puede cambiarse a sí mismo (salvo a SUPERADMIN -> SUPERADMIN, que no cambia)
+ *  - No tocar a otro SUPERADMIN (si no es el mismo)
+ *  - No degradar al último SUPERADMIN
  */
 export async function PATCH(req) {
   try {
@@ -136,10 +161,7 @@ export async function PATCH(req) {
     const role = normalizeRole(body?.role);
 
     if (!userId || typeof userId !== "string") {
-      return NextResponse.json(
-        { success: false, error: "ID de usuario inválido" },
-        { status: 400 }
-      );
+      return NextResponse.json({ success: false, error: "ID de usuario inválido" }, { status: 400 });
     }
 
     if (![ROLES.USER, ROLES.ADMIN].includes(role)) {
@@ -155,10 +177,7 @@ export async function PATCH(req) {
     });
 
     if (!targetUser) {
-      return NextResponse.json(
-        { success: false, error: "Usuario no encontrado" },
-        { status: 404 }
-      );
+      return NextResponse.json({ success: false, error: "Usuario no encontrado" }, { status: 404 });
     }
 
     // Evitar auto-degradación de SUPERADMIN
@@ -169,7 +188,7 @@ export async function PATCH(req) {
       );
     }
 
-    // No modificar a otro SUPERADMIN
+    // No modificar a otro SUPERADMIN (si no es uno mismo)
     if (normalizeRole(targetUser.role) === ROLES.SUPERADMIN && targetUser.id !== session.user.id) {
       return NextResponse.json(
         { success: false, error: "No puedes cambiar el rol de otro SUPERADMIN" },
@@ -185,7 +204,7 @@ export async function PATCH(req) {
           {
             success: false,
             error:
-              "No puedes degradar al último SUPERADMIN. Crea otro SUPERADMIN (semilla/manual) y luego intenta de nuevo.",
+              "No puedes degradar al último SUPERADMIN. Crea otro SUPERADMIN y luego intenta de nuevo.",
           },
           { status: 400 }
         );
@@ -197,21 +216,12 @@ export async function PATCH(req) {
       data: { role },
     });
 
-    return NextResponse.json({
-      success: true,
-      message: `Rol de usuario actualizado a ${role}`,
-    });
+    return NextResponse.json({ success: true, message: `Rol de usuario actualizado a ${role}` });
   } catch (error) {
-    console.error("Error updating user role:", error);
+    console.error("[ADMIN/USUARIOS] PATCH error:", error);
     if (error?.code === "P2025") {
-      return NextResponse.json(
-        { success: false, error: "Usuario no encontrado" },
-        { status: 404 }
-      );
+      return NextResponse.json({ success: false, error: "Usuario no encontrado" }, { status: 404 });
     }
-    return NextResponse.json(
-      { success: false, error: "Error interno del servidor" },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: false, error: "Error interno del servidor" }, { status: 500 });
   }
 }

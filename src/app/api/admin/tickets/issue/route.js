@@ -7,6 +7,11 @@ import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { emitirTicketParaUsuario, emitirNTicketsParaUsuario } from "@/server/tickets";
 
+/** GET para verificar que la ruta existe */
+export async function GET() {
+  return NextResponse.json({ ok: true, route: "/api/admin/tickets/issue" });
+}
+
 export async function POST(req) {
   try {
     const session = await getServerSession(authOptions);
@@ -30,13 +35,14 @@ export async function POST(req) {
       return NextResponse.json({ ok: false, error: "status inválido" }, { status: 400 });
     }
 
-    // Verificar que el usuario existe
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, name: true, email: true } });
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true, email: true },
+    });
     if (!user) {
       return NextResponse.json({ ok: false, error: "Usuario no encontrado" }, { status: 404 });
     }
 
-    // Emitir tickets (genéricos, sin asignar rifa ni purchase)
     const tickets =
       cantidad === 1
         ? [await emitirTicketParaUsuario(userId, status)]
@@ -55,14 +61,9 @@ export async function POST(req) {
       });
     } catch {}
 
-    return NextResponse.json({
-      ok: true,
-      count: tickets.length,
-      tickets, // públicos (id, uuid, code, generatedAt, status, userId)
-    });
+    return NextResponse.json({ ok: true, count: tickets.length, tickets });
   } catch (err) {
     console.error("[ADMIN/TICKETS/ISSUE] error:", err);
-    // Si por alguna razón Next devuelve una página HTML de error, este JSON nunca se parsea mal en el cliente
     return NextResponse.json({ ok: false, error: "Error interno" }, { status: 500 });
   }
 }

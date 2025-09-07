@@ -36,11 +36,11 @@ enum NotificationType {
 enum TicketStatus {
   PENDING
   ACTIVE
-  AVAILABLE   // ✅ tickets disponibles para usar
-  IN_RAFFLE   // ✅ tickets participando en una rifa
+  AVAILABLE // ✅ tickets disponibles para usar
+  IN_RAFFLE // ✅ tickets participando en una rifa
   WINNER
   LOST
-  DELETED     // ✅ tickets eliminados por admin
+  DELETED // ✅ tickets eliminados por admin
 }
 
 model User {
@@ -132,48 +132,47 @@ model Purchase {
 }
 
 model Ticket {
-  id          String   @id @default(cuid())
+  id String @id @default(cuid())
 
   // Identidad y visualización
-  uuid        String   @unique @default(cuid())   // (puede sobrescribirse con uuid v4 desde server)
-  code        String   @unique                    // código corto visible en UI (TK-XXX-XXXX)
+  uuid String @unique @default(cuid()) // (puede sobrescribirse con uuid v4 desde server)
+  code String @unique // código corto visible en UI (TK-XXX-XXXX)
 
   // Firma/HMAC (hex) – obligatorio
-  hash        String
+  hash String
 
   // Propietario
-  user        User     @relation(fields: [userId], references: [id])
-  userId      String   @map("user_id")
+  user   User   @relation(fields: [userId], references: [id])
+  userId String @map("user_id")
 
   // Rifa / compra / participación
-  raffle      Raffle?  @relation(fields: [raffleId], references: [id], onDelete: Cascade)
-  raffleId    String?  @map("raffle_id")
+  raffle   Raffle? @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  raffleId String? @map("raffle_id")
 
-  purchase    Purchase? @relation(fields: [purchaseId], references: [id])
-  purchaseId  String?    @map("purchase_id")
+  purchase   Purchase? @relation(fields: [purchaseId], references: [id])
+  purchaseId String?   @map("purchase_id")
 
   participation Participation? @relation("TicketParticipation")
 
   // Estado
-  status      TicketStatus @default(PENDING)
-  metodoPago  String?      @map("metodo_pago")
+  status     TicketStatus @default(PENDING)
+  metodoPago String?      @map("metodo_pago")
 
   // Emisión (timestamp usado para HMAC)
-  generatedAt DateTime  @default(now()) @map("generated_at")
+  generatedAt DateTime @default(now()) @map("generated_at")
 
   // Flags
-  isUsed      Boolean @default(false) @map("is_used")
-  isWinner    Boolean @default(false) @map("is_winner")
+  isUsed   Boolean @default(false) @map("is_used")
+  isWinner Boolean @default(false) @map("is_winner")
 
   // Timestamps
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   // Índices
   @@index([raffleId])
   @@index([userId])
   @@index([status])
   @@index([uuid])
-
   @@map("tickets")
 }
 

@@ -80,12 +80,17 @@ riftea
 │  │  │  │  │     └─ route.js
 │  │  │  │  ├─ sorteos
 │  │  │  │  │  └─ route.js
+│  │  │  │  ├─ tickets
+│  │  │  │  │  └─ issue
+│  │  │  │  │     └─ route,js
 │  │  │  │  └─ usuarios
 │  │  │  │     └─ route.js
 │  │  │  ├─ auth
 │  │  │  │  └─ [...nextauth]
 │  │  │  │     └─ route.js
 │  │  │  ├─ notifications
+│  │  │  │  └─ route.js
+│  │  │  ├─ ping
 │  │  │  │  └─ route.js
 │  │  │  ├─ purchases
 │  │  │  │  ├─ my-sales
@@ -102,10 +107,14 @@ riftea
 │  │  │  │     │  └─ route.js
 │  │  │  │     └─ route.js
 │  │  │  ├─ tickets
+│  │  │  │  ├─ issue
+│  │  │  │  │  └─ route.js
 │  │  │  │  ├─ my
 │  │  │  │  │  └─ route.js
 │  │  │  │  ├─ route.js
-│  │  │  │  └─ use
+│  │  │  │  ├─ use
+│  │  │  │  │  └─ route.js
+│  │  │  │  └─ verify
 │  │  │  │     └─ route.js
 │  │  │  ├─ uploads
 │  │  │  │  └─ route.js
@@ -166,7 +175,8 @@ riftea
 │  │  ├─ generateTickets.js
 │  │  ├─ prisma.js
 │  │  └─ queue.js
-│  ├─ pages
+│  ├─ server
+│  │  └─ tickets.js
 │  ├─ services
 │  │  ├─ audit.service.js
 │  │  ├─ purchases.service.js

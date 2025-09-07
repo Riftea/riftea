@@ -4,71 +4,40 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
-import { TicketsService } from "@/services/tickets.service";
+import { emitirTicketParaUsuario, emitirNTicketsParaUsuario } from "@/server/tickets";
 
-/**
- * POST /api/admin/generar-tickets
- * Body: { userId: string, quantity?: number }
- * - Emite N tickets GENÉRICOS (raffleId = null, status = "AVAILABLE") para el userId indicado.
- * - Requiere rol SUPERADMIN.
- * - Sin precios, sin purchases, sin asignación a rifa.
- */
-export async function POST(request) {
+/** GET de ping */
+export async function GET() {
+  return NextResponse.json({ ok: true, route: "/api/admin/generar-tickets" });
+}
+
+export async function POST(req) {
   try {
-    // Auth + rol
     const session = await getServerSession(authOptions);
     const role = String(session?.user?.role || "").toUpperCase();
     if (!session || role !== "SUPERADMIN") {
-      return NextResponse.json(
-        { ok: false, error: "No autorizado. Solo SUPERADMIN puede generar tickets." },
-        { status: 403 }
-      );
+      return NextResponse.json({ ok: false, error: "No autorizado" }, { status: 403 });
     }
 
-    const { userId, quantity = 1 } = await request.json();
+    const body = await req.json();
+    const userId = String(body?.userId || session.user.id || "").trim();
+    const cantidad = Number.isInteger(body?.cantidad) ? body.cantidad : 1;
+
     if (!userId) {
       return NextResponse.json({ ok: false, error: "userId es requerido" }, { status: 400 });
     }
-
-    const qty = Number.parseInt(quantity ?? 1, 10);
-    if (!Number.isInteger(qty) || qty < 1 || qty > 50) {
-      return NextResponse.json(
-        { ok: false, error: "quantity debe ser un entero entre 1 y 50" },
-        { status: 400 }
-      );
+    if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > 100) {
+      return NextResponse.json({ ok: false, error: "cantidad debe ser entero 1..100" }, { status: 400 });
     }
 
-    const items = await TicketsService.createTickets({ userId, quantity: qty });
+    const tickets =
+      cantidad === 1
+        ? [await emitirTicketParaUsuario(userId, "AVAILABLE")]
+        : await emitirNTicketsParaUsuario(userId, cantidad, "AVAILABLE");
 
-    // Audit best-effort
-    try {
-      await import("@/lib/prisma").then(async ({ default: prisma }) => {
-        await prisma.auditLog.create({
-          data: {
-            action: "ADMIN_TICKET_GENERATION_GENERIC",
-            userId: session.user.id,
-            targetType: "ticket",
-            targetId: items[0]?.id,
-            newValues: {
-              targetUserId: userId,
-              ticketCount: items.length,
-              type: "GENERIC",
-              timestamp: new Date().toISOString(),
-            },
-          },
-        });
-      });
-    } catch (e) {
-      console.warn("[audit] generar-tickets:", e?.message || e);
-    }
-
-    return NextResponse.json({
-      ok: true,
-      tickets: { items, count: items.length },
-      message: `Se emitieron ${items.length} ticket(s) genéricos (disponibles para cualquier sorteo).`,
-    });
+    return NextResponse.json({ ok: true, count: tickets.length, tickets });
   } catch (err) {
-    console.error("[admin/generar-tickets] error:", err);
-    return NextResponse.json({ ok: false, error: "Error emitiendo tickets" }, { status: 500 });
+    console.error("[ADMIN/GENERAR-TICKETS] error:", err);
+    return NextResponse.json({ ok: false, error: "Error interno" }, { status: 500 });
   }
 }

@@ -2,35 +2,43 @@
 import prisma from "@/lib/prisma";
 import { generateTicketData } from "@/lib/crypto.server";
 
-/**
- * Emite un ticket para un usuario.
- * @param {string} userId - ID del usuario dueño del ticket
- * @param {"PENDING"|"ACTIVE"} status - estado inicial del ticket
- * @returns {Promise<{id:string, uuid:string, code:string, generatedAt:Date, userId:string}>}
- */
-export async function emitirTicketParaUsuario(userId, status = "ACTIVE") {
-  if (!userId) throw new Error("userId es requerido");
-
+/** Emite 1 ticket genérico (AVAILABLE) con HMAC y generatedAt */
+export async function emitirTicketParaUsuario(userId, status = "AVAILABLE", tx = prisma) {
   const t = generateTicketData(userId);
-  // t = { uuid, displayCode, hmac, generatedAt, timestamp }
-
-  const ticket = await prisma.ticket.create({
+  const ticket = await tx.ticket.create({
     data: {
-      uuid: t.uuid,               // identificador interno único
-      code: t.displayCode,        // código visible (TK-XXX-XXXX)
-      hash: t.hmac,               // firma HMAC HEX
-      generatedAt: t.generatedAt, // clave: timestamp usado en la firma
+      uuid: t.uuid,
+      code: t.displayCode,
+      hash: t.hmac,         // HMAC HEX (no se expone hacia afuera)
+      generatedAt: t.generatedAt,
       userId,
-      status                      // "ACTIVE" o "PENDING"
+      status,               // por defecto AVAILABLE (genérico)
     },
     select: {
-      id: true,
-      uuid: true,
-      code: true,
-      generatedAt: true,
-      userId: true
+      id: true, uuid: true, code: true, generatedAt: true, status: true, userId: true,
+    },
+  });
+  return ticket;
+}
+
+/** Emite N tickets genéricos (con reintentos por colisiones únicas) */
+export async function emitirNTicketsParaUsuario(userId, cantidad = 1, status = "AVAILABLE") {
+  const out = [];
+  await prisma.$transaction(async (tx) => {
+    for (let i = 0; i < cantidad; i++) {
+      let done = false, attempts = 0;
+      while (!done && attempts < 5) {
+        attempts++;
+        try {
+          const t = await emitirTicketParaUsuario(userId, status, tx);
+          out.push(t);
+          done = true;
+        } catch (e) {
+          if (e?.code === "P2002" && attempts < 5) continue;
+          throw e;
+        }
+      }
     }
   });
-
-  return ticket;
+  return out;
 }
