@@ -4,7 +4,7 @@ import { getServerSession } from "next-auth/next";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
-// Aviso útil en dev si faltan envs críticas
+// Aviso útil si faltan envs críticas
 const missing = ["NEXTAUTH_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"].filter(
   (k) => !process.env[k]
 );
@@ -14,173 +14,67 @@ if (missing.length) {
 
 export const authOptions = {
   trustHost: true,
-  providers: [
-    GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    }),
-  ],
   secret: process.env.NEXTAUTH_SECRET,
 
+  providers: [
+    GoogleProvider({
+      clientId: process.env.GOOGLE_CLIENT_ID ?? "",
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+    }),
+  ],
+
+  // ⚠️ Hotfix: JAMÁS bloquear el login por fallas de DB
   callbacks: {
-    async signIn({ user }) {
+    async signIn({ user, account }) {
       if (!user?.email) {
-        console.warn("signIn: no email provided");
-        return false;
+        console.warn("[SIGNIN] sin email -> permitir igual para no romper flujo");
+        return true; // nunca cortar
       }
-
-      console.log("[SIGNIN] intentando signIn para:", user.email);
-
-      try {
-        const existingUser = await prisma.user.findUnique({
-          where: { email: user.email },
-        });
-
-        if (existingUser) {
-          await prisma.user.update({
-            where: { email: user.email },
-            data: {
-              name: user.name || existingUser.name,
-              image: user.image || existingUser.image,
-            },
-          });
-          console.log("[SIGNIN] Usuario existente actualizado:", user.email);
-        } else {
-          const newUser = await prisma.user.create({
-            data: {
-              name: user.name || null,
-              email: user.email,
-              image: user.image || null,
-              password: "NEXTAUTH_USER",
-            },
-          });
-          console.log("[SIGNIN] Usuario nuevo creado:", newUser.email, "ID:", newUser.id);
-
-          // Notificación de bienvenida (best-effort)
-          try {
-            await prisma.notification.create({
-              data: {
-                userId: newUser.id,
-                title: "¡Bienvenido a Riftea!",
-                message: `¡Bienvenido ${newUser.name ?? "a Riftea"}! Gracias por registrarte.`,
-                type: "SYSTEM_ALERT",
-              },
-            });
-            console.log("[SIGNIN] notificación de bienvenida creada para:", newUser.email);
-          } catch (e) {
-            console.error("[SIGNIN] No se pudo crear notificación de bienvenida:", e);
-          }
-        }
-
-        return true;
-      } catch (err) {
-        console.error("[SIGNIN] error al guardar usuario en DB:", err);
-        return false;
-      }
+      console.log("[SIGNIN] intento:", user.email, "provider:", account?.provider);
+      return true; // ✅ permitimos siempre; la persistencia va en events.signIn
     },
 
     async jwt({ token, user }) {
-      if (user?.email) {
-        try {
-          const dbUser = await prisma.user.findUnique({
-            where: { email: user.email },
-          });
-
-          if (dbUser) {
-            token.id = dbUser.id;
-            token.uid = dbUser.id;
-            console.log("[JWT] token actualizado con DB ID:", dbUser.id);
-          }
-        } catch (error) {
-          console.error("[JWT] error al buscar usuario en DB:", error);
-        }
-      }
-
-      if (!token.id && token.sub) {
-        token.id = token.sub;
-      }
-
+      // si se logueó recién, podemos cargar id luego en session()
+      if (!token.id && token.sub) token.id = token.sub;
       return token;
     },
 
     async session({ session, token }) {
+      // Propagar id si existe
       if (token?.id) {
         session.user.id = token.id;
         session.user.dbId = token.id;
       }
 
+      // Enriquecer sesión desde tu DB, pero sin romper si falla
       if (!session?.user?.email) return session;
 
       try {
-        // Query de usuario SIN ticketPrice de DB y con isPrivate donde corresponda
         const dbUser = await prisma.user.findUnique({
           where: { email: session.user.email },
           include: {
-            // Tickets disponibles del usuario (con la rifa a la que pertenecen)
             tickets: {
               where: { isUsed: false },
               include: {
                 raffle: {
-                  select: {
-                    id: true,
-                    title: true,
-                    status: true,
-                    endsAt: true,
-                    drawnAt: true,
-                    isPrivate: true, // <- importante para permisos/UI
-                  },
+                  select: { id: true, title: true, status: true, endsAt: true, drawnAt: true, isPrivate: true },
                 },
               },
             },
-
-            // Últimas compras (sin precios; solo conteos/estatus)
             purchases: {
               orderBy: { createdAt: "desc" },
               take: 5,
-              include: {
-                tickets: {
-                  select: {
-                    id: true,
-                    code: true,
-                    status: true,
-                  },
-                },
-              },
+              include: { tickets: { select: { id: true, code: true, status: true } } },
             },
-
-            // Rifas ganadas por el usuario (sin ticketPrice)
             wonRaffles: {
-              select: {
-                id: true,
-                title: true,
-                drawnAt: true,
-                isPrivate: true, // <- para visibilidad en UI si hiciera falta
-              },
+              select: { id: true, title: true, drawnAt: true, isPrivate: true },
             },
-
-            // Notificaciones no leídas
             notifications: {
               where: { read: false },
               orderBy: { createdAt: "desc" },
-              select: {
-                id: true,
-                title: true,
-                message: true,
-                type: true,
-                createdAt: true,
-              },
+              select: { id: true, title: true, message: true, type: true, createdAt: true },
             },
-
-            // ⚠️ Si en tu schema existe la relación "raffles" (rifas creadas por el usuario)
-            // y necesitás tenerlas en sesión, podés habilitar este bloque:
-            // raffles: {
-            //   select: {
-            //     id: true,
-            //     title: true,
-            //     status: true,
-            //     isPrivate: true, // <- clave para Mis sorteos y permisos
-            //   },
-            // },
           },
         });
 
@@ -191,20 +85,14 @@ export const authOptions = {
           session.user.isActive = dbUser.isActive;
           session.user.memberSince = dbUser.createdAt;
 
-          // Resúmenes/conteos (sin montos calculados aquí)
           session.user.availableTickets = dbUser.tickets?.length || 0;
           session.user.totalPurchases = dbUser.purchases?.length || 0;
           session.user.wonRaffles = dbUser.wonRaffles?.length || 0;
           session.user.unreadNotifications = dbUser.notifications?.length || 0;
-
-          // Extra: tickets que están en rifas activas (conteo)
           session.user.activeTicketsInRaffles =
             dbUser.tickets?.filter((t) => t.raffle && t.raffle.status === "ACTIVE").length || 0;
 
-          // ❌ No calcular montos/ingresos aquí (precio derivado vive en endpoints).
-          //    Si alguna vista necesita montos, consúmelos desde los endpoints que
-          //    inyectan unitPrice/ticketPrice derivado.
-          console.log("[SESSION] usuario encontrado en DB:", dbUser.email, "role:", session.user.role);
+          console.log("[SESSION] OK para:", dbUser.email, "role:", session.user.role);
         } else {
           session.user.role = "user";
           session.user.availableTickets = 0;
@@ -212,7 +100,7 @@ export const authOptions = {
           session.user.wonRaffles = 0;
           session.user.unreadNotifications = 0;
           session.user.activeTicketsInRaffles = 0;
-          console.log("[SESSION] usuario NO encontrado en DB:", session.user.email, "asignando valores por defecto");
+          console.log("[SESSION] user no existe en DB aún:", session.user.email);
         }
       } catch (err) {
         session.user.role = "user";
@@ -221,25 +109,60 @@ export const authOptions = {
         session.user.wonRaffles = 0;
         session.user.unreadNotifications = 0;
         session.user.activeTicketsInRaffles = 0;
-        console.error("[SESSION] callback error:", err, "- asignando valores por defecto");
+        console.error("[SESSION] error DB (ignorado):", err?.message);
       }
 
       return session;
     },
   },
 
+  // Persistencia de usuario en DB ➜ best-effort y NO bloqueante
   events: {
-    async signIn({ user, isNewUser }) {
-      console.log(`[EVENT] Usuario ${user?.email} se logueó. Cuenta nueva en NextAuth: ${isNewUser}`);
+    async signIn({ user }) {
+      if (!user?.email) return;
+      try {
+        // Usamos upsert para evitar duplicados
+        const up = await prisma.user.upsert({
+          where: { email: user.email },
+          update: {
+            name: user.name ?? undefined,
+            image: user.image ?? undefined,
+          },
+          create: {
+            name: user.name ?? null,
+            email: user.email,
+            image: user.image ?? null,
+            // quitá el campo password si tu modelo ya no lo necesita
+            password: "NEXTAUTH_USER",
+          },
+        });
+        console.log("[EVENT signIn] upsert OK:", up.email);
+
+        // Notificación de bienvenida (best-effort)
+        try {
+          await prisma.notification.create({
+            data: {
+              userId: up.id,
+              title: "¡Bienvenido a Riftea!",
+              message: `¡Bienvenido ${up.name ?? "a Riftea"}! Gracias por registrarte.`,
+              type: "SYSTEM_ALERT",
+            },
+          });
+        } catch (e) {
+          // no bloquear
+        }
+      } catch (e) {
+        console.error("[EVENT signIn] fallo upsert (ignorado):", e?.message);
+      }
     },
     async signOut() {
-      console.log("[EVENT] Usuario cerró sesión");
+      console.log("[EVENT] signOut");
     },
   },
 
   session: {
     strategy: "jwt",
-    maxAge: 30 * 24 * 60 * 60, // 30 días
+    maxAge: 30 * 24 * 60 * 60,
   },
 
   pages: {
@@ -251,8 +174,7 @@ export const authOptions = {
 // Helpers
 export async function getServerAuth() {
   try {
-    const session = await getServerSession(authOptions);
-    return session;
+    return await getServerSession(authOptions);
   } catch (error) {
     console.error("[AUTH] Error getting server session:", error);
     return null;
@@ -261,15 +183,8 @@ export async function getServerAuth() {
 
 export async function requireAdmin() {
   const session = await getServerAuth();
-
-  if (!session || !session.user) {
-    throw new Error("Authentication required");
-  }
-
-  if (session.user.role !== "admin" && session.user.role !== "superadmin") {
-    throw new Error("Admin access required");
-  }
-
+  if (!session?.user) throw new Error("Authentication required");
+  if (!["admin", "superadmin"].includes(session.user.role)) throw new Error("Admin access required");
   return session;
 }
 
@@ -285,25 +200,17 @@ export async function getCurrentUser() {
 
 export async function requireAuth() {
   const user = await getCurrentUser();
-
-  if (!user) {
-    throw new Error("Authentication required");
-  }
-
+  if (!user) throw new Error("Authentication required");
   return user;
 }
 
 export function createErrorResponse(message, status = 400) {
   return NextResponse.json({ success: false, error: message }, { status });
 }
-
 export function createSuccessResponse(data, message = "Success") {
   return NextResponse.json({ success: true, message, data });
 }
-
 export function createUnauthorizedResponse(message = "Unauthorized") {
   return NextResponse.json({ success: false, error: message }, { status: 401 });
 }
-
-// Compat
 export const verifyAuth = getCurrentUser;
