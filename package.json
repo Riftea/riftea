@@ -3,14 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    /* ===== Dev genéricos ===== */
     "dev": "next dev",
     "build": "prisma generate; next build",
     "start": "next start",
     "lint": "next lint",
     "postinstall": "prisma generate",
 
-    /* ===== Docker (local) ===== */
     "dev:docker": "npx dotenv --override -e .env.shared -e .env.docker -- next dev",
     "build:docker": "npx dotenv --override -e .env.shared -e .env.docker -- next build",
     "start:docker": "npx dotenv --override -e .env.shared -e .env.docker -- next start",
@@ -18,7 +16,6 @@
     "migrate:docker": "npx dotenv --override -e .env.shared -e .env.docker -- npx prisma migrate dev",
     "generate:docker": "npx dotenv --override -e .env.shared -e .env.docker -- npx prisma generate",
 
-    /* ===== Supabase (remoto) ===== */
     "dev:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- next dev",
     "build:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- next build",
     "start:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- next start",
@@ -26,7 +23,6 @@
     "migrate:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- npx prisma migrate deploy",
     "generate:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- npx prisma generate",
 
-    /* ===== Debug: a qué DB apunto ===== */
     "env:which:docker": "npx dotenv --override -e .env.shared -e .env.docker -- node -e \"console.log('DATABASE_URL=', process.env.DATABASE_URL)\"",
     "env:which:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- node -e \"console.log('DATABASE_URL=', process.env.DATABASE_URL)\""
   },
