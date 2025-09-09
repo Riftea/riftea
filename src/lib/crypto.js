@@ -1,6 +1,10 @@
 // src/lib/crypto.js - SISTEMA UNIFICADO CON HMAC-SHA256 + ENTEROS + FAIL-FAST
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
+import {
+  TICKET_PRICE,
+  POT_CONTRIBUTION_PER_TICKET,
+} from "@/lib/ticket.server";
 
 // ====== Configuración de secreto (FAIL FAST) ======
 const TICKET_SECRET = process.env.TICKET_SECRET;
@@ -79,9 +83,9 @@ export function generateTicketData(userId) {
   return {
     uuid,
     displayCode,
-    hmac,         // hex
-    generatedAt,  // Date
-    timestamp,    // number (ms) – opcional guardar explícito
+    hmac, // hex
+    generatedAt, // Date
+    timestamp, // number (ms) – opcional guardar explícito
   };
 }
 
@@ -92,7 +96,7 @@ export function validateTicket(ticketData, userId) {
   const { uuid, hmac, generatedAt } = ticketData || {};
   if (!uuid || !hmac || !generatedAt) {
     return { valid: false, error: "Datos incompletos del ticket" };
-    }
+  }
   const timestamp = new Date(generatedAt).getTime();
   const ok = verifyTicketHMAC(uuid, userId, hmac, timestamp);
   if (!ok) return { valid: false, error: "Firma HMAC inválida" };
@@ -102,11 +106,13 @@ export function validateTicket(ticketData, userId) {
 // ====== Reglas de precios enteros (negocio) ======
 
 /**
- * Valida precios como enteros con reglas de negocio:
+ * Valida enteros genéricos con reglas de negocio:
  * - Entero
  * - Mínimo 1000
  * - Máximo 8 dígitos
  * - Múltiplo de 1000
+ *
+ * Útil p/ validar prizeValue u otros montos configurables.
  */
 export function validateIntegerPrice(price, fieldName = "precio") {
   const priceInt = Number(price);
@@ -126,33 +132,22 @@ export function validateIntegerPrice(price, fieldName = "precio") {
 }
 
 /**
- * Formatea el input de precios desde el frontend:
- * - Solo dígitos
- * - <1000 => *1000
- * - >=1000 => literal
- * - Valida reglas duras
+ * (Opcional / Legacy)
+ * Sanitiza una entrada numérica PARA DISPLAY genérico (no edita el precio del sistema).
+ * - Mantiene solo dígitos
+ * - Devuelve entero (0 si vacío)
+ *
+ * Nota: ya no aplica reglas de negocio del ticket price (ese valor viene del server).
  */
 export function formatTicketPriceInput(input) {
-  if (input === undefined || input === null || String(input).trim() === "") {
-    throw new Error("El precio es requerido");
-  }
-  const raw = String(input).trim();
-  if (!/^\d+$/.test(raw)) {
-    throw new Error("El precio debe ser un número entero (sin decimales)");
-  }
-  let value = Number(raw);
-  value = value < 1000 ? value * 1000 : value;
-
-  if (value < 1000) throw new Error("El precio mínimo es 1000");
-  if (String(value).length > 8) throw new Error("El precio no puede superar 8 dígitos");
-  if (value % 1000 !== 0) throw new Error("El precio debe ser múltiplo de 1000");
-
-  return value;
+  const raw = String(input ?? "").replace(/[^\d]/g, "");
+  return raw ? Number(raw) : 0;
 }
 
 /**
  * Convierte enteros a formato user-friendly para display.
  * Si showAsThousands = true y es múltiplo de 1000, muestra "5" en lugar de "5000".
+ * Úsalo para mostrar TICKET_PRICE o montos de server.
  */
 export function formatTicketPriceDisplay(priceInt, showAsThousands = true) {
   const price = Number(priceInt);
@@ -171,53 +166,54 @@ export function formatTicketPriceDisplay(priceInt, showAsThousands = true) {
 }
 
 /**
- * Calcula totales con validación de enteros
+ * Calcula totales usando el precio FIJO del sistema.
+ * Firma nueva: calculateTicketTotal(quantity)
  */
-export function calculateTicketTotal(ticketPrice, quantity) {
-  const priceInt = validateIntegerPrice(ticketPrice, "Precio del ticket");
+export function calculateTicketTotal(quantity) {
   const qtyInt = Number(quantity);
-
   if (!Number.isInteger(qtyInt) || qtyInt <= 0) {
     throw new Error("La cantidad debe ser un número entero positivo");
   }
 
   return {
-    ticketPrice: priceInt,
+    ticketPrice: TICKET_PRICE,
     quantity: qtyInt,
-    totalAmount: priceInt * qtyInt,
+    totalAmount: TICKET_PRICE * qtyInt,
     priceType: "INTEGER",
   };
 }
 
 /**
- * Calcular split con enteros puros 50/50 (por ticket y total)
+ * Calcular split con enteros puros usando constantes del sistema.
+ * Firma nueva: calculateFundSplitInt(quantity)
+ * - Aporte por ticket: POT_CONTRIBUTION_PER_TICKET
+ * - Precio por ticket: TICKET_PRICE
  */
-export function calculateFundSplitInt(ticketPrice, quantity) {
-  const priceInt = validateIntegerPrice(ticketPrice, "Precio del ticket");
+export function calculateFundSplitInt(quantity) {
   const qtyInt = Number(quantity);
-
   if (!Number.isInteger(qtyInt) || qtyInt <= 0) {
     throw new Error("La cantidad debe ser un número entero positivo");
   }
 
-  const ticketContribution = Math.floor(priceInt / 2);
+  const ticketContribution = POT_CONTRIBUTION_PER_TICKET;
   const totalTicketContribution = ticketContribution * qtyInt;
-  const platformShare = priceInt * qtyInt - totalTicketContribution;
+  const platformShare = (TICKET_PRICE - ticketContribution) * qtyInt;
 
   return {
-    ticketContribution,      // aporte por ticket
+    ticketContribution, // aporte por ticket
     totalTicketContribution, // total al fondo
-    platformShare,           // para la plataforma
-    ticketPrice: priceInt,
+    platformShare, // para la plataforma
+    ticketPrice: TICKET_PRICE,
     quantity: qtyInt,
-    totalAmount: priceInt * qtyInt,
-    splitPercentage: Math.round((ticketContribution / priceInt) * 100),
+    totalAmount: TICKET_PRICE * qtyInt,
+    splitPercentage: Math.round((ticketContribution / TICKET_PRICE) * 100),
     priceType: "INTEGER",
   };
 }
 
 /**
  * Legacy: split a partir de un total entero (50/50)
+ * (Se mantiene por compatibilidad con llamadas antiguas que ya pasaban un total)
  */
 export function calculateFundSplit(totalAmount) {
   const totalInt = Number(totalAmount);
@@ -238,26 +234,28 @@ export function calculateFundSplit(totalAmount) {
 
 /**
  * Calcula cuántos participantes necesitás para cubrir un premio
- * considerando que cada ticket aporta floor(precio/2) al fondo.
+ * usando el aporte fijo del sistema (POT_CONTRIBUTION_PER_TICKET).
+ * Firma nueva: calculateParticipantsNeeded(prizeValue)
  */
-export function calculateParticipantsNeeded(prizeValue, ticketPrice) {
+export function calculateParticipantsNeeded(prizeValue) {
   const prizeInt = validateIntegerPrice(prizeValue, "Valor del premio");
-  const priceInt = validateIntegerPrice(ticketPrice, "Precio del ticket");
 
-  const contributionPerTicket = Math.floor(priceInt / 2);
-  if (contributionPerTicket === 0) {
-    throw new Error("El precio del ticket es muy bajo para generar contribución");
+  const contributionPerTicket = POT_CONTRIBUTION_PER_TICKET;
+  if (contributionPerTicket <= 0) {
+    throw new Error("La contribución por ticket no es válida");
   }
 
   const participantsNeeded = Math.ceil(prizeInt / contributionPerTicket);
 
   return {
     prizeValue: prizeInt,
-    ticketPrice: priceInt,
+    ticketPrice: TICKET_PRICE,
     contributionPerTicket,
     participantsNeeded,
     totalContribution: participantsNeeded * contributionPerTicket,
-    platformShare: participantsNeeded * priceInt - participantsNeeded * contributionPerTicket,
+    platformShare:
+      participantsNeeded * TICKET_PRICE -
+      participantsNeeded * contributionPerTicket,
   };
 }
 

@@ -3,11 +3,32 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    /* ===== Dev genéricos ===== */
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build": "prisma generate; next build",
     "start": "next start",
     "lint": "next lint",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+
+    /* ===== Docker (local) ===== */
+    "dev:docker": "npx dotenv --override -e .env.shared -e .env.docker -- next dev",
+    "build:docker": "npx dotenv --override -e .env.shared -e .env.docker -- next build",
+    "start:docker": "npx dotenv --override -e .env.shared -e .env.docker -- next start",
+    "studio:docker": "npx dotenv --override -e .env.shared -e .env.docker -- npx prisma studio",
+    "migrate:docker": "npx dotenv --override -e .env.shared -e .env.docker -- npx prisma migrate dev",
+    "generate:docker": "npx dotenv --override -e .env.shared -e .env.docker -- npx prisma generate",
+
+    /* ===== Supabase (remoto) ===== */
+    "dev:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- next dev",
+    "build:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- next build",
+    "start:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- next start",
+    "studio:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- npx prisma studio",
+    "migrate:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- npx prisma migrate deploy",
+    "generate:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- npx prisma generate",
+
+    /* ===== Debug: a qué DB apunto ===== */
+    "env:which:docker": "npx dotenv --override -e .env.shared -e .env.docker -- node -e \"console.log('DATABASE_URL=', process.env.DATABASE_URL)\"",
+    "env:which:supabase": "npx dotenv --override -e .env.shared -e .env.supabase -- node -e \"console.log('DATABASE_URL=', process.env.DATABASE_URL)\""
   },
   "dependencies": {
     "@next-auth/prisma-adapter": "^1.0.7",
@@ -35,6 +56,7 @@
     "@tailwindcss/postcss": "^4",
     "@types/node": "24.2.1",
     "@types/react": "19.1.9",
+    "dotenv-cli": "^10.0.0",
     "eslint": "^9",
     "eslint-config-next": "15.4.6",
     "prisma": "^6.15.0",

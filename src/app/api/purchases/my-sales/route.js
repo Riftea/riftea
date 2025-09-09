@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth.js';
 import prisma from '@/lib/prisma.js';
+// ✅ Precio centralizado en el servidor (.env) — no usar DB ni body
+import { TICKET_PRICE } from '@/lib/ticket.server';
 
 export async function GET() {
   console.log('💰 [MY-SALES] ===== INICIO DE SOLICITUD =====');
@@ -69,13 +71,14 @@ export async function GET() {
 
     console.log('💰 [MY-SALES] Buscando raffles del usuario...');
     
-    // Buscar raffles del usuario (sus ventas) - Verificar que existe el modelo
+    // Buscar raffles del usuario (sus ventas)
     let userRaffles;
     try {
       userRaffles = await prisma.raffle.findMany({
         where: { 
           ownerId: dbUser.id 
         },
+        // ❗️No seleccionar ni depender de ticketPrice de la DB
         include: {
           _count: {
             select: {
@@ -119,7 +122,8 @@ export async function GET() {
     console.log('💰 [MY-SALES] Calculando estadísticas...');
     const salesStats = userRaffles.reduce((stats, raffle) => {
       const ticketsSold = raffle._count?.tickets || 0;
-      const revenue = ticketsSold * (raffle.ticketPrice || 0);
+      // ✅ Reemplazo: revenue = ticketsSold * TICKET_PRICE (no usar raffle.ticketPrice)
+      const revenue = ticketsSold * TICKET_PRICE;
       
       stats.totalRaffles += 1;
       stats.totalTicketsSold += ticketsSold;
@@ -144,33 +148,39 @@ export async function GET() {
 
     // Preparar datos de ventas con información adicional
     console.log('💰 [MY-SALES] Preparando datos de respuesta...');
-    const salesData = userRaffles.map(raffle => ({
-      id: raffle.id,
-      title: raffle.title,
-      description: raffle.description,
-      ticketPrice: raffle.ticketPrice,
-      maxTickets: raffle.maxTickets,
-      status: raffle.status,
-      createdAt: raffle.createdAt,
-      endsAt: raffle.endsAt,
-      drawnAt: raffle.drawnAt,
-      winnerId: raffle.winnerId,
-      
-      // Estadísticas de la rifa
-      stats: {
-        ticketsSold: raffle._count?.tickets || 0,
-        participationsCount: raffle._count?.participations || 0,
-        revenue: (raffle._count?.tickets || 0) * (raffle.ticketPrice || 0),
-        selloutPercentage: raffle.maxTickets ? 
-          Math.round(((raffle._count?.tickets || 0) / raffle.maxTickets) * 100) : 0
-      },
-      
-      // Estado calculado
-      isActive: raffle.status === 'ACTIVE',
-      isCompleted: raffle.status === 'FINISHED' || raffle.status === 'DRAWN',
-      hasWinner: !!raffle.winnerId,
-      isExpired: raffle.endsAt ? new Date() > new Date(raffle.endsAt) : false
-    }));
+    const salesData = userRaffles.map(raffle => {
+      const ticketsSold = raffle._count?.tickets || 0;
+
+      return {
+        id: raffle.id,
+        title: raffle.title,
+        description: raffle.description,
+        // ✅ Antes: ticketPrice. Ahora exponemos el precio unitario del server.
+        unitPrice: TICKET_PRICE,
+        maxTickets: raffle.maxTickets,
+        status: raffle.status,
+        createdAt: raffle.createdAt,
+        endsAt: raffle.endsAt,
+        drawnAt: raffle.drawnAt,
+        winnerId: raffle.winnerId,
+        
+        // Estadísticas de la rifa
+        stats: {
+          ticketsSold,
+          participationsCount: raffle._count?.participations || 0,
+          // ✅ Revenue con TICKET_PRICE del server
+          revenue: ticketsSold * TICKET_PRICE,
+          selloutPercentage: raffle.maxTickets ? 
+            Math.round((ticketsSold / raffle.maxTickets) * 100) : 0
+        },
+        
+        // Estado calculado
+        isActive: raffle.status === 'ACTIVE',
+        isCompleted: raffle.status === 'FINISHED' || raffle.status === 'DRAWN',
+        isExpired: raffle.endsAt ? new Date() > new Date(raffle.endsAt) : false,
+        hasWinner: !!raffle.winnerId
+      };
+    });
 
     console.log('💰 [MY-SALES] Datos preparados, enviando respuesta...');
 

@@ -10,6 +10,9 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+/* =========================
+   Enums
+   ========================= */
 enum Role {
   USER
   ADMIN
@@ -20,9 +23,10 @@ enum RaffleStatus {
   DRAFT
   PUBLISHED
   ACTIVE
+  READY_TO_DRAW   // usado por /api/raffles/[id]/draw
   FINISHED
   CANCELLED
-  COMPLETED // ✅ rifas completadas
+  COMPLETED
 }
 
 enum NotificationType {
@@ -30,19 +34,22 @@ enum NotificationType {
   RAFFLE_WINNER
   RAFFLE_CREATED
   SYSTEM_ALERT
-  WINNER_NOTIFICATION // ✅ notificaciones de ganadores
+  WINNER_NOTIFICATION
 }
 
 enum TicketStatus {
   PENDING
   ACTIVE
-  AVAILABLE // ✅ tickets disponibles para usar
-  IN_RAFFLE // ✅ tickets participando en una rifa
+  AVAILABLE
+  IN_RAFFLE
   WINNER
   LOST
-  DELETED // ✅ tickets eliminados por admin
+  DELETED
 }
 
+/* =========================
+   Models
+   ========================= */
 model User {
   id       String  @id @default(cuid())
   name     String?
@@ -67,17 +74,16 @@ model User {
 }
 
 model Raffle {
-  id          String  @id @default(cuid())
+  id          String @id @default(cuid())
   title       String
   description String
-  ticketPrice Int     @map("ticket_price")
-  maxTickets  Int?    @map("max_tickets")
-  imageUrl    String? @map("image_url")
+
+  imageUrl String? @map("image_url")
 
   // Premio
   prizeTitle       String? @map("prize_title")
   prizeDescription String? @map("prize_description")
-  prizeValue       Int?    @map("prize_value")
+  prizeValue       Int     @map("prize_value")
   prizeImage       String? @map("prize_image")
   prizeCategory    String? @map("prize_category")
 
@@ -89,19 +95,32 @@ model Raffle {
   owner      User    @relation("RaffleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   ownerImage String? @map("owner_image")
 
-  // Ganador
+  // Ganador (usuario)
   winnerId      String? @map("winner_id")
   winner        User?   @relation("RaffleWinner", fields: [winnerId], references: [id], onDelete: SetNull)
   winningTicket String? @map("winning_ticket")
 
-  status          RaffleStatus @default(DRAFT)
-  createdAt       DateTime     @default(now()) @map("created_at")
-  updatedAt       DateTime     @default(now()) @updatedAt @map("updated_at")
-  publishedAt     DateTime?    @map("published_at")
-  startsAt        DateTime?    @map("starts_at")
-  endsAt          DateTime?    @map("ends_at")
-  drawnAt         DateTime?    @map("drawn_at")
-  maxParticipants Int?         @map("max_participants")
+  // Estado y fechas
+  status      RaffleStatus @default(DRAFT)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @default(now()) @updatedAt @map("updated_at")
+  publishedAt DateTime?    @map("published_at")
+  startsAt    DateTime?    @map("starts_at")
+  endsAt      DateTime?    @map("ends_at")
+  drawnAt     DateTime?    @map("drawn_at")
+
+  // ✅ Campos mínimos para sorteo seguro (commit–reveal + schedule)
+  drawAt         DateTime? @map("draw_at")
+  drawSeedHash   String?   @map("draw_seed_hash")
+  drawSeedReveal String?   @map("draw_seed_reveal")
+
+  // ✅ Participación ganadora (uno-a-uno)
+  winnerParticipationId String?        @unique @map("winner_participation_id")
+  winnerParticipation   Participation? @relation(name: "WinnerParticipation", fields: [winnerParticipationId], references: [id], onDelete: SetNull)
+
+  // Participación
+  maxParticipants Int     @map("max_participants")
+  isPrivate       Boolean @default(false) @map("is_private")
 
   tickets        Ticket[]
   participations Participation[]
@@ -109,6 +128,8 @@ model Raffle {
   @@index([ownerId])
   @@index([winnerId])
   @@index([status])
+  @@index([isPrivate])
+  @@index([winnerParticipationId])
   @@map("raffles")
 }
 
@@ -135,8 +156,8 @@ model Ticket {
   id String @id @default(cuid())
 
   // Identidad y visualización
-  uuid String @unique @default(cuid()) // (puede sobrescribirse con uuid v4 desde server)
-  code String @unique // código corto visible en UI (TK-XXX-XXXX)
+  uuid String @unique @default(cuid())
+  code String @unique
 
   // Firma/HMAC (hex) – obligatorio
   hash String
@@ -188,6 +209,12 @@ model Participation {
   isActive  Boolean  @default(true) @map("is_active")
   isWinner  Boolean  @default(false) @map("is_winner")
   createdAt DateTime @default(now()) @map("created_at")
+
+  // ✅ Opcional: ranking 1..N (1 = ganador)
+  drawOrder Int? @map("draw_order")
+
+  // ✅ Lado inverso requerido de la relación uno-a-uno con Raffle
+  wonRaffle Raffle? @relation(name: "WinnerParticipation")
 
   @@index([raffleId])
   @@map("participations")

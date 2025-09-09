@@ -1,5 +1,6 @@
 // src/app/api/raffles/[id]/progress/route.js
 import prisma from '@/lib/prisma';
+import { TICKET_PRICE } from '@/lib/ticket.server';
 
 export async function GET(req, { params }) {
   try {
@@ -52,28 +53,30 @@ export async function GET(req, { params }) {
     // Calcular métricas de progreso
     const soldTickets = raffle._count.tickets;
     const totalParticipants = raffle._count.participations;
-    const currentFunding = soldTickets * raffle.ticketPrice;
+
+    // ✅ Precio unitario desde server (.env), no DB
+    const currentFunding = soldTickets * TICKET_PRICE;
     
     // Determinar meta de financiamiento
     let targetFunding;
     let progressPercentage;
-    
+
+    // ✅ Meta de financiamiento basada en el límite definido (tickets o participantes)
+    const hardCap = raffle.maxTickets ?? raffle.maxParticipants ?? null;
+    targetFunding = hardCap ? hardCap * TICKET_PRICE : null;
+
     if (raffle.maxTickets) {
-      // Si hay límite de tickets, la meta es vender todos
-      targetFunding = raffle.maxTickets * raffle.ticketPrice;
+      // Si hay límite de tickets, la meta de progreso usa tickets vendidos
       progressPercentage = raffle.maxTickets > 0 
         ? Math.round((soldTickets / raffle.maxTickets) * 100) 
         : 0;
     } else if (raffle.maxParticipants) {
-      // Si hay límite de participantes, usar eso como meta
-      targetFunding = raffle.maxParticipants * raffle.ticketPrice;
+      // Si hay límite de participantes, la meta de progreso usa participantes activos
       progressPercentage = raffle.maxParticipants > 0 
         ? Math.round((totalParticipants / raffle.maxParticipants) * 100) 
         : 0;
     } else {
-      // Si no hay límites definidos, usar una meta arbitraria basada en tiempo
-      // O marcar como "sin límite"
-      targetFunding = null;
+      // Si no hay límites definidos, usar 0%
       progressPercentage = 0;
     }
 
@@ -154,7 +157,8 @@ export async function GET(req, { params }) {
       raffleInfo: {
         id: raffle.id,
         title: raffle.title,
-        ticketPrice: raffle.ticketPrice,
+        // ✅ Precio unitario derivado desde server, NO DB
+        ticketPrice: TICKET_PRICE,
         maxTickets: raffle.maxTickets,
         maxParticipants: raffle.maxParticipants,
         startsAt: raffle.startsAt,

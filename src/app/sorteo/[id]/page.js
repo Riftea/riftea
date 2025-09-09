@@ -1,6 +1,7 @@
 // src/app/sorteo/[id]/page.js
 "use client";
-import { use, useEffect, useState, useCallback } from "react";
+
+import { use, useEffect, useMemo, useState, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
@@ -9,224 +10,168 @@ import ProgressBar from "@/components/raffle/ProgressBar";
 import ParticipateModal from "@/components/raffle/ParticipateModal";
 
 export default function SorteoPage({ params }) {
-  // Unwrap the params Promise using React.use()
-  const resolvedParams = use(params);
-  const { id } = resolvedParams;
-  
+  const { id } = use(params);
   const { data: session } = useSession();
   const router = useRouter();
-  
+
   const [raffle, setRaffle] = useState(null);
   const [participants, setParticipants] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [participantsLoading, setParticipantsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [purchasing, setPurchasing] = useState(false);
-  const [quantity, setQuantity] = useState(1);
-  
-  // Estados para participación
   const [showParticipateModal, setShowParticipateModal] = useState(false);
   const [userParticipation, setUserParticipation] = useState(null);
-  const [participantsLoading, setParticipantsLoading] = useState(false);
 
-  // ✅ CORREGIDO: Cargar lista de participantes - useCallback para evitar recreación
-  const loadParticipants = useCallback(async (raffleId = id) => {
-    try {
-      setParticipantsLoading(true);
-      console.log('Loading participants for raffle:', raffleId);
-      
-      const res = await fetch(`/api/raffles/${raffleId}/participate`);
-      if (res.ok) {
-        const data = await res.json();
-        console.log('Participants loaded:', data);
-        setParticipants(Array.isArray(data.participants) ? data.participants : []);
-      } else {
-        console.warn('Failed to load participants:', res.status);
-        setParticipants([]);
-      }
-    } catch (err) {
-      console.error("Error loading participants:", err);
-      setParticipants([]);
-    } finally {
-      setParticipantsLoading(false);
-    }
-  }, [id]);
+  // ⏱️ reloj local para countdown
+  const [nowTs, setNowTs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
-  // ✅ CORREGIDO: Verificar si el usuario ya está participando - useCallback
-  const checkUserParticipation = useCallback(async (raffleId) => {
-    if (!session?.user?.email || !raffleId) return;
+  // Precio unitario derivado del endpoint (NUNCA DB)
+  const unitPrice = useMemo(() => {
+    if (!raffle) return 0;
+    const n = Number(raffle.unitPrice ?? raffle?.meta?.ticketPrice ?? 0);
+    return Number.isFinite(n) ? n : 0;
+  }, [raffle]);
 
-    try {
-      console.log('Checking user participation for raffle:', raffleId);
-      const res = await fetch('/api/tickets/my');
-      if (res.ok) {
-        const data = await res.json();
-        console.log('User tickets response:', data);
-        
-        // Manejar diferentes formatos de respuesta
-        let tickets = [];
-        if (Array.isArray(data)) {
-          tickets = data;
-        } else if (data.tickets && Array.isArray(data.tickets)) {
-          tickets = data.tickets;
-        } else if (data.data && Array.isArray(data.data)) {
-          tickets = data.data;
+  // GET participantes
+  const loadParticipants = useCallback(
+    async (raffleId = id) => {
+      try {
+        setParticipantsLoading(true);
+        const res = await fetch(`/api/raffles/${raffleId}/participate`, {
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          setParticipants([]);
+          return;
         }
-        
-        const participation = tickets.find(ticket => 
-          ticket.raffleId === raffleId && 
-          (ticket.status === 'IN_RAFFLE' || ticket.status === 'ACTIVE')
+        const data = await res.json().catch(() => ({}));
+        setParticipants(Array.isArray(data.participants) ? data.participants : []);
+      } catch {
+        setParticipants([]);
+      } finally {
+        setParticipantsLoading(false);
+      }
+    },
+    [id]
+  );
+
+  // ¿ya participa el usuario?
+  const checkUserParticipation = useCallback(
+    async (raffleId) => {
+      if (!session?.user?.email || !raffleId) return;
+      try {
+        const res = await fetch("/api/tickets/my", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        const list = Array.isArray(data) ? data : data.tickets || data.data || [];
+        const participation = list.find(
+          (t) => t.raffleId === raffleId && (t.status === "IN_RAFFLE" || t.status === "ACTIVE")
         );
         setUserParticipation(participation || null);
-        console.log('User participation:', participation);
-      } else {
-        console.warn('Failed to check user participation:', res.status);
+      } catch {
+        /* noop */
       }
-    } catch (err) {
-      console.error("Error checking participation:", err);
-    }
-  }, [session?.user?.email]);
+    },
+    [session?.user?.email]
+  );
 
-  // Cargar datos del sorteo
+  // Cargar sorteo
   useEffect(() => {
     let mounted = true;
-
-    async function fetchData() {
+    (async () => {
       setLoading(true);
       setError(null);
-      
       try {
-        console.log('Fetching raffle data for ID:', id);
-        
-        // Cargar información del sorteo - ✅ Con mejor manejo de errores
-        const raffleRes = await fetch(`/api/raffles/${id}`);
-        console.log('Raffle response status:', raffleRes.status);
-        
-        if (!raffleRes.ok) {
-          let errorMessage = `Error ${raffleRes.status}`;
-          try {
-            const errJson = await raffleRes.json();
-            errorMessage = errJson.error || errorMessage;
-          } catch (e) {
-            console.warn('Could not parse error response');
-          }
-          throw new Error(errorMessage);
+        const res = await fetch(`/api/raffles/${id}`, { cache: "no-store" });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(json?.error || `Error ${res.status}`);
         }
-        
-        const raffleData = await raffleRes.json();
-        console.log('Raffle data loaded:', raffleData);
-        
-        if (mounted) {
-          setRaffle(raffleData);
-          
-          // Solo cargar participantes si el usuario está autenticado y el sorteo está cargado
-          if (session && raffleData?.id) {
-            loadParticipants(raffleData.id);
-            checkUserParticipation(raffleData.id);
-          }
-        }
-
-      } catch (err) {
-        console.error("Error cargando sorteo:", err);
-        if (mounted) {
-          setError(err.message || "Error al cargar el sorteo");
-        }
+        const raffleObj = json?.raffle ?? json;
+        const merged = {
+          ...raffleObj,
+          unitPrice: raffleObj?.unitPrice ?? json?.meta?.ticketPrice ?? 0,
+        };
+        if (!mounted) return;
+        setRaffle(merged);
+        loadParticipants(merged?.id || id);
+        if (session) checkUserParticipation(merged?.id || id);
+      } catch (e) {
+        if (mounted) setError(e.message || "Error al cargar el sorteo");
       } finally {
-        if (mounted) {
-          setLoading(false);
-        }
+        if (mounted) setLoading(false);
       }
-    }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [id, session, loadParticipants, checkUserParticipation]);
 
-    if (id) {
-      fetchData();
-    }
-    return () => { mounted = false; };
-  }, [id, session, loadParticipants, checkUserParticipation]); // ✅ CORREGIDO: Dependencias incluidas
+  // Polling de participantes mientras esté abierto
+  useEffect(() => {
+    if (!raffle?.id) return;
+    if (!["ACTIVE", "PUBLISHED"].includes(raffle.status)) return;
+    const t = setInterval(() => loadParticipants(raffle.id), 10000);
+    return () => clearInterval(t);
+  }, [raffle?.id, raffle?.status, loadParticipants]);
 
-  // Función para comprar tickets (mantener la funcionalidad existente)
-  const handlePurchase = async () => {
-    if (!session) {
-      router.push('/auth/signin');
-      return;
-    }
+  // Derivados de estado
+  const isOwner = session?.user?.id === raffle?.ownerId;
+  const isExpired = raffle?.endsAt ? new Date() > new Date(raffle.endsAt) : false;
 
-    if (!raffle?.id) {
-      alert('Error: ID del sorteo no válido');
-      return;
-    }
+  // Participar: sólo ACTIVE/PUBLISHED, no owner, y no cuando READY_TO_DRAW/FINISHED
+  const canPurchase =
+    !!raffle && !isExpired && (raffle.status === "ACTIVE" || raffle.status === "PUBLISHED") && raffle.publishedAt;
+  const canParticipate = canPurchase && !isOwner && !userParticipation;
 
-    setPurchasing(true);
-    try {
-      console.log('Purchasing tickets:', { raffleId: id, quantity });
-      
-      const res = await fetch('/api/tickets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          raffleId: id,
-          quantity: quantity
-        })
-      });
+  const participationsCount = useMemo(
+    () => Number(raffle?.stats?.participationsCount ?? participants.length ?? 0),
+    [raffle?.stats?.participationsCount, participants.length]
+  );
+  const maxParticipants = raffle?.stats?.maxParticipants ?? raffle?.maxParticipants ?? null;
 
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || `Error ${res.status}: Error en la compra`);
-      }
+  // ⏳ draw / countdown
+  const drawAtDate = raffle?.drawAt ? new Date(raffle.drawAt) : null;
+  const drawnAtDate = raffle?.drawnAt ? new Date(raffle.drawnAt) : null;
+  const isReadyToDraw = raffle?.status === "READY_TO_DRAW";
+  const msUntilDraw = drawAtDate ? drawAtDate.getTime() - nowTs : null;
+  const minutesUntilDraw = msUntilDraw != null ? Math.max(0, Math.ceil(msUntilDraw / 60000)) : null;
 
-      const result = await res.json();
-      console.log('Purchase result:', result);
-      
-      // Redirigir a página de confirmación o actualizar estado
-      router.push(`/mis-tickets?new=${result.tickets?.count || quantity}`);
-      
-    } catch (err) {
-      console.error('Error en compra:', err);
-      alert('Error al procesar la compra: ' + err.message);
-    } finally {
-      setPurchasing(false);
-    }
-  };
+  // Mostrar callout si está programado y aún no ejecutado
+  const showDrawCallout = isReadyToDraw && !!drawAtDate && !drawnAtDate;
 
-  // Handler para participación exitosa
-  const handleParticipationSuccess = (data) => {
-    console.log('Participation successful:', data);
-    
-    // Actualizar estado local
-    setUserParticipation({
-      raffleId: id,
-      ticketCode: data.participation?.ticketCode || data.ticketCode,
-      status: 'IN_RAFFLE'
-    });
+  const canGoLive = isReadyToDraw && !!drawAtDate && nowTs >= drawAtDate.getTime();
+  const goLive = () => router.push(`/sorteo/${id}/en-vivo`);
 
-    // Recargar participantes
-    loadParticipants();
+  // Ganador (FINISHED)
+  const winnerParticipation = useMemo(
+    () => participants.find((p) => p.isWinner) || null,
+    [participants]
+  );
 
-    // Mostrar notificación de éxito
-    alert(`¡Participación exitosa! Tu ticket ${data.participation?.ticketCode || 'se registró'} está ahora en el sorteo.`);
-    
-    // Si el sorteo está listo, mostrar mensaje adicional
-    if (data.raffleStatus?.isReady) {
-      alert(`🎉 ¡El sorteo alcanzó el límite de participantes! Se realizará pronto.`);
-    }
-  };
-
-  // ✅ FUNCIÓN HELPER PARA DETERMINAR LA IMAGEN DEL OWNER
   const getOwnerImage = () => {
-    // 1. Usar ownerImage si existe (guardado al crear el sorteo)
-    if (raffle.ownerImage) {
-      return raffle.ownerImage;
-    }
-    
-    // 2. Usar imagen actual del owner si existe
-    if (raffle.owner?.image) {
-      return raffle.owner.image;
-    }
-    
-    // 3. Fallback al favicon de la aplicación
-    return '/favicon.ico';
+    if (raffle?.ownerImage) return raffle.ownerImage;
+    if (raffle?.owner?.image) return raffle.owner.image;
+    return "/favicon.ico";
   };
 
-  // Estados de carga
+  // Handler de éxito del modal (refresca lista)
+  const handleParticipationSuccess = (payload) => {
+    setShowParticipateModal(false);
+    setUserParticipation((prev) => ({
+      ...(prev || {}),
+      raffleId: id,
+      ticketCode: payload?.participation?.ticketCode || payload?.ticketCode,
+      status: "IN_RAFFLE",
+    }));
+    loadParticipants();
+  };
+
+  // UI: loading / error
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 pt-20">
@@ -261,8 +206,8 @@ export default function SorteoPage({ params }) {
               >
                 Reintentar
               </button>
-              <Link 
-                href="/" 
+              <Link
+                href="/"
                 className="inline-block px-6 py-3 bg-white/20 hover:bg-white/30 text-white rounded-xl transition-colors"
               >
                 Volver al inicio
@@ -274,120 +219,172 @@ export default function SorteoPage({ params }) {
     );
   }
 
-  // Calcular estadísticas
-  const ticketsSold = raffle._count?.tickets || 0;
-  const maxTickets = raffle.maxTickets || 1000;
-  const progressPercentage = Math.min((ticketsSold / maxTickets) * 100, 100);
-  const isOwner = session?.user?.id === raffle.ownerId;
-  
-  // Verificar si puede comprar/participar
-  const canPurchase = (raffle.status === 'ACTIVE' || raffle.status === 'PUBLISHED') && raffle.publishedAt;
-  const canParticipate = canPurchase && !isOwner && !userParticipation;
-  const isExpired = raffle.endsAt && new Date() > new Date(raffle.endsAt);
+  // HH:MM local para banner
+  const drawTimeHHMM = drawAtDate
+    ? drawAtDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 pt-20">
       <div className="container mx-auto px-4 py-8">
-        
         {/* Header */}
         <div className="mb-8">
-          <Link 
-            href="/" 
+          <Link
+            href="/"
             className="inline-flex items-center text-white/70 hover:text-white mb-4 transition-colors"
           >
             ← Volver a sorteos
           </Link>
           <h1 className="text-4xl font-bold text-white mb-2">{raffle.title}</h1>
           <div className="flex items-center gap-4 text-white/70">
-            <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-              raffle.status === 'ACTIVE' ? 'bg-green-500/20 text-green-300' :
-              raffle.status === 'PUBLISHED' ? 'bg-blue-500/20 text-blue-300' :
-              raffle.status === 'FINISHED' ? 'bg-purple-500/20 text-purple-300' :
-              'bg-gray-500/20 text-gray-300'
-            }`}>
-              {raffle.status === 'ACTIVE' ? '🔥 Activo' :
-               raffle.status === 'PUBLISHED' ? '📢 Publicado' :
-               raffle.status === 'FINISHED' ? '🏆 Finalizado' :
-               raffle.status}
+            <span
+              className={`px-3 py-1 rounded-full text-sm font-medium ${
+                raffle.status === "ACTIVE"
+                  ? "bg-green-500/20 text-green-300"
+                  : raffle.status === "PUBLISHED"
+                  ? "bg-blue-500/20 text-blue-300"
+                  : raffle.status === "FINISHED"
+                  ? "bg-purple-500/20 text-purple-300"
+                  : raffle.status === "READY_TO_DRAW"
+                  ? "bg-yellow-500/20 text-yellow-300"
+                  : "bg-gray-500/20 text-gray-300"
+              }`}
+            >
+              {raffle.status === "ACTIVE"
+                ? "🔥 Activo"
+                : raffle.status === "PUBLISHED"
+                ? "📢 Publicado"
+                : raffle.status === "FINISHED"
+                ? "🏆 Finalizado"
+                : raffle.status === "READY_TO_DRAW"
+                ? "⏳ Listo para sortear"
+                : raffle.status}
             </span>
-            <span>Por: {raffle.owner?.name || 'Anónimo'}</span>
+            <span>Por: {raffle.owner?.name || "Anónimo"}</span>
             <span>Creado: {new Date(raffle.createdAt).toLocaleDateString()}</span>
           </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          
-          {/* Columna Principal */}
+          {/* Principal */}
           <div className="lg:col-span-2">
-            
-            {/* Imagen y Descripción */}
+            {/* READY_TO_DRAW → banner + countdown + CTA */}
+            {showDrawCallout && (
+              <div className="bg-yellow-500/20 border border-yellow-500/50 rounded-2xl p-5 mb-6">
+                <div className="flex items-center gap-3 text-yellow-200">
+                  <span className="text-2xl">🕒</span>
+                  <div className="flex-1">
+                    <p className="font-semibold">
+                      El sorteo se realizará a las <b>{drawTimeHHMM}</b>{" "}
+                      ({minutesUntilDraw > 0 ? `en ${minutesUntilDraw} min.` : "en instantes"}).
+                    </p>
+                    <p className="text-sm opacity-80">Programado para: {drawAtDate.toLocaleString()}</p>
+                  </div>
+                  <button
+                    onClick={goLive}
+                    disabled={!canGoLive}
+                    className={`px-4 py-2 rounded-xl font-bold transition-all ${
+                      canGoLive
+                        ? "bg-yellow-500 hover:bg-yellow-600 text-black"
+                        : "bg-white/10 text-white/60 cursor-not-allowed"
+                    }`}
+                  >
+                    Ir al sorteo →
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Imagen + descripción */}
             <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 mb-8 border border-white/20">
               {raffle.imageUrl && (
                 <div className="mb-6">
                   <Image
                     src={raffle.imageUrl}
                     alt={raffle.title}
-                    width={600}
-                    height={400}
-                    className="w-full h-64 object-cover rounded-2xl"
+                    width={1200}
+                    height={675}
+                    className="w-full aspect-[16/9] object-cover rounded-2xl"
                     onError={(e) => {
-                      e.target.style.display = 'none';
+                      e.currentTarget.style.display = "none";
                     }}
                   />
                 </div>
               )}
-              
               <div className="prose prose-invert max-w-none">
                 <p className="text-white/90 text-lg leading-relaxed">
-                  {raffle.description || 'Sin descripción disponible'}
+                  {raffle.description || "Sin descripción disponible"}
                 </p>
               </div>
             </div>
 
-            {/* Barra de Progreso */}
-            <div className="mb-8">
-              <ProgressBar
-                current={participants.length}
-                target={raffle.maxParticipants || 100}
-                title="Progreso de Participantes"
-                animated={true}
-              />
-            </div>
+            {/* Barra de progreso por PARTICIPACIONES */}
+            {Number.isFinite(maxParticipants) && maxParticipants > 0 && (
+              <div className="mb-8">
+                <ProgressBar
+                  current={Number(participationsCount) || 0}
+                  target={Number(maxParticipants)}
+                  title="Progreso de participantes (tickets aplicados)"
+                  animated
+                />
+              </div>
+            )}
 
-            {/* Lista de Participantes */}
+            {/* FINISHED → Ganador */}
+            {raffle.status === "FINISHED" && winnerParticipation && (
+              <div className="bg-amber-500/20 border border-amber-500/40 rounded-2xl p-6 mb-8 text-center">
+                <div className="text-5xl mb-2">🏆</div>
+                <h3 className="text-2xl font-bold text-white">Ganador</h3>
+                <p className="mt-2 text-white/90">
+                  {winnerParticipation.user?.name || "Usuario"} —{" "}
+                  <span className="font-mono">
+                    {winnerParticipation.ticket?.code ||
+                      winnerParticipation.ticketCode ||
+                      winnerParticipation.id?.slice(0, 6)}
+                  </span>
+                </p>
+                <Link
+                  href={`/sorteo/${id}/en-vivo`}
+                  className="inline-block mt-3 text-amber-300 hover:underline"
+                >
+                  Ver resultados →
+                </Link>
+              </div>
+            )}
+
+            {/* Lista de participantes (opcional) */}
             {participants.length > 0 && (
               <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20 mb-8">
                 <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-xl font-bold text-white">Participantes ({participants.length})</h3>
+                  <h3 className="text-xl font-bold text-white">
+                    Participaciones ({participants.length})
+                  </h3>
                   <button
                     onClick={() => loadParticipants()}
                     disabled={participantsLoading}
                     className="px-3 py-1 bg-white/20 hover:bg-white/30 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
                   >
-                    {participantsLoading ? '🔄' : '🔄 Actualizar'}
+                    {participantsLoading ? "🔄" : "🔄 Actualizar"}
                   </button>
                 </div>
-                
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-60 overflow-y-auto">
-                  {participants.map((participant, index) => (
-                    <div 
-                      key={participant.id || index}
+                  {participants.map((p, i) => (
+                    <div
+                      key={p.id || i}
                       className={`p-3 rounded-xl border ${
-                        participant.isWinner 
-                          ? 'bg-yellow-500/20 border-yellow-500/50' 
-                          : 'bg-white/5 border-white/20'
+                        p.isWinner ? "bg-yellow-500/20 border-yellow-500/50" : "bg-white/5 border-white/20"
                       }`}
                     >
                       <div className="flex items-center gap-2">
                         <div className="w-8 h-8 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-white text-sm font-bold">
-                          {participant.isWinner ? '👑' : index + 1}
+                          {p.isWinner ? "👑" : i + 1}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="text-white font-medium truncate">
-                            {participant.user?.name || participant.name || 'Usuario'}
+                            {p.user?.name || p.name || "Usuario"}
                           </div>
                           <div className="text-white/60 text-xs font-mono">
-                            {participant.ticket?.code || participant.ticketCode || 'Código oculto'}
+                            {p.ticket?.code || p.ticketCode || "Código oculto"}
                           </div>
                         </div>
                       </div>
@@ -397,20 +394,19 @@ export default function SorteoPage({ params }) {
               </div>
             )}
 
-            {/* Información del Dueño - ✅ CORREGIDO PARA USAR OWNER IMAGE CON FALLBACK */}
+            {/* Organizador */}
             {raffle.owner && (
               <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20">
                 <h3 className="text-xl font-bold text-white mb-4">Organizador</h3>
                 <div className="flex items-center gap-4">
                   <Image
                     src={getOwnerImage()}
-                    alt={raffle.owner.name || 'Usuario'}
+                    alt={raffle.owner.name || "Usuario"}
                     width={48}
                     height={48}
                     className="rounded-full border-2 border-white/20"
                     onError={(e) => {
-                      // Si falla, usar el favicon como último recurso
-                      e.target.src = '/favicon.ico';
+                      e.currentTarget.src = "/favicon.ico";
                     }}
                   />
                   <div>
@@ -422,55 +418,73 @@ export default function SorteoPage({ params }) {
             )}
           </div>
 
-          {/* Sidebar de Acciones */}
+          {/* Sidebar */}
           <div className="lg:col-span-1">
             <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20 sticky top-24">
-              
-              {/* Precio */}
-              <div className="text-center mb-6">
-                <div className="text-4xl font-bold text-white mb-2">
-                  ${raffle.ticketPrice}
+              {/* Precio (informativo) — sólo si > 0 */}
+              {unitPrice > 0 && (
+                <div className="text-center mb-6">
+                  <div className="text-4xl font-bold text-white mb-2">${unitPrice}</div>
+                  <div className="text-white/70">por ticket</div>
                 </div>
-                <div className="text-white/70">por ticket</div>
-              </div>
+              )}
 
-              {/* Estadísticas */}
+              {/* Stats simples */}
               <div className="grid grid-cols-2 gap-4 mb-6">
                 <div className="text-center p-3 bg-white/5 rounded-xl">
-                  <div className="text-2xl font-bold text-white">{participants.length}</div>
-                  <div className="text-sm text-white/70">Participantes</div>
+                  <div className="text-2xl font-bold text-white">{participationsCount}</div>
+                  <div className="text-sm text-white/70">Participaciones</div>
                 </div>
                 <div className="text-center p-3 bg-white/5 rounded-xl">
-                  <div className="text-2xl font-bold text-white">{raffle.maxParticipants || '∞'}</div>
+                  <div className="text-2xl font-bold text-white">{maxParticipants ?? "∞"}</div>
                   <div className="text-sm text-white/70">Máximo</div>
                 </div>
               </div>
 
-              {/* Fecha de fin */}
+              {/* Fecha fin (opcional) */}
               {raffle.endsAt && (
                 <div className="mb-6 text-center">
                   <div className="text-white/70 text-sm mb-1">Finaliza:</div>
-                  <div className={`font-medium ${isExpired ? 'text-red-400' : 'text-white'}`}>
+                  <div className={`font-medium ${isExpired ? "text-red-400" : "text-white"}`}>
                     {new Date(raffle.endsAt).toLocaleString()}
                   </div>
-                  {isExpired && (
-                    <div className="text-red-400 text-sm mt-1">¡Sorteo expirado!</div>
-                  )}
+                  {isExpired && <div className="text-red-400 text-sm mt-1">¡Sorteo expirado!</div>}
                 </div>
               )}
 
-              {/* Estado de participación del usuario */}
-              {session && userParticipation && (
+              {/* READY_TO_DRAW → bloque CTA */}
+              {showDrawCallout && (
+                <div className="mb-6 bg-yellow-500/20 border border-yellow-500/50 rounded-xl p-4 text-center">
+                  <p className="text-yellow-300 font-bold mb-1">
+                    Se realizará a las <b>{drawTimeHHMM}</b>{" "}
+                    ({minutesUntilDraw > 0 ? `en ${minutesUntilDraw} min.` : "en instantes"})
+                  </p>
+                  <button
+                    onClick={goLive}
+                    disabled={!canGoLive}
+                    className={`w-full py-3 rounded-xl font-bold transition-all ${
+                      canGoLive
+                        ? "bg-yellow-500 hover:bg-yellow-600 text-black"
+                        : "bg-white/10 text-white/60 cursor-not-allowed"
+                    }`}
+                  >
+                    Ir al sorteo →
+                  </button>
+                </div>
+              )}
+
+              {/* Estado usuario */}
+              {session && userParticipation && raffle.status !== "FINISHED" && (
                 <div className="mb-6 bg-green-500/20 border border-green-500/50 rounded-xl p-4 text-center">
                   <p className="text-green-300 font-bold mb-1">¡Ya estás participando!</p>
                   <p className="text-green-200/80 text-sm">
-                    Ticket: {userParticipation.ticketCode || userParticipation.code || 'Código oculto'}
+                    Ticket: {userParticipation.ticketCode || userParticipation.code || "Código oculto"}
                   </p>
                 </div>
               )}
 
-              {/* Botón de Participar */}
-              {session && canParticipate && (
+              {/* Participar con ticket → sólo ACTIVE/PUBLISHED (no READY_TO_DRAW/FINISHED) */}
+              {session && canParticipate && !showDrawCallout && raffle.status !== "FINISHED" && (
                 <div className="mb-4">
                   <button
                     onClick={() => setShowParticipateModal(true)}
@@ -484,53 +498,11 @@ export default function SorteoPage({ params }) {
                 </div>
               )}
 
-              {/* Separador si hay ambas opciones */}
-              {session && canParticipate && canPurchase && (
-                <div className="flex items-center my-4">
-                  <hr className="flex-1 border-white/20" />
-                  <span className="px-3 text-white/50 text-sm">o</span>
-                  <hr className="flex-1 border-white/20" />
-                </div>
-              )}
-
-              {/* Controles de compra (mantener funcionalidad existente) */}
-              {!isOwner && canPurchase && !isExpired && (
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-white/70 text-sm mb-2">
-                      Comprar tickets nuevos:
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      value={quantity}
-                      onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-                      className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    />
-                  </div>
-                  
-                  <div className="text-center text-white/70 text-sm">
-                    Total: <span className="font-bold">${(raffle.ticketPrice * quantity).toFixed(2)}</span>
-                  </div>
-                  
-                  <button
-                    onClick={handlePurchase}
-                    disabled={purchasing}
-                    className="w-full py-3 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
-                  >
-                    {purchasing ? 'Procesando...' : '🎟️ Comprar Tickets'}
-                  </button>
-                </div>
-              )}
-
-              {/* Mensajes de estado */}
+              {/* Mensajes */}
               {isOwner && (
                 <div className="bg-blue-500/20 border border-blue-500/50 rounded-xl p-4 text-center">
-                  <p className="text-blue-300 text-sm">
-                    👑 Eres el organizador de este sorteo
-                  </p>
-                  <Link 
+                  <p className="text-blue-300 text-sm">👑 Eres el organizador de este sorteo</p>
+                  <Link
                     href={`/admin/raffles/${id}`}
                     className="inline-block mt-2 text-blue-400 hover:underline text-sm"
                   >
@@ -539,18 +511,16 @@ export default function SorteoPage({ params }) {
                 </div>
               )}
 
-              {!canPurchase && !isOwner && (
-                <div className="bg-yellow-500/20 border border-yellow-500/50 rounded-xl p-4 text-center">
-                  <p className="text-yellow-300 text-sm">
-                    Este sorteo no está disponible
-                  </p>
+              {!canPurchase && !isOwner && raffle.status !== "READY_TO_DRAW" && raffle.status !== "FINISHED" && (
+                <div className="mt-4 bg-yellow-500/20 border border-yellow-500/50 rounded-xl p-4 text-center">
+                  <p className="text-yellow-300 text-sm">Este sorteo no está disponible</p>
                 </div>
               )}
 
               {!session && (
                 <button
-                  onClick={() => router.push('/auth/signin')}
-                  className="w-full py-3 bg-white/20 hover:bg-white/30 text-white font-bold rounded-xl transition-colors"
+                  onClick={() => router.push("/auth/signin")}
+                  className="w-full mt-4 py-3 bg-white/20 hover:bg-white/30 text-white font-bold rounded-xl transition-colors"
                 >
                   Iniciar sesión para participar
                 </button>
@@ -560,7 +530,7 @@ export default function SorteoPage({ params }) {
         </div>
       </div>
 
-      {/* Modal de Participación */}
+      {/* Modal de participación (multi-selección) */}
       <ParticipateModal
         isOpen={showParticipateModal}
         onClose={() => setShowParticipateModal(false)}

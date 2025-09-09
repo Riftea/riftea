@@ -6,6 +6,7 @@ import prisma from "@/lib/prisma";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { generateTicketData } from "@/lib/crypto.server";
+import { TICKET_PRICE } from "@/lib/ticket.server";
 
 /** Normaliza rol para checks simples */
 function normalizeRole(session) {
@@ -200,7 +201,7 @@ export async function GET(request) {
               id: true,
               title: true,
               status: true,
-              ticketPrice: true,
+              // ❌ ticketPrice eliminado del select
               endsAt: true,
               imageUrl: true,
             },
@@ -218,9 +219,21 @@ export async function GET(request) {
       prisma.ticket.count({ where }),
     ]);
 
+    // ✅ Inyectar unitPrice (server) sin leer DB
+    const decoratedTickets = tickets.map((t) => ({
+      ...t,
+      unitPrice: TICKET_PRICE,
+      raffle: t.raffle
+        ? {
+            ...t.raffle,
+            unitPrice: TICKET_PRICE,
+          }
+        : null,
+    }));
+
     return NextResponse.json({
       success: true,
-      tickets,
+      tickets: decoratedTickets,
       pagination: {
         page,
         limit,

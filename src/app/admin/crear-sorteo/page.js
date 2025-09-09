@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
-import Image from "next/image"; 
+import Image from "next/image";
 
 /* =======================
    Helpers en scope de módulo
@@ -21,21 +21,19 @@ function parseIntOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-// ¿Desactivar modo "miles"? (4+ dígitos ingresados)
-function shouldDisableThousands(input) {
-  const clean = String(input || "").replace(/[^\d]/g, "");
-  return clean.length >= 4; // 1000 o más
-}
-
-// Normaliza string numérico a entero ARS.
-// Respeta el toggle "inThousands" salvo que el input tenga 4+ dígitos.
-function toInteger(raw, inThousands) {
+// Normaliza string numérico a entero ARS **sin toggle** (regla en miles):
+// - Si < 1000 => interpreta en miles (1 -> 1000, 10 -> 10000, ...)
+// - Si >= 1000 => toma literal
+function normalizeThousandRule(raw) {
   const clean = onlyDigits(raw);
   if (!clean) return null;
   const n = parseInt(clean, 10);
   if (!Number.isFinite(n) || n <= 0) return null;
-  return inThousands && !shouldDisableThousands(raw) ? n * 1000 : n;
+  return n < 1000 ? n * 1000 : n;
 }
+
+// Aporte al pozo por ticket (UX). El backend usa su constante real.
+const POT_CONTRIBUTION_CLIENT = 500;
 
 export default function CrearSorteoPage() {
   const router = useRouter();
@@ -45,19 +43,21 @@ export default function CrearSorteoPage() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
 
-  // Entradas crudas (strings) + toggle "en miles"
-  const [ticketPriceInput, setTicketPriceInput] = useState("");
+  // Entradas crudas (strings)
   const [prizeValueInput, setPrizeValueInput] = useState("");
-  const [inThousands, setInThousands] = useState(true);
+  const [participantGoal, setParticipantGoal] = useState(""); // opcional
 
-  const [maxTickets, setMaxTickets] = useState("");
-  const [startsAt, setStartsAt] = useState("");
-  const [endsAt, setEndsAt] = useState("");
+  const [startsAt, setStartsAt] = useState(""); // opcional
+  const [endsAt, setEndsAt] = useState("");     // condicional
 
   // Imagen: URL directa o archivo a subir
   const [imageUrl, setImageUrl] = useState("");
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
+
+  // Extras
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
 
   // ----- estado UI
   const [loading, setLoading] = useState(false);
@@ -74,21 +74,19 @@ export default function CrearSorteoPage() {
     []
   );
 
-  // Auto-desactivar "en miles" si tiene más de 3 ceros
-  // (sigue funcionando igual pero usando la versión de módulo)
-  useEffect(() => {
-    if (shouldDisableThousands(ticketPriceInput) || shouldDisableThousands(prizeValueInput)) {
-      setInThousands(false);
-    }
-  }, [ticketPriceInput, prizeValueInput]);
+  // ✅ Derivados SIEMPRE antes de cualquier return (evita cambiar el orden de hooks)
+  // Mínimo requerido (UX) = ceil(premio_normalizado / 500)
+  const prizeValueNormalized = useMemo(
+    () => normalizeThousandRule(prizeValueInput),
+    [prizeValueInput]
+  );
 
-  // participantes necesarios según backend (ceil(prize / ticketPrice))
-  const participantsNeeded = useMemo(() => {
-    const price = toInteger(ticketPriceInput, inThousands);
-    const prize = toInteger(prizeValueInput, inThousands);
-    if (!price || !prize) return null;
-    return Math.ceil(prize / price);
-  }, [ticketPriceInput, prizeValueInput, inThousands]);
+  const minParticipantsUX = useMemo(() => {
+    if (!prizeValueNormalized) return null;
+    return Math.ceil(prizeValueNormalized / POT_CONTRIBUTION_CLIENT);
+  }, [prizeValueNormalized]);
+
+  const isAuthLoading = status === "loading";
 
   // preview de imagen local
   useEffect(() => {
@@ -106,53 +104,35 @@ export default function CrearSorteoPage() {
     if (status === "unauthenticated") router.push("/login");
   }, [status, router]);
 
-  // Mostrar loading mientras se verifica la sesión
-  if (status === "loading") {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center p-4">
-        <div className="text-center">
-          <div className="relative mb-6">
-            <div className="w-16 h-16 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="w-12 h-12 border-4 border-orange-400 border-t-transparent rounded-full animate-spin-reverse"></div>
-            </div>
-          </div>
-          <h2 className="text-xl font-semibold text-white mb-2">Verificando sesión</h2>
-          <p className="text-gray-400">Preparando el panel de creación de sorteos...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // -------- validaciones espejo del backend (CORREGIDAS)
+  // -------- validaciones espejo del backend (ACTUALIZADAS)
   const validate = () => {
     // Título/desc requeridos
     if (!title.trim()) return "El título es requerido";
     if (!description.trim()) return "La descripción no puede estar vacía";
 
-    // ticketPrice: validar con el valor FINAL normalizado (no el crudo)
-    const ticketFinal = toInteger(ticketPriceInput, inThousands);
-    if (!ticketFinal || ticketFinal <= 0) {
-      return "El precio del ticket debe ser un número mayor a 0";
+    // Aceptar términos
+    if (!termsAccepted) return "Debes aceptar los términos y condiciones";
+
+    // Premio requerido con normalización en miles
+    const prizeFinal = normalizeThousandRule(prizeValueInput);
+    if (!prizeFinal || prizeFinal < 1000) {
+      return "El valor del premio es obligatorio y debe ser un entero ≥ 1000";
     }
 
-    // prizeValue: opcional, pero si está debe ser válido
-    if (prizeValueInput.trim()) {
-      const prizeFinal = toInteger(prizeValueInput, inThousands);
-      if (!prizeFinal || prizeFinal <= 0) {
-        return "El valor del premio debe ser un número mayor a 0";
+    // participantGoal opcional, si viene debe ser ≥ mínimo
+    if (String(participantGoal).trim() !== "") {
+      const goalInt = parseIntOrNull(participantGoal);
+      if (!goalInt || goalInt <= 0) return "El objetivo de participantes debe ser un entero mayor a 0";
+      const minNeeded = Math.ceil(prizeFinal / POT_CONTRIBUTION_CLIENT);
+      if (goalInt < minNeeded) {
+        return `El objetivo de participantes debe ser ≥ ${minNeeded}`;
       }
+    } else {
+      // Si NO hay objetivo, endsAt es obligatorio
+      if (!endsAt) return "Si no defines un objetivo de participantes, debes indicar una fecha de finalización";
     }
 
-    // maxTickets entero opcional
-    let maxTicketsInt = null;
-    if (String(maxTickets).trim() !== "") {
-      const mt = parseIntOrNull(maxTickets);
-      if (!mt || mt <= 0) return "El máximo de tickets debe ser un número entero mayor a 0";
-      maxTicketsInt = mt;
-    }
-
-    // Fechas opcionales, con reglas
+    // Fechas
     const now = new Date();
     const endDate = endsAt ? new Date(endsAt) : null;
     const startDate = startsAt ? new Date(startsAt) : null;
@@ -163,17 +143,6 @@ export default function CrearSorteoPage() {
     if (startDate && startDate <= now) return "La fecha de inicio debe ser futura";
     if (startDate && endDate && startDate >= endDate)
       return "La fecha de inicio debe ser anterior a la fecha de finalización";
-
-    // Coherencia premio / maxTickets
-    const prizeValueInt = toInteger(prizeValueInput, inThousands);
-    if (prizeValueInt && maxTicketsInt && ticketFinal) {
-      const needed = Math.ceil(prizeValueInt / ticketFinal);
-      if (maxTicketsInt < needed) {
-        return `El máximo de tickets (${maxTicketsInt}) es insuficiente para cubrir el premio de ${moneyFmt.format(
-          prizeValueInt
-        )}. Se necesitan al menos ${needed} participantes.`;
-      }
-    }
 
     return null;
   };
@@ -186,7 +155,6 @@ export default function CrearSorteoPage() {
       fd.append("file", file);
       const res = await fetch("/api/uploads", { method: "POST", body: fd });
       if (!res.ok) {
-        // no bloquear si no existe el endpoint; podés agregarlo más tarde
         return imageUrl?.trim() || null;
       }
       const data = await res.json();
@@ -196,7 +164,7 @@ export default function CrearSorteoPage() {
     }
   };
 
-  // -------- submit (CORREGIDO)
+  // -------- submit (ACTUALIZADO)
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
@@ -208,22 +176,14 @@ export default function CrearSorteoPage() {
       return;
     }
 
-    // Validaciones espejo backend
     const v = validate();
     if (v) {
       setError(v);
       return;
     }
 
-    // Calcular valores finales normalizados
-    const ticketFinal = toInteger(ticketPriceInput, inThousands); // Number (ARS)
-    if (!ticketFinal || ticketFinal <= 0) {
-      setError("El precio del ticket debe ser un número mayor a 0");
-      return;
-    }
-
-    const prizeFinal = toInteger(prizeValueInput, inThousands); // Number o null
-    const maxTicketsInt = String(maxTickets).trim() === "" ? null : parseInt(maxTickets, 10);
+    const prizeFinal = normalizeThousandRule(prizeValueInput);
+    const goalInt = String(participantGoal).trim() === "" ? null : parseInt(participantGoal, 10);
 
     setLoading(true);
     try {
@@ -232,28 +192,26 @@ export default function CrearSorteoPage() {
       const payload = {
         title: title.trim(),
         description: description.trim(),
-        ticketPrice: ticketFinal, // ✅ valor final, entero ARS
-        ...(prizeFinal ? { prizeValue: prizeFinal } : {}),
-        ...(maxTicketsInt && { maxTickets: maxTicketsInt }),
+        prizeValue: prizeFinal, // ✔️ normalizado con regla de miles
+        ...(goalInt !== null ? { participantGoal: goalInt } : {}),
         ...(finalImageUrl && { imageUrl: finalImageUrl }),
-        ...(startsAt && { startsAt: startsAt }),
-        ...(endsAt && { endsAt: endsAt }),
+        ...(startsAt && { startsAt }),
+        ...(endsAt && { endsAt }),
+        isPrivate,
+        termsAccepted: true,
       };
 
-      // Debug: mostrar valores enviados
+      // Debug opcional
       console.log({
-        ticketPriceInputRaw: ticketPriceInput,
-        ticketFinal: toInteger(ticketPriceInput, inThousands),
         prizeInputRaw: prizeValueInput,
-        prizeFinal: toInteger(prizeValueInput, inThousands),
+        prizeFinal,
+        minParticipantsUX,
         payload,
       });
 
       const res = await fetch("/api/raffles", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify(payload),
       });
@@ -281,20 +239,30 @@ export default function CrearSorteoPage() {
   };
 
   // -------- handlers de inputs numéricos
-  const onChangePrice = (e) => setTicketPriceInput(onlyDigits(e.target.value));
   const onChangePrize = (e) => setPrizeValueInput(onlyDigits(e.target.value));
-  const onChangeMaxTickets = (e) => setMaxTickets(onlyDigits(e.target.value));
+  const onChangeGoal = (e) => setParticipantGoal(onlyDigits(e.target.value));
 
-  // Determinar si el toggle de miles está deshabilitado
-  const isThousandsDisabled =
-    shouldDisableThousands(ticketPriceInput) || shouldDisableThousands(prizeValueInput);
+  const canSubmit =
+    !!title.trim() &&
+    !!description.trim() &&
+    termsAccepted &&
+    !!normalizeThousandRule(prizeValueInput);
 
-  // Verificar si el formulario puede enviarse
-  const ticketFinal = toInteger(ticketPriceInput, inThousands);
-  const canSubmit = !!ticketFinal && ticketFinal > 0 && !!title.trim() && !!description.trim();
-
-  // -------- UI
-  return (
+  // -------- UI (sin returns tempranos: ternario para loading)
+  return isAuthLoading ? (
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center p-4">
+      <div className="text-center">
+        <div className="relative mb-6">
+          <div className="w-16 h-16 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-12 h-12 border-4 border-orange-400 border-t-transparent rounded-full animate-spin-reverse"></div>
+          </div>
+        </div>
+        <h2 className="text-xl font-semibold text-white mb-2">Verificando sesión</h2>
+        <p className="text-gray-400">Preparando el panel de creación de sorteos...</p>
+      </div>
+    </div>
+  ) : (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 to-gray-900 text-gray-100">
       <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-2xl overflow-hidden shadow-2xl">
@@ -317,7 +285,7 @@ export default function CrearSorteoPage() {
                 <h1 className="text-2xl font-bold text-white">Crear Nuevo Sorteo</h1>
               </div>
               <p className="text-gray-300 mb-4 max-w-2xl">
-                Completa los datos para crear un sorteo alineado al backend (enteros, premio opcional, coherencia y fechas).
+                Completá los datos. El sistema calcula automáticamente el mínimo de participantes necesario para realizar el sorteo.
               </p>
               <div className="flex items-center bg-gray-700/50 border border-gray-600 rounded-lg p-3">
                 <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
@@ -394,93 +362,71 @@ export default function CrearSorteoPage() {
                 />
               </div>
 
-              {/* Precio / Premio / Miles toggle */}
+              {/* Premio y objetivo */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-200 mb-2">
-                    Precio del Ticket <span className="text-orange-400">*</span>
+                    Valor del premio <span className="text-orange-400">*</span>
                   </label>
                   <input
                     type="text"
                     inputMode="numeric"
                     pattern="[0-9]*"
                     className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
-                    placeholder={inThousands && !isThousandsDisabled ? "Ej: 2 (→ $2.000)" : "Ej: 2000"}
-                    value={ticketPriceInput}
-                    onChange={onChangePrice}
+                    placeholder="Ej: 500 (se interpreta como $500.000) o 1000 literal"
+                    value={prizeValueInput}
+                    onChange={onChangePrize}
                     disabled={loading}
                     required
                   />
                   <p className="text-xs text-gray-400 mt-1">
-                    {inThousands && !isThousandsDisabled
-                      ? `Se enviará: ${moneyFmt.format(toInteger(ticketPriceInput, inThousands) || 0)}`
-                      : `Entero sin puntos. Se enviará: ${moneyFmt.format(toInteger(ticketPriceInput, inThousands) || 0)}`}
+                    Se enviará: {moneyFmt.format(prizeValueNormalized || 0)}
                   </p>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">Valor del Premio (opcional)</label>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">
+                    Objetivo de participantes (opcional)
+                  </label>
                   <input
                     type="text"
                     inputMode="numeric"
                     pattern="[0-9]*"
                     className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
-                    placeholder={inThousands && !isThousandsDisabled ? "Ej: 500 (→ $500.000)" : "Ej: 500000"}
-                    value={prizeValueInput}
-                    onChange={onChangePrize}
+                    placeholder={minParticipantsUX ? `≥ ${minParticipantsUX}` : "Ej: 100"}
+                    value={participantGoal}
+                    onChange={onChangeGoal}
                     disabled={loading}
                   />
-                  <p className="text-xs text-gray-400 mt-1">
-                    {prizeValueInput
-                      ? `Se enviará: ${moneyFmt.format(toInteger(prizeValueInput, inThousands) || 0)}`
-                      : "Dejalo vacío si no querés calcular cobertura"}
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">Máximo de Tickets (opcional)</label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
-                    placeholder="Ej: 1000"
-                    value={maxTickets}
-                    onChange={onChangeMaxTickets}
-                    disabled={loading}
-                  />
-                  {participantsNeeded && (
-                    <p className="text-xs mt-1">
-                      Participantes necesarios para cubrir el premio:{" "}
-                      <b className="text-orange-300">{participantsNeeded}</b>
+                  {minParticipantsUX && (
+                    <p className="text-xs mt-1 text-gray-300">
+                      Mínimo requerido para realizar el sorteo: <b className="text-orange-300">{minParticipantsUX}</b>
                     </p>
                   )}
                 </div>
-              </div>
 
-              {/* Toggle miles */}
-              <div className="flex items-center gap-3">
-                <input
-                  id="inThousands"
-                  type="checkbox"
-                  checked={inThousands}
-                  onChange={(e) => setInThousands(e.target.checked)}
-                  className="h-4 w-4 text-orange-600 rounded border-gray-600"
-                  disabled={loading || isThousandsDisabled}
-                />
-                <label
-                  htmlFor="inThousands"
-                  className={`text-sm ${isThousandsDisabled ? "text-gray-500" : "text-gray-300"}`}
-                >
-                  Ingresar en miles (1 → 1000)
-                  {isThousandsDisabled && <span className="ml-2 text-xs">(Desactivado: más de 3 dígitos)</span>}
-                </label>
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Visibilidad</label>
+                  <div className="flex items-center h-[52px] bg-gray-700/50 border border-gray-600 rounded-xl px-4">
+                    <input
+                      id="isPrivate"
+                      type="checkbox"
+                      checked={isPrivate}
+                      onChange={(e) => setIsPrivate(e.target.checked)}
+                      className="h-4 w-4 text-orange-600 rounded border-gray-600"
+                      disabled={loading}
+                    />
+                    <label htmlFor="isPrivate" className="ml-3 text-sm text-gray-300">
+                      Hacer sorteo privado
+                    </label>
+                  </div>
+                </div>
               </div>
 
               {/* Fechas */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">Fecha de Inicio (opcional)</label>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Fecha de inicio (opcional)</label>
                   <input
                     type="datetime-local"
                     className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white"
@@ -492,7 +438,9 @@ export default function CrearSorteoPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">Fecha de Finalización (opcional)</label>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">
+                    Fecha de finalización {String(participantGoal).trim() === "" && <span className="text-orange-400">*</span>}
+                  </label>
                   <input
                     type="datetime-local"
                     className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white"
@@ -507,7 +455,7 @@ export default function CrearSorteoPage() {
               {/* Imagen */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">URL de Imagen (opcional)</label>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">URL de imagen (opcional)</label>
                   <input
                     type="url"
                     className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
@@ -516,7 +464,7 @@ export default function CrearSorteoPage() {
                     onChange={(e) => setImageUrl(e.target.value)}
                     disabled={loading}
                   />
-                  <p className="text-xs text-gray-400 mt-1">Si subís archivo, usará el archivo en lugar de esta URL.</p>
+                  <p className="text-xs text-gray-400 mt-1">Si subís archivo, se usará el archivo en lugar de esta URL.</p>
                 </div>
 
                 <div>
@@ -552,6 +500,29 @@ export default function CrearSorteoPage() {
                 </div>
               </div>
 
+              {/* Términos */}
+              <div className="flex items-start gap-3">
+                <input
+                  id="termsAccepted"
+                  type="checkbox"
+                  checked={termsAccepted}
+                  onChange={(e) => setTermsAccepted(e.target.checked)}
+                  className="mt-1 h-4 w-4 text-orange-600 rounded border-gray-600"
+                  disabled={loading}
+                />
+                <label htmlFor="termsAccepted" className="text-sm text-gray-300">
+                  Acepto los{" "}
+                  <a
+                    className="text-orange-400 hover:underline"
+                    href="#"
+                    onClick={(e) => e.preventDefault()}
+                  >
+                    términos y condiciones
+                  </a>{" "}
+                  del sorteo.
+                </label>
+              </div>
+
               {/* Botones */}
               <div className="flex flex-col sm:flex-row gap-4 pt-6 border-t border-gray-700">
                 <button
@@ -576,16 +547,16 @@ export default function CrearSorteoPage() {
                   onClick={() => {
                     setTitle("");
                     setDescription("");
-                    setTicketPriceInput("");
                     setPrizeValueInput("");
-                    setMaxTickets("");
+                    setParticipantGoal("");
                     setStartsAt("");
                     setEndsAt("");
                     setImageUrl("");
                     setFile(null);
                     setPreview("");
                     setError("");
-                    setInThousands(true); // Reset toggle
+                    setIsPrivate(false);
+                    setTermsAccepted(false);
                   }}
                   disabled={loading}
                   className="px-4 py-3.5 text-gray-400 hover:text-white hover:bg-gray-700/50 rounded-xl transition-all"
@@ -618,15 +589,11 @@ export default function CrearSorteoPage() {
                   </li>
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>Definí un precio de ticket competitivo y coherente con el premio.</span>
+                    <span>Definí un premio realista: podés escribir 1 y se interpreta $1.000; 10 → $10.000, etc.</span>
                   </li>
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>Si cargás premio y máximo, te mostramos cuántos participantes cubren el premio.</span>
-                  </li>
-                  <li className="flex items-start">
-                    <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>El modo &quot;miles&quot; se desactiva automáticamente si ingresás 4 o más dígitos.</span>
+                    <span>El sistema te muestra el mínimo de participantes requerido para poder realizar el sorteo.</span>
                   </li>
                 </ul>
               </div>

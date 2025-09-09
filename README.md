@@ -1,6 +1,7 @@
 
 ```
 riftea
+├─ docker-compose.yml
 ├─ eslint.config.mjs
 ├─ estructura.md
 ├─ jsconfig.json
@@ -25,6 +26,12 @@ riftea
 │  │  │  └─ migration.sql
 │  │  ├─ 20250904072220_add_ticket_fields
 │  │  │  └─ migration.sql
+│  │  ├─ 20250908174305_init_local
+│  │  │  └─ migration.sql
+│  │  ├─ 20250909033034_add_is_private
+│  │  │  └─ migration.sql
+│  │  ├─ 20250909085003_winner_participation_unique_and_ready_to_draw
+│  │  │  └─ migration.sql
 │  │  └─ migration_lock.toml
 │  └─ schema.prisma
 ├─ public
@@ -34,10 +41,26 @@ riftea
 │  ├─ logo.png
 │  ├─ next.svg
 │  ├─ uploads
+│  │  ├─ 2207dd1ccb0342c5b2d191f53546120d.webp
+│  │  ├─ 2207dd1ccb0342c5b2d191f53546120d_thumb.webp
+│  │  ├─ 46ab8d996cc24325ae7df0ff5195e718.webp
+│  │  ├─ 46ab8d996cc24325ae7df0ff5195e718_thumb.webp
 │  │  ├─ 4d1083518c414a9281a617c68a1fc3cb.webp
 │  │  ├─ 4d1083518c414a9281a617c68a1fc3cb_thumb.webp
+│  │  ├─ 5be3b354d8054ea982fe9b54feef308f.webp
+│  │  ├─ 5be3b354d8054ea982fe9b54feef308f_thumb.webp
+│  │  ├─ 6e315663d2bf4d478a23de5fe7d7041b.webp
+│  │  ├─ 6e315663d2bf4d478a23de5fe7d7041b_thumb.webp
 │  │  ├─ 71b88485515b4bd6ad50397d9ac408c4.webp
 │  │  ├─ 71b88485515b4bd6ad50397d9ac408c4_thumb.webp
+│  │  ├─ 81b85b6a1b5d4e8ba97620550596a35d.webp
+│  │  ├─ 81b85b6a1b5d4e8ba97620550596a35d_thumb.webp
+│  │  ├─ 89d9e4b177314f76b533c88db1ee84fc.webp
+│  │  ├─ 89d9e4b177314f76b533c88db1ee84fc_thumb.webp
+│  │  ├─ 939965541b7a4ce680ee1577b7083d02.webp
+│  │  ├─ 939965541b7a4ce680ee1577b7083d02_thumb.webp
+│  │  ├─ 9eded9db9dac4b8787eb5335b018d455.webp
+│  │  ├─ 9eded9db9dac4b8787eb5335b018d455_thumb.webp
 │  │  ├─ bab06c9715e9453faa9db34188dcc3dd.webp
 │  │  ├─ bab06c9715e9453faa9db34188dcc3dd_thumb.webp
 │  │  ├─ c8724f1f575c4e71a144be367b279580.webp
@@ -50,6 +73,8 @@ riftea
 │  │  ├─ d80d1f1345ab4974b7c19ac9c9b10956_thumb.webp
 │  │  ├─ f4ced4d12032470bbeae02ab69b6d042.webp
 │  │  ├─ f4ced4d12032470bbeae02ab69b6d042_thumb.webp
+│  │  ├─ f7ecd08d44ab4e328b6f5ed506dc3efb.webp
+│  │  ├─ f7ecd08d44ab4e328b6f5ed506dc3efb_thumb.webp
 │  │  ├─ fd8b55917af6410c89b9d2618b88b5f9.webp
 │  │  └─ fd8b55917af6410c89b9d2618b88b5f9_thumb.webp
 │  ├─ vercel.svg
@@ -82,11 +107,14 @@ riftea
 │  │  │  │  │  └─ route.js
 │  │  │  │  ├─ tickets
 │  │  │  │  │  └─ issue
-│  │  │  │  │     └─ route,js
+│  │  │  │  │     └─ route.js
 │  │  │  │  └─ usuarios
 │  │  │  │     └─ route.js
 │  │  │  ├─ auth
 │  │  │  │  └─ [...nextauth]
+│  │  │  │     └─ route.js
+│  │  │  ├─ health
+│  │  │  │  └─ db
 │  │  │  │     └─ route.js
 │  │  │  ├─ notifications
 │  │  │  │  └─ route.js
@@ -99,7 +127,7 @@ riftea
 │  │  │  ├─ raffles
 │  │  │  │  ├─ route.js
 │  │  │  │  └─ [id]
-│  │  │  │     ├─ assign-tickets
+│  │  │  │     ├─ draw
 │  │  │  │     │  └─ route.js
 │  │  │  │     ├─ participate
 │  │  │  │     │  └─ route.js
@@ -140,6 +168,8 @@ riftea
 │  │  │  └─ page.js
 │  │  ├─ sorteo
 │  │  │  └─ [id]
+│  │  │     ├─ en-vivo
+│  │  │     │  └─ page.js
 │  │  │     └─ page.js
 │  │  ├─ terminos
 │  │  │  └─ page.js
@@ -174,7 +204,8 @@ riftea
 │  │  ├─ crypto.server.js
 │  │  ├─ generateTickets.js
 │  │  ├─ prisma.js
-│  │  └─ queue.js
+│  │  ├─ queue.js
+│  │  └─ ticket.server.js
 │  ├─ server
 │  │  └─ tickets.js
 │  ├─ services
@@ -190,6 +221,7 @@ riftea
 │     └─ worker.js
 ├─ tests
 │  └─ scripts
+├─ ticketPrice
 └─ tsconfig.json
 
 ```

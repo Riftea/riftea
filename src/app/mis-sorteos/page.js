@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import QRCode from "qrcode";
-import Image from "next/image"; // ⬅️ agregado
+import Image from "next/image";
 
 export default function MisSorteos() {
   const router = useRouter();
@@ -14,20 +14,17 @@ export default function MisSorteos() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // UI feedback simple
   const [msg, setMsg] = useState("");
   const [msgType, setMsgType] = useState(""); // success | error | info
   const [deletingId, setDeletingId] = useState(null);
 
-  // Modal compartir - TODOS LOS ESTADOS NECESARIOS
+  // Modal compartir
   const [shareOpen, setShareOpen] = useState(false);
   const [shareRaffle, setShareRaffle] = useState(null);
   const [shareUrl, setShareUrl] = useState("");
-  const [qrDataUrl, setQrDataUrl] = useState(""); // ESTADO QR RESTAURADO
+  const [qrDataUrl, setQrDataUrl] = useState("");
   const [copyCount, setCopyCount] = useState(0);
   const [copying, setCopying] = useState(false);
-
-  // Ref para descargar QR (no se usa con librería original pero lo dejo por compatibilidad)
   const qrWrapRef = useRef(null);
 
   const role = (session?.user?.role || "user").toLowerCase();
@@ -42,16 +39,14 @@ export default function MisSorteos() {
     []
   );
 
-  // Helpers para compartir en redes sociales
+  // --- Helpers compartir
   function buildShareText(title, url) {
     return `¡Mirá mi sorteo "${title}"! ${url}`;
   }
-
   function getShareLinks({ url, title }) {
     const text = buildShareText(title || "Sorteo", url);
     const encodedText = encodeURIComponent(text);
     const encodedUrl = encodeURIComponent(url);
-
     return {
       whatsapp: `https://api.whatsapp.com/send?text=${encodedText}`,
       facebook: `https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}`,
@@ -61,7 +56,7 @@ export default function MisSorteos() {
     };
   }
 
-  // Helpers persistencia contador
+  // --- Persistencia contador copias
   const loadCopyCount = (id) => {
     try {
       const raw = localStorage.getItem(`shareCopies:${id}`);
@@ -81,6 +76,7 @@ export default function MisSorteos() {
     }
   };
 
+  // --- Carga de rifas
   useEffect(() => {
     if (status === "loading") return;
     if (status === "unauthenticated") {
@@ -88,20 +84,15 @@ export default function MisSorteos() {
       setLoading(false);
       return;
     }
-
     let abort = false;
-
     async function load() {
       setLoading(true);
       setError(null);
       try {
         const res = await fetch("/api/raffles?mine=1&limit=100");
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || `Status ${res.status}`);
-        }
+        if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
-        if (!abort) setRaffles(data.raffles ?? []);
+        if (!abort) setRaffles(Array.isArray(data?.raffles) ? data.raffles : []);
         if (!abort) {
           setMsg(`Se cargaron ${Array.isArray(data.raffles) ? data.raffles.length : 0} sorteos`);
           setMsgType("info");
@@ -117,14 +108,13 @@ export default function MisSorteos() {
         if (!abort) setLoading(false);
       }
     }
-
     load();
     return () => {
       abort = true;
     };
   }, [status]);
 
-  // Generar QR cuando abra el modal o cambie la URL a compartir
+  // --- QR
   useEffect(() => {
     let cancelled = false;
     async function gen() {
@@ -147,7 +137,7 @@ export default function MisSorteos() {
     };
   }, [shareOpen, shareUrl]);
 
-  // Cerrar modal con ESC
+  // --- Modal UX
   useEffect(() => {
     if (!shareOpen) return;
     const onKey = (e) => e.key === "Escape" && closeShare();
@@ -155,7 +145,6 @@ export default function MisSorteos() {
     return () => window.removeEventListener("keydown", onKey);
   }, [shareOpen]);
 
-  // Bloquear scroll del body mientras está abierto
   useEffect(() => {
     if (!shareOpen) return;
     const prev = document.body.style.overflow;
@@ -168,22 +157,23 @@ export default function MisSorteos() {
   function noti(text, type = "info") {
     setMsg(text);
     setMsgType(type);
-    // autohide
     setTimeout(() => {
       setMsg("");
       setMsgType("");
     }, 2500);
   }
 
-  // Permisos
+  // --- Permisos (usa ownerId o owner.id si select explícito)
+  const isOwnerByRecord = (r) => {
+    const sid = session?.user?.id;
+    return !!sid && (r.ownerId === sid || r.owner?.id === sid);
+  };
+
   const canDelete = (r) => {
-    if (role === "superadmin") return true; // superadmin puede siempre
-    const isOwner = session?.user?.id === r.ownerId;
-    if (isOwner) {
-      // owner puede si no hay tickets/participations
+    if (role === "superadmin") return true;
+    if (isOwnerByRecord(r)) {
       return (r._count?.tickets ?? 0) === 0 && (r._count?.participations ?? 0) === 0;
     }
-    // admin (no owner) puede solo si no hay participantes
     if (role === "admin") {
       return (r._count?.tickets ?? 0) === 0 && (r._count?.participations ?? 0) === 0;
     }
@@ -192,10 +182,10 @@ export default function MisSorteos() {
 
   const canEdit = (r) => {
     if (role === "superadmin" || role === "admin") return true;
-    return session?.user?.id === r.ownerId; // dueño
+    return isOwnerByRecord(r);
   };
 
-  // Acciones
+  // --- Acciones
   async function handleDelete(id) {
     const raffle = raffles.find((x) => x.id === id);
     if (!raffle) return;
@@ -203,7 +193,6 @@ export default function MisSorteos() {
 
     setDeletingId(id);
     try {
-      // Usa tu endpoint principal. Ajustá a tu API real.
       const res =
         (await fetch(`/api/admin/raffles/${id}`, { method: "DELETE" }).catch(() => null)) ||
         (await fetch(`/api/raffles/${id}`, { method: "DELETE" }).catch(() => null)) ||
@@ -214,7 +203,6 @@ export default function MisSorteos() {
         noti("No se pudo eliminar: " + txt, "error");
         return;
       }
-
       setRaffles((prev) => prev.filter((r) => r.id !== id));
       noti("Sorteo eliminado", "success");
     } catch (err) {
@@ -234,29 +222,22 @@ export default function MisSorteos() {
     router.push(`/admin/raffles/${id}`);
   }
 
-  // Compartir (con modal + QR + contador)
   async function handleShare(r) {
     const url = publicUrlFor(r.id);
     const title = r.title || "Sorteo";
     const text = `¡Mirá mi sorteo "${title}"!`;
-
-    // Intento share nativo primero (si estás en móvil)
     try {
       if (navigator.share) {
         await navigator.share({ title, text, url });
-        const c = incCopyCount(r.id); // contamos también los shares nativos
+        const c = incCopyCount(r.id);
         setCopyCount(c);
         noti("¡Enlace compartido!", "success");
-        // Abrimos modal igual para mostrar QR / contador (opcional)
-        openShareModal(r, url);
+        openShareModal(r, url); // opcional
         return;
       }
     } catch (e) {
-      // Si falla el share nativo, caemos al modal
       console.warn("Fallback a modal de compartir:", e);
     }
-
-    // Desktop o sin Web Share → modal
     openShareModal(r, url);
   }
 
@@ -292,7 +273,6 @@ export default function MisSorteos() {
     }
   }
 
-  // Función para descargar QR (con la imagen generada)
   function downloadQR() {
     if (!qrDataUrl) return;
     const a = document.createElement("a");
@@ -345,7 +325,6 @@ export default function MisSorteos() {
 
   return (
     <>
-      {/* Animación de rebote para el modal */}
       <style jsx global>{`
         @keyframes modalEnter {
           0% {
@@ -360,7 +339,6 @@ export default function MisSorteos() {
             transform: translateY(0) scale(1);
           }
         }
-
         @keyframes fadeIn {
           from {
             opacity: 0;
@@ -369,7 +347,6 @@ export default function MisSorteos() {
             opacity: 1;
           }
         }
-
         .animate-modal-enter {
           animation: modalEnter 300ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
         }
@@ -377,7 +354,7 @@ export default function MisSorteos() {
 
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 py-8 px-4 sm:px-6 lg:px-8">
         <div className="max-w-4xl mx-auto">
-          {/* Header con efecto glassmorphism */}
+          {/* Header */}
           <div className="relative mb-8 bg-white/80 backdrop-blur-lg rounded-2xl shadow-xl overflow-hidden border border-white/20">
             <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/10 to-purple-500/10"></div>
             <div className="relative flex items-center justify-between p-6">
@@ -402,7 +379,7 @@ export default function MisSorteos() {
             </div>
           </div>
 
-          {/* Mensaje de estado con animación */}
+          {/* Mensajes */}
           {msg && (
             <div
               className={`mb-6 p-4 rounded-xl border-l-4 transition-all duration-300 transform ${
@@ -421,7 +398,7 @@ export default function MisSorteos() {
             </div>
           )}
 
-          {/* Lista de sorteos con efecto hover */}
+          {/* Lista */}
           {raffles.length === 0 ? (
             <div className="text-center py-12 bg-white/80 backdrop-blur-sm rounded-2xl shadow-lg border border-white/20">
               <div className="text-gray-400 mb-4">
@@ -450,207 +427,224 @@ export default function MisSorteos() {
             </div>
           ) : (
             <div className="space-y-5">
-              {raffles.map((r) => (
-                <div
-                  key={r.id}
-                  className="group relative bg-white/80 backdrop-blur-sm rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 border border-white/20 overflow-hidden"
-                >
-                  <div className="absolute inset-0 bg-gradient-to-r from-indigo-50/0 to-purple-50/0 group-hover:from-indigo-50/50 group-hover:to-purple-50/50 transition-all duration-300"></div>
-                  <div className="relative p-6">
-                    <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center">
-                          <h3 className="text-lg font-bold text-gray-900 truncate group-hover:text-indigo-600 transition-colors">
-                            {r.title}
-                          </h3>
-                          {r.isFeatured && (
-                            <span className="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
-                              Destacado
+              {raffles.map((r) => {
+                // Precio DERIVADO del endpoint (no DB):
+                const derivedUnitPrice =
+                  typeof r?.unitPrice === "number"
+                    ? r.unitPrice
+                    : typeof r?.ticketPrice === "number"
+                    ? r.ticketPrice
+                    : undefined;
+
+                return (
+                  <div
+                    key={r.id}
+                    className="group relative bg-white/80 backdrop-blur-sm rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 border border-white/20 overflow-hidden"
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-r from-indigo-50/0 to-purple-50/0 group-hover:from-indigo-50/50 group-hover:to-purple-50/50 transition-all duration-300"></div>
+                    <div className="relative p-6">
+                      <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-lg font-bold text-gray-900 truncate group-hover:text-indigo-600 transition-colors">
+                              {r.title}
+                            </h3>
+
+                            {/* Píldora PRIVADO */}
+                            {r.isPrivate === true && (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-white">
+                                Privado
+                              </span>
+                            )}
+
+                            {r.isFeatured && (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                                Destacado
+                              </span>
+                            )}
+                          </div>
+
+                          <p className="mt-1 text-gray-600 text-sm line-clamp-2">{r.description}</p>
+
+                          <div className="mt-3 flex flex-wrap gap-3 text-xs">
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700">
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                              </svg>
+                              Tickets: {r._count?.tickets ?? 0}
                             </span>
-                          )}
-                        </div>
-
-                        <p className="mt-1 text-gray-600 text-sm line-clamp-2">{r.description}</p>
-
-                        <div className="mt-3 flex flex-wrap gap-3 text-xs">
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700">
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                            </svg>
-                            Tickets: {r._count?.tickets ?? 0}
-                          </span>
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-purple-50 text-purple-700">
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a3 3 0 104.644 0m-4.644 0a3 3 0 114.644 0z"
-                              />
-                            </svg>
-                            Participantes: {r._count?.participations ?? 0}
-                          </span>
-                          {"ticketPrice" in r && typeof r.ticketPrice === "number" && (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-purple-50 text-purple-700">
                               <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path
                                   strokeLinecap="round"
                                   strokeLinejoin="round"
                                   strokeWidth={2}
-                                  d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M12 7c1.11 0 2.08.402 2.599 1"
+                                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a3 3 0 104.644 0m-4.644 0a3 3 0 114.644 0z"
                                 />
                               </svg>
-                              Precio: {moneyFmt.format(r.ticketPrice)}
+                              Participantes: {r._count?.participations ?? 0}
                             </span>
-                          )}
-                          {r.endsAt && (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700">
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                              Finaliza: {new Date(r.endsAt).toLocaleDateString()}
-                            </span>
-                          )}
+
+                            {/* Precio DERIVADO del backend */}
+                            {typeof derivedUnitPrice === "number" && (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M12 7c1.11 0 2.08.402 2.599 1"
+                                  />
+                                </svg>
+                                Precio: {moneyFmt.format(derivedUnitPrice)}
+                              </span>
+                            )}
+
+                            {r.endsAt && (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                Finaliza: {new Date(r.endsAt).toLocaleDateString()}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
 
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 min-w-[200px]">
-                        <a
-                          href={`/sorteo/${r.id}`}
-                          className="group/view inline-flex items-center justify-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200 hover:shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                        >
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            className="h-4 w-4 mr-2 text-gray-500 group-hover/view:text-indigo-600 transition-colors"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-                            />
-                          </svg>
-                          Ver
-                        </a>
-
-                        {canEdit(r) ? (
-                          <button
-                            onClick={() => handleEdit(r.id)}
-                            className="group/edit inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 transition-all duration-200 transform hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-2 min-w-[200px]">
+                          <a
+                            href={`/sorteo/${r.id}`}
+                            className="group/view inline-flex items-center justify-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200 hover:shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                           >
                             <svg
                               xmlns="http://www.w3.org/2000/svg"
-                              className="h-4 w-4 mr-2 text-white/90 group-hover/edit:text-white transition-colors"
+                              className="h-4 w-4 mr-2 text-gray-500 group-hover/view:text-indigo-600 transition-colors"
                               fill="none"
                               viewBox="0 0 24 24"
                               stroke="currentColor"
                             >
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                              />
                             </svg>
-                            Editar
-                          </button>
-                        ) : (
-                          <button
-                            disabled
-                            className="group/edit inline-flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-400 bg-gray-50 cursor-not-allowed"
-                            title="No tenés permisos para editar este sorteo"
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                            </svg>
-                            Editar
-                          </button>
-                        )}
+                            Ver
+                          </a>
 
-                        <button
-                          onClick={() => handleShare(r)}
-                          className="group/share inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 transition-all duration-200 transform hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500"
-                          title="Compartir enlace público del sorteo"
-                        >
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            className="h-4 w-4 mr-2 text-white/90 group-hover/share:text-white transition-colors"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684z"
-                            />
-                          </svg>
-                          Compartir
-                        </button>
-
-                        {canDelete(r) ? (
-                          <button
-                            onClick={() => handleDelete(r.id)}
-                            disabled={deletingId === r.id}
-                            className={`group/delete inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white transition-all duration-200 transform hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-offset-2 ${
-                              deletingId === r.id
-                                ? "bg-gray-400 cursor-not-allowed"
-                                : "bg-gradient-to-r from-rose-500 to-pink-600 hover:from-rose-600 hover:to-pink-700 focus:ring-rose-500"
-                            }`}
-                          >
-                            {deletingId === r.id ? (
-                              <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                <path
-                                  className="opacity-75"
-                                  fill="currentColor"
-                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                ></path>
-                              </svg>
-                            ) : (
+                          {canEdit(r) ? (
+                            <button
+                              onClick={() => handleEdit(r.id)}
+                              className="group/edit inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 transition-all duration-200 transform hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                            >
                               <svg
                                 xmlns="http://www.w3.org/2000/svg"
-                                className="h-4 w-4 mr-2 text-white/90 group-hover/delete:text-white transition-colors"
+                                className="h-4 w-4 mr-2 text-white/90 group-hover/edit:text-white transition-colors"
                                 fill="none"
                                 viewBox="0 0 24 24"
                                 stroke="currentColor"
                               >
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                              Editar
+                            </button>
+                          ) : (
+                            <button
+                              disabled
+                              className="group/edit inline-flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-400 bg-gray-50 cursor-not-allowed"
+                              title="No tenés permisos para editar este sorteo"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                              Editar
+                            </button>
+                          )}
+
+                          <button
+                            onClick={() => handleShare(r)}
+                            className="group/share inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 transition-all duration-200 transform hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500"
+                            title="Compartir enlace público del sorteo"
+                          >
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              className="h-4 w-4 mr-2 text-white/90 group-hover/share:text-white transition-colors"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684z"
+                              />
+                            </svg>
+                            Compartir
+                          </button>
+
+                          {canDelete(r) ? (
+                            <button
+                              onClick={() => handleDelete(r.id)}
+                              disabled={deletingId === r.id}
+                              className={`group/delete inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white transition-all duration-200 transform hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                                deletingId === r.id
+                                  ? "bg-gray-400 cursor-not-allowed"
+                                  : "bg-gradient-to-r from-rose-500 to-pink-600 hover:from-rose-600 hover:to-pink-700 focus:ring-rose-500"
+                              }`}
+                            >
+                              {deletingId === r.id ? (
+                                <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                  <path
+                                    className="opacity-75"
+                                    fill="currentColor"
+                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                  ></path>
+                                </svg>
+                              ) : (
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  className="h-4 w-4 mr-2 text-white/90 group-hover/delete:text-white transition-colors"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                >
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                              )}
+                              {deletingId === r.id ? "Eliminando..." : "Eliminar"}
+                            </button>
+                          ) : (
+                            <button
+                              disabled
+                              className="group/delete inline-flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-400 bg-gray-50 cursor-not-allowed"
+                              title="No se puede eliminar: hay participantes o no tenés permisos"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                               </svg>
-                            )}
-                            {deletingId === r.id ? "Eliminando..." : "Eliminar"}
-                          </button>
-                        ) : (
-                          <button
-                            disabled
-                            className="group/delete inline-flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-400 bg-gray-50 cursor-not-allowed"
-                            title="No se puede eliminar: hay participantes o no tenés permisos"
-                          >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
-                            Eliminar
-                          </button>
-                        )}
+                              Eliminar
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
-          {/* Modal Compartir con animación de rebote - BUG ARREGLADO */}
+          {/* Modal Compartir */}
           {shareOpen && (
             <div className="fixed inset-0 z-50 overflow-y-auto" aria-modal="true" role="dialog">
-              {/* Backdrop con transición */}
               <div className="fixed inset-0 bg-black bg-opacity-50 transition-opacity duration-300" onClick={closeShare}></div>
-
-              {/* Modal con animación de rebote - OPACITY ARREGLADA */}
               <div className="min-h-screen flex items-center justify-center p-4">
                 <div className="relative w-full max-w-md transform transition-all duration-300 ease-out">
                   <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
-                    {/* Header con gradiente */}
                     <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-5">
                       <div className="flex items-start justify-between">
                         <h2 className="text-xl font-bold text-white">Compartir sorteo</h2>
@@ -677,18 +671,17 @@ export default function MisSorteos() {
                         </div>
                       )}
 
-                      {/* QR con animación de aparición - reemplazado <img> por <Image /> */}
                       <div className="mb-6 flex justify-center">
                         <div ref={qrWrapRef} className="p-4 bg-white rounded-xl shadow-inner border border-gray-100">
                           {qrDataUrl ? (
                             <Image
                               src={qrDataUrl}
                               alt="QR del sorteo"
-                              width={176}            // 11rem = w-44
-                              height={176}           // 11rem = h-44
+                              width={176}
+                              height={176}
                               className="object-contain animate-fadeIn"
-                              unoptimized            // data URL generado en cliente
-                              priority               // muestra rápido en el modal
+                              unoptimized
+                              priority
                             />
                           ) : (
                             <div className="w-44 h-44 flex items-center justify-center border-2 border-dashed border-gray-300 rounded-xl">
@@ -701,7 +694,6 @@ export default function MisSorteos() {
                         </div>
                       </div>
 
-                      {/* Acciones con efecto hover */}
                       <div className="grid grid-cols-1 gap-3 mb-5">
                         <button
                           onClick={copyLink}
@@ -771,7 +763,6 @@ export default function MisSorteos() {
                         </button>
                       </div>
 
-                      {/* Botones de compartir en redes sociales - NUEVO */}
                       {shareUrl && (
                         <div className="mt-4">
                           <div className="text-sm text-gray-600 mb-2">Compartir en:</div>
@@ -779,42 +770,19 @@ export default function MisSorteos() {
                             const links = getShareLinks({ url: shareUrl, title: shareRaffle?.title || "Sorteo" });
                             return (
                               <div className="flex flex-wrap gap-2">
-                                <a
-                                  href={links.whatsapp}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="px-3 py-2 text-sm rounded bg-green-600 text-white hover:bg-green-700 transition-colors"
-                                >
+                                <a href={links.whatsapp} target="_blank" rel="noopener noreferrer" className="px-3 py-2 text-sm rounded bg-green-600 text-white hover:bg-green-700 transition-colors">
                                   WhatsApp
                                 </a>
-                                <a
-                                  href={links.facebook}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="px-3 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                                >
+                                <a href={links.facebook} target="_blank" rel="noopener noreferrer" className="px-3 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors">
                                   Facebook
                                 </a>
-                                <a
-                                  href={links.x}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="px-3 py-2 text-sm rounded bg-black text-white hover:bg-gray-800 transition-colors"
-                                >
+                                <a href={links.x} target="_blank" rel="noopener noreferrer" className="px-3 py-2 text-sm rounded bg-black text-white hover:bg-gray-800 transition-colors">
                                   X
                                 </a>
-                                <a
-                                  href={links.telegram}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="px-3 py-2 text-sm rounded bg-cyan-600 text-white hover:bg-cyan-700 transition-colors"
-                                >
+                                <a href={links.telegram} target="_blank" rel="noopener noreferrer" className="px-3 py-2 text-sm rounded bg-cyan-600 text-white hover:bg-cyan-700 transition-colors">
                                   Telegram
                                 </a>
-                                <a
-                                  href={links.email}
-                                  className="px-3 py-2 text-sm rounded bg-gray-100 text-gray-800 border hover:bg-gray-200 transition-colors"
-                                >
+                                <a href={links.email} className="px-3 py-2 text-sm rounded bg-gray-100 text-gray-800 border hover:bg-gray-200 transition-colors">
                                   Email
                                 </a>
                               </div>
@@ -823,7 +791,6 @@ export default function MisSorteos() {
                         </div>
                       )}
 
-                      {/* Contador con efecto */}
                       <div className="text-center py-3 bg-gray-50 rounded-lg border border-gray-100 mt-4">
                         <div className="text-sm text-gray-600">
                           Copias del enlace:{" "}
