@@ -4,9 +4,7 @@ export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import {
-  RAFFLES_TICKET_PRICE, // precio fijo desde server (.env)
-} from '@/lib/ticket.server';
+import { TICKET_PRICE } from "@/lib/ticket.server";
 
 function toInt(v, def) {
   const n = parseInt(v, 10);
