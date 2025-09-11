@@ -9,6 +9,8 @@
     "start": "next start",
     "lint": "next lint",
     "postinstall": "prisma generate",
+    "prisma": "prisma",
+    "studio": "prisma studio",
     "dev:docker": "npx dotenv --override -e .env.shared -e .env.docker -- next dev",
     "build:docker": "npx dotenv --override -e .env.shared -e .env.docker -- next build",
     "start:docker": "npx dotenv --override -e .env.shared -e .env.docker -- next start",
