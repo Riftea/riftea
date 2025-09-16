@@ -1,0 +1,5 @@
+[35msrc/services/raffles.service.js[m[36m:[m[32m10[m[36m:[m * - Si aún no tiene [1;31mscheduledDrawAt[m
+[35msrc/services/raffles.service.js[m[36m:[m[32m11[m[36m:[m * Setea status = READY_TO_DRAW y [1;31mscheduledDrawAt[m = now + countdown (default 600s)
+[35msrc/services/raffles.service.js[m[36m:[m[32m21[m[36m:[m      [1;31mscheduledDrawAt[m: true,
+[35msrc/services/raffles.service.js[m[36m:[m[32m33[m[36m:[m  if (!active || !filled || raffle.[1;31mscheduledDrawAt[m) return;
+[35msrc/services/raffles.service.js[m[36m:[m[32m40[m[36m:[m    data: { status: 'READY_TO_DRAW', [1;31mscheduledDrawAt[m: eta },

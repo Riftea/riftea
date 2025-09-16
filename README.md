@@ -1,6 +1,7 @@
 
 ```
 riftea
+├─ a READY a secas
 ├─ docker-compose.yml
 ├─ eslint.config.mjs
 ├─ estructura.md
@@ -32,6 +33,8 @@ riftea
 │  │  │  └─ migration.sql
 │  │  ├─ 20250909085003_winner_participation_unique_and_ready_to_draw
 │  │  │  └─ migration.sql
+│  │  ├─ 20250912042109_add_favorites_is_verified_is_locked
+│  │  │  └─ migration.sql
 │  │  └─ migration_lock.toml
 │  └─ schema.prisma
 ├─ public
@@ -41,8 +44,14 @@ riftea
 │  ├─ logo.png
 │  ├─ next.svg
 │  ├─ uploads
+│  │  ├─ 091f558e82f44da0aecdeb24be7e66fe.webp
+│  │  ├─ 091f558e82f44da0aecdeb24be7e66fe_thumb.webp
 │  │  ├─ 2207dd1ccb0342c5b2d191f53546120d.webp
 │  │  ├─ 2207dd1ccb0342c5b2d191f53546120d_thumb.webp
+│  │  ├─ 26c537eb9f364c4c81639aef7d858997.webp
+│  │  ├─ 26c537eb9f364c4c81639aef7d858997_thumb.webp
+│  │  ├─ 2a3ff738f89240f1aaaf3c84f9eb750c.webp
+│  │  ├─ 2a3ff738f89240f1aaaf3c84f9eb750c_thumb.webp
 │  │  ├─ 3c435979b1644c3a94c5a8a194bd75d4.webp
 │  │  ├─ 3c435979b1644c3a94c5a8a194bd75d4_thumb.webp
 │  │  ├─ 46ab8d996cc24325ae7df0ff5195e718.webp
@@ -55,6 +64,8 @@ riftea
 │  │  ├─ 6e315663d2bf4d478a23de5fe7d7041b_thumb.webp
 │  │  ├─ 71b88485515b4bd6ad50397d9ac408c4.webp
 │  │  ├─ 71b88485515b4bd6ad50397d9ac408c4_thumb.webp
+│  │  ├─ 78681dbd49ee46a6a1478e920ffba54b.webp
+│  │  ├─ 78681dbd49ee46a6a1478e920ffba54b_thumb.webp
 │  │  ├─ 7a43a05e4e3c4e888e390b88dfc1bb9c.webp
 │  │  ├─ 7a43a05e4e3c4e888e390b88dfc1bb9c_thumb.webp
 │  │  ├─ 81b85b6a1b5d4e8ba97620550596a35d.webp
@@ -65,6 +76,12 @@ riftea
 │  │  ├─ 939965541b7a4ce680ee1577b7083d02_thumb.webp
 │  │  ├─ 9eded9db9dac4b8787eb5335b018d455.webp
 │  │  ├─ 9eded9db9dac4b8787eb5335b018d455_thumb.webp
+│  │  ├─ a458c28e313d4d40a019748736c29330.webp
+│  │  ├─ a458c28e313d4d40a019748736c29330_thumb.webp
+│  │  ├─ ad77b7db51f04f58a588fc404fc030f9.webp
+│  │  ├─ ad77b7db51f04f58a588fc404fc030f9_thumb.webp
+│  │  ├─ b792c788eec74ed184c1d9f87b0482b1.webp
+│  │  ├─ b792c788eec74ed184c1d9f87b0482b1_thumb.webp
 │  │  ├─ bab06c9715e9453faa9db34188dcc3dd.webp
 │  │  ├─ bab06c9715e9453faa9db34188dcc3dd_thumb.webp
 │  │  ├─ c8724f1f575c4e71a144be367b279580.webp
@@ -75,10 +92,18 @@ riftea
 │  │  ├─ d4efb0206bca4b8f8ef8bb7683a5c2cd_thumb.webp
 │  │  ├─ d519f6ce5b8c4b5ea0a90efe54c537bc.webp
 │  │  ├─ d519f6ce5b8c4b5ea0a90efe54c537bc_thumb.webp
+│  │  ├─ d6bb0b7d1951424cb0a7d613bee64848.webp
+│  │  ├─ d6bb0b7d1951424cb0a7d613bee64848_thumb.webp
 │  │  ├─ d80d1f1345ab4974b7c19ac9c9b10956.webp
 │  │  ├─ d80d1f1345ab4974b7c19ac9c9b10956_thumb.webp
+│  │  ├─ d8cde504b1dd408396cd82ee40b9cc1b.webp
+│  │  ├─ d8cde504b1dd408396cd82ee40b9cc1b_thumb.webp
 │  │  ├─ dc81aec027cc4e19b478285924dbe4ca.webp
 │  │  ├─ dc81aec027cc4e19b478285924dbe4ca_thumb.webp
+│  │  ├─ dd800107bd794498a1701e10eef7d1c1.webp
+│  │  ├─ dd800107bd794498a1701e10eef7d1c1_thumb.webp
+│  │  ├─ ddd61f4824ed45418bd486e45dd29044.webp
+│  │  ├─ ddd61f4824ed45418bd486e45dd29044_thumb.webp
 │  │  ├─ e82943711ed0409ebd6f77b6448a7059.webp
 │  │  ├─ e82943711ed0409ebd6f77b6448a7059_thumb.webp
 │  │  ├─ ef8b72b3054e460babd0c7ef8b9dec83.webp
@@ -118,13 +143,17 @@ riftea
 │  │  │  │  ├─ sorteos
 │  │  │  │  │  └─ route.js
 │  │  │  │  ├─ tickets
-│  │  │  │  │  └─ issue
+│  │  │  │  │  ├─ issue
+│  │  │  │  │  │  └─ route.js
+│  │  │  │  │  └─ [id]
 │  │  │  │  │     └─ route.js
 │  │  │  │  └─ usuarios
 │  │  │  │     └─ route.js
 │  │  │  ├─ auth
 │  │  │  │  └─ [...nextauth]
 │  │  │  │     └─ route.js
+│  │  │  ├─ canary
+│  │  │  │  └─ route.js
 │  │  │  ├─ health
 │  │  │  │  └─ db
 │  │  │  │     └─ route.js
@@ -137,11 +166,17 @@ riftea
 │  │  │  │  │  └─ route.js
 │  │  │  │  └─ route.js
 │  │  │  ├─ raffles
+│  │  │  │  ├─ favorites
+│  │  │  │  │  └─ route.js
 │  │  │  │  ├─ public
 │  │  │  │  │  └─ route.js
 │  │  │  │  ├─ route.js
 │  │  │  │  └─ [id]
 │  │  │  │     ├─ draw
+│  │  │  │     │  └─ route.js
+│  │  │  │     ├─ favorite
+│  │  │  │     │  └─ route.js
+│  │  │  │     ├─ notify-participants
 │  │  │  │     │  └─ route.js
 │  │  │  │     ├─ participate
 │  │  │  │     │  └─ route.js
@@ -160,9 +195,14 @@ riftea
 │  │  │  │     └─ route.js
 │  │  │  ├─ uploads
 │  │  │  │  └─ route.js
-│  │  │  └─ users
-│  │  │     └─ me
-│  │  │        └─ route.js
+│  │  │  ├─ users
+│  │  │  │  └─ me
+│  │  │  │     └─ route.js
+│  │  │  └─ whoami
+│  │  │     └─ route.js
+│  │  ├─ debug
+│  │  │  └─ participate-test
+│  │  │     └─ page.jsx
 │  │  ├─ estadisticas
 │  │  │  └─ page.js
 │  │  ├─ favicon.ico
@@ -205,7 +245,8 @@ riftea
 │  │  ├─ tickets
 │  │  │  └─ UserTicketsDisplay.jsx
 │  │  └─ ui
-│  │     └─ CountdownTimer.jsx
+│  │     ├─ CountdownTimer.jsx
+│  │     └─ SmartImage.jsx
 │  ├─ contexts
 │  │  └─ NotificationsContext.js
 │  ├─ hooks
@@ -222,6 +263,7 @@ riftea
 │  │  ├─ generateTickets.js
 │  │  ├─ prisma.js
 │  │  ├─ queue.js
+│  │  ├─ roles.js
 │  │  └─ ticket.server.js
 │  ├─ server
 │  │  └─ tickets.js
@@ -230,10 +272,16 @@ riftea
 │  │  ├─ purchases.service.js
 │  │  ├─ raffles.service.js
 │  │  └─ tickets.service.js
-│  ├─ tests
 │  ├─ types
+│  │  ├─ index.d.ts
+│  │  └─ README.md
 │  ├─ utils
 │  ├─ validators
+│  │  ├─ common.js
+│  │  ├─ purchases.js
+│  │  ├─ raffles.js
+│  │  ├─ README.md
+│  │  └─ tickets.js
 │  └─ workers
 │     └─ worker.js
 ├─ tests

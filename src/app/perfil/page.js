@@ -6,11 +6,21 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 
 export default function PerfilPage() {
-  const { data: session, status } = useSession();
+  const { data: session, status, update } = useSession();
   const router = useRouter();
   const [userStats, setUserStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  
+  // Estados para edición
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [isEditingPhoto, setIsEditingPhoto] = useState(false);
+  const [isEditingWhatsApp, setIsEditingWhatsApp] = useState(false);
+  const [newDisplayName, setNewDisplayName] = useState("");
+  const [newWhatsApp, setNewWhatsApp] = useState("");
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [updateLoading, setUpdateLoading] = useState(false);
 
   useEffect(() => {
     if (status === "loading") return;
@@ -21,6 +31,13 @@ export default function PerfilPage() {
 
     fetchUserStats();
   }, [status, router]);
+
+  useEffect(() => {
+    if (session?.user) {
+      setNewDisplayName(session.user.displayName || session.user.name || "");
+      setNewWhatsApp(session.user.whatsapp || "");
+    }
+  }, [session]);
 
   const fetchUserStats = async () => {
     try {
@@ -33,6 +50,130 @@ export default function PerfilPage() {
     } catch (err) {
       setError(err.message);
       setLoading(false);
+    }
+  };
+
+  const handlePhotoChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) { // 5MB máximo
+        alert("La imagen debe ser menor a 5MB");
+        return;
+      }
+      if (!file.type.startsWith('image/')) {
+        alert("Solo se permiten archivos de imagen");
+        return;
+      }
+      setPhotoFile(file);
+      const reader = new FileReader();
+      reader.onload = (e) => setPhotoPreview(e.target.result);
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const canChangeName = () => {
+    if (!session?.user?.lastNameChange) return true;
+    const lastChange = new Date(session.user.lastNameChange);
+    const monthAgo = new Date();
+    monthAgo.setMonth(monthAgo.getMonth() - 1);
+    return lastChange < monthAgo;
+  };
+
+  const getNextNameChangeDate = () => {
+    if (!session?.user?.lastNameChange) return null;
+    const lastChange = new Date(session.user.lastNameChange);
+    lastChange.setMonth(lastChange.getMonth() + 1);
+    return lastChange.toLocaleDateString();
+  };
+
+  const validateWhatsApp = (phone) => {
+    // Remover espacios y caracteres especiales
+    const cleanPhone = phone.replace(/\D/g, '');
+    // Validar que tenga entre 10 y 15 dígitos
+    return cleanPhone.length >= 10 && cleanPhone.length <= 15;
+  };
+
+  const updateDisplayName = async () => {
+    if (!canChangeName()) {
+      alert(`Podrás cambiar tu nombre nuevamente el ${getNextNameChangeDate()}`);
+      return;
+    }
+
+    if (newDisplayName.trim().length < 2) {
+      alert("El nombre debe tener al menos 2 caracteres");
+      return;
+    }
+
+    setUpdateLoading(true);
+    try {
+      const res = await fetch("/api/users/update-profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayName: newDisplayName.trim() })
+      });
+
+      if (!res.ok) throw new Error("Error al actualizar nombre");
+      
+      await update(); // Refrescar sesión
+      setIsEditingName(false);
+      alert("Nombre actualizado correctamente");
+    } catch (err) {
+      alert("Error al actualizar nombre: " + err.message);
+    } finally {
+      setUpdateLoading(false);
+    }
+  };
+
+  const updatePhoto = async () => {
+    if (!photoFile) return;
+
+    setUpdateLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append("photo", photoFile);
+
+      const res = await fetch("/api/users/update-photo", {
+        method: "POST",
+        body: formData
+      });
+
+      if (!res.ok) throw new Error("Error al actualizar foto");
+      
+      await update(); // Refrescar sesión
+      setIsEditingPhoto(false);
+      setPhotoFile(null);
+      setPhotoPreview(null);
+      alert("Foto actualizada correctamente");
+    } catch (err) {
+      alert("Error al actualizar foto: " + err.message);
+    } finally {
+      setUpdateLoading(false);
+    }
+  };
+
+  const updateWhatsApp = async () => {
+    if (!validateWhatsApp(newWhatsApp)) {
+      alert("Por favor ingresa un número de WhatsApp válido (10-15 dígitos)");
+      return;
+    }
+
+    setUpdateLoading(true);
+    try {
+      const res = await fetch("/api/users/update-profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ whatsapp: newWhatsApp })
+      });
+
+      if (!res.ok) throw new Error("Error al actualizar WhatsApp");
+      
+      await update(); // Refrescar sesión
+      setIsEditingWhatsApp(false);
+      alert("WhatsApp actualizado correctamente");
+    } catch (err) {
+      alert("Error al actualizar WhatsApp: " + err.message);
+    } finally {
+      setUpdateLoading(false);
     }
   };
 
@@ -84,17 +225,122 @@ export default function PerfilPage() {
 
         {/* Información Personal */}
         <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 mb-8 border border-white/20">
-          <div className="flex items-center gap-6 mb-8">
-            <Image
-              src={user?.image || "/avatar-default.png"}
-              alt={user?.name || "Avatar"}
-              width={96}
-              height={96}
-              className="rounded-full border-4 border-white/20 object-cover"
-            />
-            <div>
-              <h2 className="text-3xl font-bold text-white mb-2">{user?.name}</h2>
+          <div className="flex items-start gap-6 mb-8">
+            {/* Foto de perfil */}
+            <div className="relative group">
+              <Image
+                src={photoPreview || user?.image || "/avatar-default.png"}
+                alt={user?.displayName || user?.name || "Avatar"}
+                width={96}
+                height={96}
+                className="rounded-full border-4 border-white/20 object-cover"
+              />
+              <button
+                onClick={() => setIsEditingPhoto(true)}
+                className="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <span className="text-white text-sm">📷</span>
+              </button>
+            </div>
+
+            <div className="flex-1">
+              {/* Nombre para mostrar */}
+              <div className="mb-4">
+                {isEditingName ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={newDisplayName}
+                      onChange={(e) => setNewDisplayName(e.target.value)}
+                      className="bg-white/10 border border-white/30 rounded-lg px-3 py-2 text-white placeholder-white/50"
+                      placeholder="Nombre para mostrar"
+                      maxLength={30}
+                    />
+                    <button
+                      onClick={updateDisplayName}
+                      disabled={updateLoading}
+                      className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg text-sm disabled:opacity-50"
+                    >
+                      {updateLoading ? "..." : "✓"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsEditingName(false);
+                        setNewDisplayName(user?.displayName || user?.name || "");
+                      }}
+                      className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-3xl font-bold text-white">
+                      {user?.displayName || user?.name}
+                    </h2>
+                    <button
+                      onClick={() => setIsEditingName(true)}
+                      disabled={!canChangeName()}
+                      className="text-white/70 hover:text-white disabled:text-white/30 disabled:cursor-not-allowed"
+                      title={!canChangeName() ? `Podrás cambiar tu nombre el ${getNextNameChangeDate()}` : "Editar nombre"}
+                    >
+                      ✏️
+                    </button>
+                  </div>
+                )}
+                {!canChangeName() && (
+                  <p className="text-yellow-400/70 text-xs mt-1">
+                    Próximo cambio disponible: {getNextNameChangeDate()}
+                  </p>
+                )}
+              </div>
+
               <p className="text-white/70 mb-2">{user?.email}</p>
+
+              {/* WhatsApp */}
+              <div className="mb-4">
+                {isEditingWhatsApp ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="tel"
+                      value={newWhatsApp}
+                      onChange={(e) => setNewWhatsApp(e.target.value)}
+                      className="bg-white/10 border border-white/30 rounded-lg px-3 py-2 text-white placeholder-white/50"
+                      placeholder="+54 9 11 1234-5678"
+                    />
+                    <button
+                      onClick={updateWhatsApp}
+                      disabled={updateLoading}
+                      className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg text-sm disabled:opacity-50"
+                    >
+                      {updateLoading ? "..." : "✓"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsEditingWhatsApp(false);
+                        setNewWhatsApp(user?.whatsapp || "");
+                      }}
+                      className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="text-white/70 text-sm">
+                      📱 {user?.whatsapp || "Sin WhatsApp configurado"}
+                    </span>
+                    <button
+                      onClick={() => setIsEditingWhatsApp(true)}
+                      className="text-white/70 hover:text-white"
+                      title="Editar WhatsApp"
+                    >
+                      ✏️
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center gap-4 text-sm">
                 <span className={`px-3 py-1 rounded-full ${
                   user?.role === 'ADMIN' ? 'bg-purple-500/20 text-purple-300' :
@@ -112,6 +358,56 @@ export default function PerfilPage() {
             </div>
           </div>
         </div>
+
+        {/* Modal de edición de foto */}
+        {isEditingPhoto && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 max-w-md w-full mx-4 border border-white/20">
+              <h3 className="text-2xl font-bold text-white mb-6">Cambiar Foto</h3>
+              
+              <div className="space-y-4">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handlePhotoChange}
+                  className="w-full p-3 bg-white/10 border border-white/30 rounded-lg text-white file:bg-white/20 file:border-0 file:text-white file:px-4 file:py-2 file:rounded file:mr-4"
+                />
+                
+                {photoPreview && (
+                  <div className="flex justify-center">
+                    <Image
+                      src={photoPreview}
+                      alt="Vista previa"
+                      width={120}
+                      height={120}
+                      className="rounded-full object-cover"
+                    />
+                  </div>
+                )}
+                
+                <div className="flex gap-3 mt-6">
+                  <button
+                    onClick={updatePhoto}
+                    disabled={!photoFile || updateLoading}
+                    className="flex-1 py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg disabled:opacity-50"
+                  >
+                    {updateLoading ? "Subiendo..." : "Guardar"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsEditingPhoto(false);
+                      setPhotoFile(null);
+                      setPhotoPreview(null);
+                    }}
+                    className="flex-1 py-3 bg-white/20 hover:bg-white/30 text-white rounded-lg"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Estadísticas */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">

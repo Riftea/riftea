@@ -1,15 +1,30 @@
 // src/app/api/raffles/[id]/route.js
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import prisma from "@/lib/prisma";
 import { authOptions } from "@/lib/auth";
-import { TICKET_PRICE, POT_CONTRIBUTION_PER_TICKET } from "@/lib/ticket.server";
+import {
+  TICKET_PRICE,
+  POT_CONTRIBUTION_PER_TICKET,
+} from "@/lib/ticket.server";
 
 /* =======================
    GET /api/raffles/[id]
+   - Público: solo rifas NO privadas y en estado PUBLISHED/ACTIVE/FINISHED
+   - Dueño/Admin/Superadmin: puede ver cualquier estado y también privadas
    ======================= */
-export async function GET(_req, { params }) {
+export async function GET(_req, ctx) {
   try {
-    const { id } = params;
+    const session = await getServerSession(authOptions);
+    const viewerId = session?.user?.id || null;
+    const viewerRole = String(session?.user?.role || "").toUpperCase();
+    const isAdmin = viewerRole === "ADMIN" || viewerRole === "SUPERADMIN";
+    const isSuper = viewerRole === "SUPERADMIN";
+
+    const { id } = await ctx.params; // ✅ evitar warning Next
 
     const raffle = await prisma.raffle.findUnique({
       where: { id },
@@ -28,51 +43,64 @@ export async function GET(_req, { params }) {
         publishedAt: true,
         ownerId: true,
         isPrivate: true,
-        owner: {
-          select: { name: true, email: true, image: true },
-        },
-        _count: {
-          select: { tickets: true, participations: true },
-        },
+        owner: { select: { id: true, name: true, email: true, image: true } },
+        _count: { select: { tickets: true, participations: true } },
       },
     });
 
     if (!raffle) {
-      return new Response(JSON.stringify({ error: "Sorteo no encontrado" }), { status: 404 });
+      return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
     }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        raffle: {
-          ...raffle,
-          // ✅ Precio unitario derivado desde server/env (no DB, no body)
-          unitPrice: TICKET_PRICE,
+    const isOwner = viewerId && raffle.ownerId === viewerId;
+
+    // Visibilidad
+    if (raffle.isPrivate && !isOwner && !isAdmin) {
+      return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
+    }
+    const publicStates = new Set(["PUBLISHED", "ACTIVE", "FINISHED"]);
+    if (!raffle.isPrivate && !publicStates.has(raffle.status)) {
+      if (!isOwner && !isAdmin) {
+        return NextResponse.json({ error: "Sorteo no disponible" }, { status: 404 });
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      raffle: {
+        ...raffle,
+        unitPrice: TICKET_PRICE, // derivado del sistema, no de DB
+      },
+      meta: {
+        ticketPrice: TICKET_PRICE,
+        viewer: {
+          isOwner: !!isOwner,
+          isAdmin: !!isAdmin,
+          isSuperAdmin: !!isSuper,
         },
-        meta: {
-          // ✅ Campo auxiliar si la UI lo necesita
-          ticketPrice: TICKET_PRICE,
-        },
-      }),
-      { status: 200 }
-    );
+      },
+    });
   } catch (err) {
     console.error("GET /api/raffles/[id] error:", err);
-    return new Response(JSON.stringify({ error: "Server error" }), { status: 500 });
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
 }
 
 /* =======================
    PUT /api/raffles/[id]
+   - Permisos: dueño, ADMIN o SUPERADMIN
+   - Reglas: valida mínimos vs POT_CONTRIBUTION_PER_TICKET, fechas, etc.
+   - Extra: si isLocked === true, solo SUPERADMIN puede modificar.
+            Además, si NO sos SUPERADMIN no podés tocar ownerId ni isLocked.
    ======================= */
-export async function PUT(req, { params }) {
+export async function PUT(req, ctx) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.email) {
-      return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401 });
+      return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
 
-    const { id } = params;
+    const { id } = await ctx.params; // ✅ evitar warning Next
 
     // Obtenemos rifa + conteos para reglas
     const existing = await prisma.raffle.findUnique({
@@ -82,24 +110,45 @@ export async function PUT(req, { params }) {
       },
     });
     if (!existing) {
-      return new Response(JSON.stringify({ error: "Sorteo no encontrado" }), { status: 404 });
+      return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
     }
 
-    // Permisos: owner/admin/superadmin
-    const role = (session.user?.role || "").toString().toLowerCase();
-    const isAdmin = role === "admin";
-    const isSuper = role === "superadmin";
+    // Permisos
+    const role = String(session.user?.role || "").toUpperCase();
+    const isAdmin = role === "ADMIN" || role === "SUPERADMIN";
+    const isSuper = role === "SUPERADMIN";
     const isOwner = !!session.user?.id && existing.ownerId === session.user.id;
     if (!isOwner && !isAdmin && !isSuper) {
-      return new Response(JSON.stringify({ error: "No autorizado para modificar este sorteo" }), { status: 403 });
+      return NextResponse.json(
+        { error: "No autorizado para modificar este sorteo" },
+        { status: 403 }
+      );
+    }
+
+    // Si está bloqueada, solo SUPERADMIN puede modificar
+    if (existing.isLocked && !isSuper) {
+      return NextResponse.json(
+        { error: "Rifa bloqueada. Solo SUPERADMIN puede modificarla." },
+        { status: 403 }
+      );
     }
 
     const body = await req.json();
+
+    // Bloqueo de campos sensibles si NO es SUPERADMIN
+    if (!isSuper) {
+      delete body?.ownerId;
+      delete body?.isLocked;
+      delete body?.winnerId;
+      delete body?.winnerParticipationId;
+      delete body?.winningTicket;
+    }
 
     // Flags del body
     const {
       title,
       description,
+      startsAt, // ✅ ahora soportado
       endsAt,
       participantLimit,
       published,
@@ -108,9 +157,10 @@ export async function PUT(req, { params }) {
       notifyParticipants,
     } = body || {};
 
-    // Reglas: título bloqueado si hay participantes y no finalizó
+    // Reglas base
     const hasParticipants =
-      (existing._count?.participations ?? 0) > 0 || (existing._count?.tickets ?? 0) > 0;
+      (existing._count?.participations ?? 0) > 0 ||
+      (existing._count?.tickets ?? 0) > 0;
     const isFinalized =
       existing.status === "FINISHED" ||
       existing.status === "COMPLETED" ||
@@ -118,17 +168,15 @@ export async function PUT(req, { params }) {
 
     // Construir update
     const data = {};
-    const changed = []; // campos cambiados para notificar
+    const changed = []; // para notificaciones
 
     if (title !== undefined) {
       if (hasParticipants && !isFinalized) {
-        // ignorar cambio de título
+        // Ignorar cambio de título mientras haya actividad y no esté finalizado
       } else {
         const t = String(title).trim();
         if (!t) {
-          return new Response(JSON.stringify({ error: "El título no puede estar vacío" }), {
-            status: 400,
-          });
+          return NextResponse.json({ error: "El título no puede estar vacío" }, { status: 400 });
         }
         if (t !== existing.title) {
           data.title = t;
@@ -153,38 +201,43 @@ export async function PUT(req, { params }) {
       }
     }
 
-    if (participantLimit !== undefined) {
-      const mp = participantLimit === null ? null : Math.trunc(Number(participantLimit));
-      if (mp === null || !Number.isFinite(mp) || mp <= 0) {
-        return new Response(
-          JSON.stringify({ error: "participantLimit debe ser un entero mayor a 0" }),
+    // ✅ startsAt
+    if (startsAt !== undefined) {
+      const startDate = startsAt ? new Date(startsAt) : null;
+      if (startDate && isNaN(startDate.getTime())) {
+        return NextResponse.json({ error: "Fecha de inicio inválida" }, { status: 400 });
+      }
+      if (startDate && startDate <= new Date()) {
+        return NextResponse.json(
+          { error: "La fecha de inicio debe ser futura" },
           { status: 400 }
         );
       }
-      // ✅ Validar mínimo según premio actual usando env: POT_CONTRIBUTION_PER_TICKET
-      const minNeeded = Math.ceil((existing.prizeValue ?? 0) / POT_CONTRIBUTION_PER_TICKET);
-      if (mp < minNeeded) {
-        return new Response(
-          JSON.stringify({ error: `participantLimit debe ser ≥ ${minNeeded} para cubrir el premio` }),
-          { status: 400 }
-        );
-      }
-      if (mp !== existing.maxParticipants) {
-        data.maxParticipants = mp;
-        changed.push("límite de participantes");
+      const prev = existing.startsAt ? existing.startsAt.toISOString() : null;
+      const next = startDate ? startDate.toISOString() : null;
+      if (prev !== next) {
+        data.startsAt = startDate;
+        changed.push("fecha de inicio");
       }
     }
 
+    // endsAt
     if (endsAt !== undefined) {
       const endDate = endsAt ? new Date(endsAt) : null;
       if (endDate && isNaN(endDate.getTime())) {
-        return new Response(JSON.stringify({ error: "Fecha de finalización inválida" }), {
-          status: 400,
-        });
+        return NextResponse.json({ error: "Fecha de finalización inválida" }, { status: 400 });
       }
       if (endDate && endDate <= new Date()) {
-        return new Response(
-          JSON.stringify({ error: "La fecha de finalización debe ser futura" }),
+        return NextResponse.json(
+          { error: "La fecha de finalización debe ser futura" },
+          { status: 400 }
+        );
+      }
+      // coherencia startsAt < endsAt (si ambas disponibles)
+      const effectiveStart = data.startsAt ?? existing.startsAt;
+      if (endDate && effectiveStart && endDate <= effectiveStart) {
+        return NextResponse.json(
+          { error: "La fecha de finalización debe ser posterior a la fecha de inicio" },
           { status: 400 }
         );
       }
@@ -196,22 +249,52 @@ export async function PUT(req, { params }) {
       }
     }
 
+    // participantLimit (maxParticipants)
+    if (participantLimit !== undefined) {
+      const mp =
+        participantLimit === null ? null : Math.trunc(Number(participantLimit));
+      if (mp === null || !Number.isFinite(mp) || mp <= 0) {
+        return NextResponse.json(
+          { error: "participantLimit debe ser un entero mayor a 0" },
+          { status: 400 }
+        );
+      }
+      const minNeeded = Math.ceil(
+        (existing.prizeValue ?? 0) / POT_CONTRIBUTION_PER_TICKET
+      );
+      if (mp < minNeeded) {
+        return NextResponse.json(
+          { error: `participantLimit debe ser ≥ ${minNeeded} para cubrir el premio` },
+          { status: 400 }
+        );
+      }
+      if (mp !== existing.maxParticipants) {
+        data.maxParticipants = mp;
+        changed.push("límite de participantes");
+      }
+    }
+
+    // published toggle + transición a PUBLISHED/ACTIVE según startsAt
     if (published !== undefined) {
       const wantPublished = !!published;
       if (wantPublished) {
-        // si se publica, aseguramos estado PUBLISHED/ACTIVE y publishedAt
         if (!existing.publishedAt) data.publishedAt = new Date();
-        if (existing.status === "DRAFT") data.status = "PUBLISHED";
-        // si piden salir de privado
+
+        const effectiveStart = (data.startsAt ?? existing.startsAt) || null;
+        const startIsPastOrNull = !effectiveStart || new Date(effectiveStart) <= new Date();
+
+        const newStatus = startIsPastOrNull ? "ACTIVE" : "PUBLISHED";
+        if (existing.status !== newStatus) {
+          data.status = newStatus;
+          changed.push(newStatus === "ACTIVE" ? "activación" : "publicación");
+        }
+
         if (makePublicIfPublished === true && existing.isPrivate) {
           data.isPrivate = false;
           changed.push("visibilidad (ahora público)");
         }
-        if (!(existing.status === "PUBLISHED" || existing.status === "ACTIVE")) {
-          changed.push("publicación");
-        }
       } else {
-        // despublicar -> volver a DRAFT
+        // despublicar -> DRAFT
         if (existing.status !== "DRAFT") {
           data.status = "DRAFT";
           data.publishedAt = null;
@@ -239,18 +322,15 @@ export async function PUT(req, { params }) {
           publishedAt: true,
           ownerId: true,
           isPrivate: true,
-          owner: { select: { name: true, email: true, image: true } },
+          owner: { select: { id: true, name: true, email: true, image: true } },
           _count: { select: { tickets: true, participations: true } },
         },
       });
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: "Sin cambios",
-          raffle: { ...current, unitPrice: TICKET_PRICE },
-        }),
-        { status: 200 }
-      );
+      return NextResponse.json({
+        success: true,
+        message: "Sin cambios",
+        raffle: { ...current, unitPrice: TICKET_PRICE },
+      });
     }
 
     const updated = await prisma.raffle.update({
@@ -271,7 +351,7 @@ export async function PUT(req, { params }) {
         publishedAt: true,
         ownerId: true,
         isPrivate: true,
-        owner: { select: { name: true, email: true, image: true } },
+        owner: { select: { id: true, name: true, email: true, image: true } },
         _count: { select: { tickets: true, participations: true } },
       },
     });
@@ -288,11 +368,13 @@ export async function PUT(req, { params }) {
             title: existing.title,
             description: existing.description,
             imageUrl: existing.imageUrl,
+            startsAt: existing.startsAt,
             endsAt: existing.endsAt,
             maxParticipants: existing.maxParticipants,
             status: existing.status,
             isPrivate: existing.isPrivate,
             publishedAt: existing.publishedAt,
+            isLocked: existing.isLocked,
           },
           newValues: data,
         },
@@ -304,12 +386,13 @@ export async function PUT(req, { params }) {
     // Notificar participantes si corresponde
     if (notifyParticipants === true && changed.length > 0) {
       try {
-        // Participantes = usuarios con ticket en esta rifa (via Participation o Ticket)
         const parts = await prisma.participation.findMany({
           where: { raffleId: id },
           select: { ticket: { select: { userId: true } } },
         });
-        const userIdsSet = new Set(parts.map((p) => p.ticket.userId).filter(Boolean));
+        const userIdsSet = new Set(
+          parts.map((p) => p.ticket.userId).filter(Boolean)
+        );
 
         if (userIdsSet.size > 0) {
           const changesText = changed.join(", ");
@@ -321,7 +404,6 @@ export async function PUT(req, { params }) {
             raffleId: id,
           }));
 
-          // createMany para eficiencia
           await prisma.notification.createMany({ data: toCreate });
         }
       } catch (e) {
@@ -329,21 +411,18 @@ export async function PUT(req, { params }) {
       }
     }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        message: "Sorteo actualizado",
-        raffle: { ...updated, unitPrice: TICKET_PRICE },
-      }),
-      { status: 200 }
-    );
+    return NextResponse.json({
+      success: true,
+      message: "Sorteo actualizado",
+      raffle: { ...updated, unitPrice: TICKET_PRICE },
+    });
   } catch (err) {
     console.error("PUT /api/raffles/[id] error:", err);
-    return new Response(
-      JSON.stringify({
+    return NextResponse.json(
+      {
         error: "Error al actualizar sorteo",
         details: process.env.NODE_ENV === "development" ? err.message : undefined,
-      }),
+      },
       { status: 500 }
     );
   }
@@ -351,52 +430,65 @@ export async function PUT(req, { params }) {
 
 /* ==========================
    DELETE /api/raffles/[id]
+   - SUPERADMIN: puede borrar aun con tickets/participaciones
+   - ADMIN/DUEÑO: solo sin actividad
+   - Extra: si isLocked === true, solo SUPERADMIN puede borrar.
    ========================== */
-export async function DELETE(_req, { params }) {
+export async function DELETE(_req, ctx) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.email) {
-      return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401 });
+      return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
 
-    const { id } = params;
+    const { id } = await ctx.params; // ✅ evitar warning Next
+
     const existing = await prisma.raffle.findUnique({
       where: { id },
-      include: { _count: { select: { tickets: true, participations: true } } },
+      include: {
+        _count: { select: { tickets: true, participations: true } },
+      },
     });
     if (!existing) {
-      return new Response(JSON.stringify({ error: "Sorteo no encontrado" }), { status: 404 });
+      return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
     }
 
-    const role = (session.user?.role || "").toString().toLowerCase();
-    const isSuper = role === "superadmin";
-    const isAdmin = role === "admin";
+    const role = String(session.user?.role || "").toUpperCase();
+    const isSuper = role === "SUPERADMIN";
+    const isAdmin = role === "ADMIN" || role === "SUPERADMIN";
     const isOwner = !!session.user?.id && existing.ownerId === session.user.id;
+
+    // Si está bloqueada, solo SUPERADMIN puede borrar
+    if (existing.isLocked && !isSuper) {
+      return NextResponse.json(
+        { error: "Rifa bloqueada. Solo SUPERADMIN puede eliminarla." },
+        { status: 403 }
+      );
+    }
 
     const ticketsCount = existing._count?.tickets ?? 0;
     const partsCount = existing._count?.participations ?? 0;
 
     if (ticketsCount > 0 || partsCount > 0) {
-      // Solo SUPERADMIN puede borrar con actividad
       if (!isSuper) {
-        return new Response(
-          JSON.stringify({
+        return NextResponse.json(
+          {
             error:
               "No se puede eliminar: hay participantes/tickets. Solo SUPERADMIN puede forzar eliminación.",
-          }),
+          },
           { status: 400 }
         );
       }
     } else {
-      // sin actividad: owner/admin/superadmin pueden borrar
       if (!isOwner && !isAdmin && !isSuper) {
-        return new Response(JSON.stringify({ error: "No autorizado para eliminar" }), {
-          status: 403,
-        });
+        return NextResponse.json(
+          { error: "No autorizado para eliminar" },
+          { status: 403 }
+        );
       }
     }
 
-    // audit best-effort
+    // Auditoría (best-effort)
     try {
       await prisma.auditLog.create({
         data: {
@@ -410,6 +502,7 @@ export async function DELETE(_req, { params }) {
             prizeValue: existing.prizeValue,
             maxParticipants: existing.maxParticipants,
             isPrivate: existing.isPrivate,
+            isLocked: existing.isLocked,
             counters: { ticketsCount, partsCount },
           },
         },
@@ -420,14 +513,12 @@ export async function DELETE(_req, { params }) {
 
     await prisma.raffle.delete({ where: { id } });
 
-    return new Response(
-      JSON.stringify({ success: true, message: "Sorteo eliminado exitosamente" }),
-      { status: 200 }
-    );
+    return NextResponse.json({
+      success: true,
+      message: "Sorteo eliminado exitosamente",
+    });
   } catch (err) {
     console.error("DELETE /api/raffles/[id] error:", err);
-    return new Response(JSON.stringify({ error: "Error interno del servidor" }), {
-      status: 500,
-    });
+    return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 }

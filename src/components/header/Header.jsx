@@ -6,20 +6,24 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
 
-// Componente para notificación individual con swipe
-function NotificationItem({ notification, onMarkRead, onDelete }) {
+// Componente para notificación individual con swipe mejorado
+function NotificationItem({ notification, onMarkRead, onDelete, onUndo, onNotificationClick }) {
   const [isDragging, setIsDragging] = useState(false);
   const [dragX, setDragX] = useState(0);
   const [startX, setStartX] = useState(0);
+  const [showUndoMessage, setShowUndoMessage] = useState(false);
+  const [isDeleted, setIsDeleted] = useState(false);
   const itemRef = useRef(null);
+  const undoTimeoutRef = useRef(null);
 
   const handleTouchStart = (e) => {
+    if (showUndoMessage) return;
     setIsDragging(true);
     setStartX(e.touches[0].clientX);
   };
 
   const handleTouchMove = (e) => {
-    if (!isDragging) return;
+    if (!isDragging || showUndoMessage) return;
     
     const currentX = e.touches[0].clientX;
     const deltaX = currentX - startX;
@@ -29,13 +33,13 @@ function NotificationItem({ notification, onMarkRead, onDelete }) {
   };
 
   const handleTouchEnd = () => {
-    if (!isDragging) return;
+    if (!isDragging || showUndoMessage) return;
     
     setIsDragging(false);
     
-    // Si se deslizó más de 80px en cualquier dirección, eliminar
+    // Si se deslizó más de 80px en cualquier dirección, mostrar mensaje de eliminación
     if (Math.abs(dragX) > 80) {
-      handleDelete();
+      handleShowUndo();
     } else {
       // Volver a la posición original
       setDragX(0);
@@ -43,12 +47,13 @@ function NotificationItem({ notification, onMarkRead, onDelete }) {
   };
 
   const handleMouseDown = (e) => {
+    if (showUndoMessage) return;
     setIsDragging(true);
     setStartX(e.clientX);
   };
 
   const handleMouseMove = (e) => {
-    if (!isDragging) return;
+    if (!isDragging || showUndoMessage) return;
     
     const currentX = e.clientX;
     const deltaX = currentX - startX;
@@ -58,19 +63,43 @@ function NotificationItem({ notification, onMarkRead, onDelete }) {
   };
 
   const handleMouseUp = () => {
-    if (!isDragging) return;
+    if (!isDragging || showUndoMessage) return;
     
     setIsDragging(false);
     
-    // Si se deslizó más de 80px en cualquier dirección, eliminar
+    // Si se deslizó más de 80px en cualquier dirección, mostrar mensaje de eliminación
     if (Math.abs(dragX) > 80) {
-      handleDelete();
+      handleShowUndo();
     } else {
       setDragX(0);
     }
   };
 
-  const handleDelete = async () => {
+  const handleShowUndo = () => {
+    setDragX(0);
+    setShowUndoMessage(true);
+    
+    // Auto-eliminar después de 2 segundos si no se deshace
+    undoTimeoutRef.current = setTimeout(() => {
+      handleConfirmDelete();
+    }, 2000);
+  };
+
+  const handleUndo = () => {
+    if (undoTimeoutRef.current) {
+      clearTimeout(undoTimeoutRef.current);
+    }
+    setShowUndoMessage(false);
+    setDragX(0);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (undoTimeoutRef.current) {
+      clearTimeout(undoTimeoutRef.current);
+    }
+    
+    setIsDeleted(true);
+    
     try {
       const res = await fetch("/api/notifications", {
         method: "DELETE",
@@ -79,16 +108,30 @@ function NotificationItem({ notification, onMarkRead, onDelete }) {
       });
       
       if (res.ok) {
-        onDelete(notification.id);
+        // Esperar un poco antes de eliminar para mostrar la animación
+        setTimeout(() => {
+          onDelete(notification.id);
+        }, 300);
       } else {
         console.error("Error eliminando notificación");
-        setDragX(0); // Volver a posición original si hay error
+        setIsDeleted(false);
+        setShowUndoMessage(false);
       }
     } catch (error) {
       console.error("Error eliminando notificación:", error);
-      setDragX(0);
+      setIsDeleted(false);
+      setShowUndoMessage(false);
     }
   };
+
+  // Limpiar timeout al desmontar
+  useEffect(() => {
+    return () => {
+      if (undoTimeoutRef.current) {
+        clearTimeout(undoTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handleMouseMoveGlobal = (e) => handleMouseMove(e);
@@ -105,61 +148,98 @@ function NotificationItem({ notification, onMarkRead, onDelete }) {
     };
   }, [isDragging, startX, dragX]);
 
+  // Si está eliminada, mostrar con fade out
+  if (isDeleted) {
+    return (
+      <div className="relative overflow-hidden bg-white transition-all duration-300 opacity-0 transform scale-95">
+        <div className="h-0"></div>
+      </div>
+    );
+  }
+
   return (
     <div className="relative overflow-hidden bg-white">
-      {/* Fondo de eliminación */}
-      <div 
-        className="absolute inset-0 bg-gray-100 flex items-center justify-center"
-        style={{ 
-          opacity: Math.abs(dragX) / 120 
-        }}
-      >
-        <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-        </svg>
-        <span className="ml-2 text-red-500 text-sm font-medium">Eliminar</span>
-      </div>
-      
-      {/* Contenido de la notificación */}
-      <div
-        ref={itemRef}
-        className="bg-white border-b last:border-b-0 cursor-grab active:cursor-grabbing select-none"
-        style={{
-          transform: `translateX(${dragX}px)`,
-          transition: isDragging ? 'none' : 'transform 0.3s ease',
-        }}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-        onMouseDown={handleMouseDown}
-      >
-        <div className="p-3 hover:bg-gray-50 text-sm flex justify-between items-start gap-3">
-          <div className="flex-1">
-            <div className={`${!notification.read ? 'font-medium' : ''}`}>
-              {notification.message}
-            </div>
-            <div className="text-xs text-gray-400 mt-1">
-              {new Date(notification.createdAt).toLocaleString('es-AR', {
-                day: '2-digit',
-                month: '2-digit',
-                year: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-              })}
-            </div>
+      {/* Mensaje de eliminación con opción de deshacer - COLOR NEGRO */}
+      {showUndoMessage ? (
+        <div className="p-3 bg-gray-50 border-l-4 border-gray-400 flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-center sm:gap-3">
+          <div className="flex items-center">
+            <svg className="w-5 h-5 text-gray-600 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            <span className="text-gray-700 text-sm font-medium">
+              Eliminaste la notificación
+            </span>
           </div>
-          <div>
-            {!notification.read && (
-              <button 
-                onClick={() => onMarkRead(notification.id)} 
-                className="text-xs text-blue-600 hover:text-blue-800 transition-colors"
-              >
-                Marcar leído
-              </button>
-            )}
-          </div>
+          <button
+            onClick={handleUndo}
+            className="px-3 py-1 text-sm font-medium text-gray-700 hover:text-gray-900 border border-gray-300 rounded hover:bg-gray-100 transition-colors self-start sm:self-auto"
+          >
+            Deshacer
+          </button>
         </div>
-      </div>
+      ) : (
+        <>
+          {/* Fondo de eliminación */}
+          <div 
+            className="absolute inset-0 bg-gray-100 flex items-center justify-center"
+            style={{ 
+              opacity: Math.abs(dragX) / 120 
+            }}
+          >
+            <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            <span className="ml-2 text-red-500 text-sm font-medium">Eliminar</span>
+          </div>
+          
+          {/* Contenido de la notificación */}
+          <div
+            ref={itemRef}
+            className="bg-white border-b last:border-b-0 cursor-grab active:cursor-grabbing select-none"
+            style={{
+              transform: `translateX(${dragX}px)`,
+              transition: isDragging ? 'none' : 'transform 0.3s ease',
+            }}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onMouseDown={handleMouseDown}
+          >
+            <div 
+              className="p-3 hover:bg-gray-50 text-sm flex justify-between items-start gap-3 cursor-pointer"
+              onClick={() => onNotificationClick && onNotificationClick()}
+            >
+              <div className="flex-1 min-w-0">
+                <div className={`${!notification.read ? 'font-medium' : ''} break-words`}>
+                  {notification.message}
+                </div>
+                <div className="text-xs text-gray-400 mt-1">
+                  {new Date(notification.createdAt).toLocaleString('es-AR', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  })}
+                </div>
+              </div>
+              <div className="flex-shrink-0">
+                {!notification.read && (
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation(); // Evitar que se active el click de la notificación
+                      onMarkRead(notification.id);
+                    }} 
+                    className="text-xs text-blue-600 hover:text-blue-800 transition-colors whitespace-nowrap"
+                  >
+                    Marcar leído
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -184,7 +264,6 @@ export default function Header() {
         setMenuOpen(false);
       }
     }
-    // <-- CAMBIO: usar "click" en vez de "mousedown" para evitar la carrera con el onClick del botón
     document.addEventListener("click", handleDown);
     return () => document.removeEventListener("click", handleDown);
   }, []);
@@ -253,6 +332,11 @@ export default function Header() {
     setNotifications(prev => prev.filter(n => n.id !== id));
   };
 
+  // Función para cerrar dropdown cuando se hace clic en una notificación
+  const handleNotificationClick = () => {
+    setNotifOpen(false);
+  };
+
   // Función para manejar el cierre de sesión con redirect forzado
   const handleSignOut = async () => {
     try {
@@ -291,7 +375,7 @@ export default function Header() {
             <div className="relative" ref={notifRef}>
               <button
                 aria-label="Notificaciones"
-                onClick={(e) => { e.stopPropagation(); setNotifOpen(v => !v); }} // <-- STOP PROPAGATION aplicado aquí
+                onClick={(e) => { e.stopPropagation(); setNotifOpen(v => !v); }}
                 className="relative p-2 rounded-md hover:bg-orange-600/20 transition-colors"
               >
                 <svg 
@@ -315,16 +399,13 @@ export default function Header() {
                 )}
               </button>
 
-              {/* Dropdown de notificaciones - Mejorado para móvil */}
+              {/* Dropdown de notificaciones - Responsive */}
               {notifOpen && (
-                <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5 sm:w-96">
+                <div className="absolute right-0 mt-2 w-[calc(100vw-1rem)] max-w-sm bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5 sm:w-80 md:w-96 sm:max-w-none z-50">
                   <div className="p-3 border-b text-sm font-medium bg-gray-50">
-                    <div className="flex justify-between items-center">
-                      <span>Notificaciones</span>
-                      <span className="text-xs text-gray-500">Desliza ↔ para eliminar</span>
-                    </div>
+                    <span>Notificaciones</span>
                   </div>
-                  <div className="max-h-56 overflow-auto">
+                  <div className="max-h-64 overflow-auto sm:max-h-56">
                     {loading ? (
                       <div className="p-3 text-sm text-gray-500 text-center">
                         Cargando...
@@ -340,6 +421,7 @@ export default function Header() {
                           notification={n}
                           onMarkRead={markRead}
                           onDelete={deleteNotification}
+                          onNotificationClick={handleNotificationClick}
                         />
                       ))
                     )}
@@ -348,7 +430,6 @@ export default function Header() {
                     <Link 
                       href="/notificaciones" 
                       className="text-orange-500 hover:text-orange-600 hover:underline transition-colors"
-                      onClick={() => setNotifOpen(false)}
                     >
                       Ver todas
                     </Link>
@@ -369,7 +450,7 @@ export default function Header() {
           ) : (
             <div className="relative" ref={menuRef}>
               <button
-                onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }} // <-- STOP PROPAGATION aplicado aquí
+                onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }}
                 className="flex items-center gap-2 px-2 py-1 rounded hover:bg-orange-600/20 transition-colors"
                 aria-expanded={menuOpen}
               >
@@ -397,9 +478,9 @@ export default function Header() {
                 </svg>
               </button>
 
-              {/* Dropdown del menú de usuario - Mejorado para móvil */}
+              {/* Dropdown del menú de usuario - Responsive */}
               {menuOpen && (
-                <div className="absolute right-0 mt-2 w-56 max-w-[calc(100vw-2rem)] bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5">
+                <div className="absolute right-0 mt-2 w-56 max-w-[calc(100vw-1rem)] bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5 z-50">
                   <div className="p-2">
                     <Link 
                       href="/perfil" 
@@ -407,6 +488,22 @@ export default function Header() {
                       onClick={() => setMenuOpen(false)}
                     >
                       Perfil
+                    </Link>
+                    
+                    {/* NUEVAS OPCIONES: Explorar y Favoritos */}
+                    <Link 
+                      href="/sorteos" 
+                      className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      Explorar
+                    </Link>
+                    <Link 
+                      href="/sorteos?filter=favorites" 
+                      className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      Favoritos
                     </Link>
                     
                     {/* Mostrar Crear Sorteo a admin y superadmin */}

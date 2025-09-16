@@ -113,7 +113,8 @@ export const TicketsService = {
   },
 
   /**
-   * Chequea si el ticket se puede aplicar a una rifa (desde AVAILABLE).
+   * Chequea si el ticket se puede aplicar a una rifa.
+   * (Acepta AVAILABLE / PENDING / ACTIVE siempre que no esté usado ni asociado a otra rifa)
    */
   async canApplyTicketToRaffle(ticketId, raffleId, userId) {
     if (!ticketId || !raffleId || !userId) {
@@ -123,7 +124,16 @@ export const TicketsService = {
     const [ticket, raffle] = await Promise.all([
       prisma.ticket.findUnique({
         where: { id: ticketId },
-        select: { id: true, userId: true, raffleId: true, status: true, uuid: true, hash: true, generatedAt: true },
+        select: {
+          id: true,
+          userId: true,
+          raffleId: true,
+          status: true,
+          uuid: true,
+          hash: true,
+          generatedAt: true,
+          isUsed: true,
+        },
       }),
       prisma.raffle.findUnique({
         where: { id: raffleId },
@@ -162,19 +172,23 @@ export const TicketsService = {
       return { canUse: false, reason: "La rifa alcanzó el límite máximo de participantes" };
     }
 
-    // Solo desde AVAILABLE
-    if (ticket.status !== "AVAILABLE") {
+    // Estados utilizables y flags
+    const usableStates = new Set(["AVAILABLE", "PENDING", "ACTIVE"]);
+    if (!usableStates.has(ticket.status)) {
       return { canUse: false, reason: "El ticket no está disponible para usar" };
     }
     if (ticket.raffleId) {
       return { canUse: false, reason: "El ticket ya está asociado a una rifa" };
+    }
+    if (ticket.isUsed) {
+      return { canUse: false, reason: "El ticket ya fue usado" };
     }
 
     return { canUse: true };
   },
 
   /**
-   * Aplica ticket genérico a una rifa: set raffleId, status IN_RAFFLE y crea Participation.
+   * Aplica ticket genérico a una rifa: set raffleId, status IN_RAFFLE, isUsed=true y crea Participation.
    */
   async applyTicketToRaffle(ticketId, raffleId, userId) {
     const compat = await this.canApplyTicketToRaffle(ticketId, raffleId, userId);
@@ -183,18 +197,35 @@ export const TicketsService = {
     const part = await prisma.$transaction(async (tx) => {
       await tx.ticket.update({
         where: { id: ticketId },
-        data: { raffleId, status: "IN_RAFFLE" },
+        data: { raffleId, status: "IN_RAFFLE", isUsed: true },
       });
 
       const created = await tx.participation.create({
         data: { raffleId, ticketId, isActive: true },
         include: {
-          raffle: { select: { id: true, title: true, endsAt: true } },
+          // Traemos ownerId para poder notificar al dueño
+          raffle: { select: { id: true, title: true, endsAt: true, ownerId: true } },
           ticket: { select: { id: true, code: true, uuid: true, raffleId: true } },
         },
       });
 
-      // Notificación / auditoría best-effort
+      // Notificación al dueño del sorteo (si existe y no es el mismo usuario)
+      try {
+        if (created?.raffle?.ownerId && created.raffle.ownerId !== userId) {
+          await tx.notification.create({
+            data: {
+              userId: created.raffle.ownerId,
+              type: "SYSTEM_ALERT",
+              title: "Nueva participación en tu sorteo",
+              message: `Se agregó una participación en "${created.raffle.title}" con el ticket ${created.ticket.code}.`,
+              raffleId,
+              ticketId,
+            },
+          });
+        }
+      } catch (_) {}
+
+      // Notificación al participante
       try {
         await tx.notification.create({
           data: {
@@ -207,6 +238,7 @@ export const TicketsService = {
         });
       } catch (_) {}
 
+      // Auditoría
       try {
         await tx.auditLog.create({
           data: {

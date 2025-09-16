@@ -1,4 +1,7 @@
-// src/lib/crypto.js - SISTEMA UNIFICADO CON HMAC-SHA256 + ENTEROS + FAIL-FAST
+// src/lib/crypto.js - SISTEMA UNIFICADO CON HMAC-SHA256 + ENTEROS + FAIL-FAST (endurecido)
+// - Parche seguro SIN migraciones: el HMAC ahora incluye también el displayCode.
+// - Mantiene compatibilidad con tus helpers y alias existentes.
+
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -40,21 +43,38 @@ export function generateDisplayCode() {
 
 /**
  * HMAC-SHA256 seguro para validar tickets
- * Input: ticketUUID | userId | timestamp
+ * Input: ticketUUID | userId | timestamp | displayCode (endurecido)
  * Output: hash HEX firmado con clave secreta
  */
-export function createTicketHMAC(ticketUUID, userId, timestamp = Date.now()) {
-  const input = `${ticketUUID}|${userId}|${timestamp}`;
+export function createTicketHMAC(
+  ticketUUID,
+  userId,
+  timestamp = Date.now(),
+  displayCode = ""
+) {
+  const input = `${ticketUUID}|${userId}|${timestamp}|${displayCode}`;
   return crypto.createHmac("sha256", TICKET_SECRET).update(input).digest("hex");
 }
 
 /**
  * Verifica HMAC de un ticket (timingSafeEqual y buffers HEX)
+ * Debe recibir el mismo displayCode que se emitió para ese ticket.
  */
-export function verifyTicketHMAC(ticketUUID, userId, hmac, timestamp) {
+export function verifyTicketHMAC(
+  ticketUUID,
+  userId,
+  hmac,
+  timestamp,
+  displayCode = ""
+) {
   if (!hmac || typeof hmac !== "string") return false;
 
-  const expectedHMAC = createTicketHMAC(ticketUUID, userId, timestamp);
+  const expectedHMAC = createTicketHMAC(
+    ticketUUID,
+    userId,
+    timestamp,
+    displayCode
+  );
 
   try {
     const a = Buffer.from(expectedHMAC, "hex");
@@ -78,27 +98,29 @@ export function generateTicketData(userId) {
   const displayCode = generateDisplayCode();
   const generatedAt = new Date();
   const timestamp = generatedAt.getTime();
-  const hmac = createTicketHMAC(uuid, userId, timestamp);
+  // HMAC endurecido: incluye displayCode
+  const hmac = createTicketHMAC(uuid, userId, timestamp, displayCode);
 
   return {
     uuid,
-    displayCode,
-    hmac, // hex
+    displayCode, // se persiste en tu modelo actual (sin migraciones)
+    hmac,        // hex: NUNCA exponer al cliente
     generatedAt, // Date
-    timestamp, // number (ms) – opcional guardar explícito
+    timestamp,   // number (ms) – opcional guardar explícito
   };
 }
 
 /**
- * Valida un ticket completo contra un userId
+ * Valida un ticket completo contra un userId (incluye displayCode)
+ * ticketData debe contener: { uuid, hmac, generatedAt, displayCode }
  */
 export function validateTicket(ticketData, userId) {
-  const { uuid, hmac, generatedAt } = ticketData || {};
+  const { uuid, hmac, generatedAt, displayCode } = ticketData || {};
   if (!uuid || !hmac || !generatedAt) {
     return { valid: false, error: "Datos incompletos del ticket" };
   }
   const timestamp = new Date(generatedAt).getTime();
-  const ok = verifyTicketHMAC(uuid, userId, hmac, timestamp);
+  const ok = verifyTicketHMAC(uuid, userId, hmac, timestamp, displayCode || "");
   if (!ok) return { valid: false, error: "Firma HMAC inválida" };
   return { valid: true };
 }
@@ -136,8 +158,6 @@ export function validateIntegerPrice(price, fieldName = "precio") {
  * Sanitiza una entrada numérica PARA DISPLAY genérico (no edita el precio del sistema).
  * - Mantiene solo dígitos
  * - Devuelve entero (0 si vacío)
- *
- * Nota: ya no aplica reglas de negocio del ticket price (ese valor viene del server).
  */
 export function formatTicketPriceInput(input) {
   const raw = String(input ?? "").replace(/[^\d]/g, "");
@@ -276,6 +296,12 @@ export function formatIntegerPrice(price, currency = "ARS") {
 export function generateTicketCode() {
   return generateDisplayCode();
 }
-export function createTicketHash(ticketUUID, userId, timestamp = Date.now()) {
-  return createTicketHMAC(ticketUUID, userId, timestamp);
+export function createTicketHash(
+  ticketUUID,
+  userId,
+  timestamp = Date.now(),
+  displayCode = ""
+) {
+  // alias que respeta la nueva firma endurecida (incluye displayCode)
+  return createTicketHMAC(ticketUUID, userId, timestamp, displayCode);
 }

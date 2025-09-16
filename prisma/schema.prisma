@@ -1,5 +1,4 @@
-// prisma/schema.prisma
-
+// prisma/schema.prisma 
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,9 +9,11 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-/* =========================
-   Enums
-   ========================= */
+/**
+ * =========================
+ * Enums
+ * =========================
+ */
 enum Role {
   USER
   ADMIN
@@ -23,7 +24,7 @@ enum RaffleStatus {
   DRAFT
   PUBLISHED
   ACTIVE
-  READY_TO_DRAW   // usado por /api/raffles/[id]/draw
+  READY_TO_DRAW // usado por /api/raffles/[id]/draw
   FINISHED
   CANCELLED
   COMPLETED
@@ -47,17 +48,25 @@ enum TicketStatus {
   DELETED
 }
 
-/* =========================
-   Models
-   ========================= */
+/**
+ * =========================
+ * Models
+ * =========================
+ */
 model User {
-  id       String  @id @default(cuid())
-  name     String?
-  email    String  @unique
-  password String?
-  image    String?
-  role     Role    @default(USER)
-  isActive Boolean @default(true) @map("is_active")
+  id         String  @id @default(cuid())
+  name       String?
+  email      String  @unique
+  password   String?
+  image      String?
+  role       Role    @default(USER)
+  isActive   Boolean @default(true) @map("is_active")
+  // ✅ Nuevo: verificación de usuario
+  isVerified Boolean @default(false) @map("is_verified")
+  
+  // ✅ Nuevos campos para el perfil
+  whatsapp       String?    // Número de WhatsApp
+  lastNameChange DateTime?  @map("last_name_change") // Fecha del último cambio de nombre
 
   // Relaciones
   tickets       Ticket[]
@@ -66,6 +75,8 @@ model User {
   notifications Notification[]
   auditLogs     AuditLog[]
   wonRaffles    Raffle[]       @relation("RaffleWinner")
+  // ✅ Favoritos
+  favorites     Favorite[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
@@ -109,7 +120,7 @@ model Raffle {
   endsAt      DateTime?    @map("ends_at")
   drawnAt     DateTime?    @map("drawn_at")
 
-  // ✅ Campos mínimos para sorteo seguro (commit–reveal + schedule)
+  // ✅ Campos mínimos para sorteo seguro (commit—reveal + schedule)
   drawAt         DateTime? @map("draw_at")
   drawSeedHash   String?   @map("draw_seed_hash")
   drawSeedReveal String?   @map("draw_seed_reveal")
@@ -122,14 +133,24 @@ model Raffle {
   maxParticipants Int     @map("max_participants")
   isPrivate       Boolean @default(false) @map("is_private")
 
+  // ✅ NUEVOS CAMPOS: mínimo por participante + obligatoriedad
+  minTicketsPerParticipant Int?    @map("min_tickets_per_participant")
+  minTicketsIsMandatory    Boolean @default(false) @map("min_tickets_is_mandatory")
+
+  // ✅ Moderación/bloqueo de edición (solo SUPERADMIN puede modificar si true)
+  isLocked Boolean @default(false) @map("is_locked")
+
   tickets        Ticket[]
   participations Participation[]
+  // ✅ Favoritos
+  favorites      Favorite[]
 
   @@index([ownerId])
   @@index([winnerId])
   @@index([status])
   @@index([isPrivate])
   @@index([winnerParticipationId])
+  @@index([isLocked])
   @@map("raffles")
 }
 
@@ -146,6 +167,10 @@ model Purchase {
   status String @default("pending")
 
   tickets   Ticket[]
+  // === NUEVO PARA PRODUCTOS DIGITALES ===
+  items     PurchaseItem[]
+  delivery  DeliveryDigital?
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
@@ -159,7 +184,7 @@ model Ticket {
   uuid String @unique @default(cuid())
   code String @unique
 
-  // Firma/HMAC (hex) – obligatorio
+  // Firma/HMAC (hex) — obligatorio
   hash String
 
   // Propietario
@@ -272,4 +297,86 @@ model Setting {
   key       String   @unique
   value     String
   updatedAt DateTime @updatedAt
+}
+
+/**
+ * =========================
+ * Favoritos (tabla pivote)
+ * =========================
+ */
+model Favorite {
+  id String @id @default(cuid())
+
+  // Relaciones
+  userId   String @map("user_id")
+  raffleId String @map("raffle_id")
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  raffle   Raffle @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, raffleId], name: "favorite_user_raffle_unique")
+  @@index([userId])
+  @@index([raffleId])
+  @@map("favorites")
+}
+
+// ==============================
+// === NUEVO PARA PRODUCTOS DIGITALES ===
+// ==============================
+
+model Product {
+  id          String   @id @default(cuid())
+  type        String   // 'PHOTO' | 'FILE' | 'COURSE' | 'TICKET'
+  title       String
+  description String?
+  priceCents  Int
+  currency    String   @default("ARS")
+  // Almacenamiento privado en Supabase (bucket privado)
+  filePath        String?  // archivo principal (entrega principal)
+  bonusFilePath   String?  // regalo digital adicional (opcional)
+  isActive        Boolean  @default(true)
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  items       PurchaseItem[]
+
+  @@map("products")
+}
+
+model PurchaseItem {
+  id          String   @id @default(cuid())
+  purchase    Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  purchaseId  String   @map("purchase_id")
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId   String   @map("product_id")
+  quantity    Int      @default(1)
+  unitPrice   Int      // copia de priceCents al momento de compra
+  currency    String   @default("ARS")
+
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([purchaseId])
+  @@index([productId])
+  @@map("purchase_items")
+}
+
+model DeliveryDigital {
+  id             String   @id @default(cuid())
+  purchase       Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  purchaseId     String   @unique @map("purchase_id")
+
+  // Enlaces firmados (nunca publiques links directos)
+  mainSignedUrl  String?  @map("main_signed_url")
+  bonusSignedUrl String?  @map("bonus_signed_url")
+
+  // Control de re-generación / límite de descargas (opcional)
+  downloads      Int      @default(0)
+  maxDownloads   Int      @default(5)
+
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("deliveries_digital")
 }

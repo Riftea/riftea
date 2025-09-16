@@ -16,11 +16,51 @@ async function safeParseJSON(res) {
   }
 }
 
+/** Normaliza posibles estructuras de respuesta del backend */
+function normalizeParticipateResponse(data, fallbackIds = []) {
+  if (Array.isArray(data?.results)) {
+    return data.results.map((r) => ({
+      ok: !!r?.ok,
+      ticketId: r?.ticketId ?? "",
+      participation: r?.participation ?? null,
+      error: r?.error ?? null,
+    }));
+  }
+
+  if (Array.isArray(data?.successes) || Array.isArray(data?.failures)) {
+    const okSet = new Set((data?.successes ?? []).map((x) => (typeof x === "string" ? x : x?.ticketId)));
+    const failList = (data?.failures ?? []).map((f) => ({
+      ticketId: f?.ticketId ?? "",
+      error: f?.message ?? "No se pudo participar con este ticket",
+    }));
+    const merged = [];
+    for (const id of fallbackIds) {
+      if (okSet.has(id)) merged.push({ ok: true, ticketId: id, participation: null, error: null });
+    }
+    for (const f of failList) merged.push({ ok: false, ticketId: f.ticketId, participation: null, error: f.error });
+    return merged;
+  }
+
+  if (Array.isArray(data?.data)) {
+    return data.data.map((r) => ({
+      ok: !!r?.ok,
+      ticketId: r?.ticketId ?? "",
+      participation: r?.participation ?? null,
+      error: r?.error ?? null,
+    }));
+  }
+
+  return [];
+}
+
 export default function ParticipateModal({
   isOpen,
   onClose,
   raffle,     // { id, title, status, ... }
-  onSuccess,  // (payload) => void
+  onSuccess,  // ({ successes, failures }) => void
+  // NUEVO: reglas de mínimo
+  minTicketsRequired = 1,
+  minTicketsIsMandatory = false,
 }) {
   const { data: session } = useSession();
 
@@ -28,7 +68,7 @@ export default function ParticipateModal({
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [loading, setLoading] = useState(true);
 
-  // Envío secuencial / progreso
+  // Envío / progreso
   const [participating, setParticipating] = useState(false);
   const [progress, setProgress] = useState({ total: 0, done: 0 });
 
@@ -46,7 +86,6 @@ export default function ParticipateModal({
   useEffect(() => {
     if (!isOpen) return;
     if (!session) return;
-    // Evitar abrir si está bloqueado por estado del sorteo
     if (isDrawLocked) return;
 
     const ac = new AbortController();
@@ -69,7 +108,11 @@ export default function ParticipateModal({
       setResults(null);
       setSelectedIds(new Set());
 
-      const res = await fetch("/api/tickets/my", { cache: "no-store", signal });
+      const res = await fetch("/api/tickets/my", {
+        cache: "no-store",
+        signal,
+        credentials: "include",
+      });
       const data = await safeParseJSON(res);
 
       if (!res.ok) {
@@ -77,18 +120,14 @@ export default function ParticipateModal({
         throw new Error(msg);
       }
 
-      // Normalización
       let tickets = [];
       if (Array.isArray(data)) tickets = data;
       else if (Array.isArray(data?.tickets)) tickets = data.tickets;
       else if (Array.isArray(data?.data)) tickets = data.data;
 
-      // Filtrar disponibles
+      // ✅ sólo tickets realmente disponibles (GENÉRICOS libres)
       const available = (tickets || []).filter((t) => {
-        const isAvailable = t.status === "AVAILABLE";
-        const isPendingGeneric = t.status === "PENDING" && !t.raffleId;
-        const isNotUsed = !t.isUsed;
-        return (isAvailable || isPendingGeneric) && isNotUsed;
+        return t.status === "AVAILABLE" && !t.isUsed && !t.raffleId;
       });
 
       setUserTickets(available);
@@ -104,6 +143,7 @@ export default function ParticipateModal({
   // Selección múltiple
   const toggleSelect = (ticketId) => {
     setResults(null);
+    setError(null);
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(ticketId)) next.delete(ticketId);
@@ -119,6 +159,7 @@ export default function ParticipateModal({
 
   const toggleSelectAll = () => {
     setResults(null);
+    setError(null);
     if (allSelected) {
       setSelectedIds(new Set());
     } else {
@@ -139,78 +180,123 @@ export default function ParticipateModal({
   const getTicketType = (ticket) => {
     if (ticket.raffleId) return "Ticket específico";
     if (ticket.status === "AVAILABLE") return "Ticket genérico";
-    return "Ticket pendiente";
+    return "Ticket";
   };
 
-  // Envío secuencial uno a uno
+  const getDisplayCodeById = (id) => {
+    const t = userTickets.find((x) => x.id === id);
+    return t ? getTicketDisplayCode(t) : (id || "").slice(-6);
+  };
+
+  // Cálculos de mínimo
+  const needsMinimum = minTicketsIsMandatory && minTicketsRequired > 1;
+  const lacksTicketsToMeetMinimum =
+    needsMinimum && userTickets.length < minTicketsRequired;
+
+  // Envío batch
   async function handleParticipate() {
-    if (isDrawLocked) {
-      setError("El sorteo está programado o finalizado. La participación está deshabilitada.");
-      return;
-    }
-    if (!selectedCount) {
-      setError("Debes seleccionar al menos un ticket para participar");
-      return;
-    }
-    if (!raffle?.id) {
-      setError("Error: ID del sorteo no válido");
-      return;
-    }
-
-    setParticipating(true);
-    setError(null);
-    setResults(null);
-    setShowSummary(true);
-
-    const ids = Array.from(selectedIds);
-    const successes = [];
-    const failures = [];
-    setProgress({ total: ids.length, done: 0 });
-
     try {
-      for (let i = 0; i < ids.length; i++) {
-        const ticketId = ids[i];
-
-        const res = await fetch(`/api/raffles/${raffle.id}/participate`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ticketId }),
-        });
-
-        const data = await safeParseJSON(res);
-
-        if (!res.ok) {
-          let msg = data?.error || res.statusText || "Error al participar con este ticket";
-          if (res.status === 405) {
-            msg =
-              "Method Not Allowed. Verifica que el endpoint acepte POST y que la ruta sea correcta.";
-          } else if (res.status === 429) {
-            msg = "Demasiadas solicitudes. Intenta nuevamente en unos segundos.";
-          } else if (/hash|firma|hmac|inválid/i.test(msg)) {
-            msg =
-              "No pudimos validar la firma del ticket. Si fue emitido con otra clave, pedí re-emisión.";
-          } else if (res.status >= 500) {
-            msg = "Error de servidor. Intenta de nuevo.";
-          }
-          failures.push({ ticketId, message: msg });
-        } else {
-          successes.push({ ticketId, data });
-        }
-
-        setProgress((p) => ({ ...p, done: i + 1 }));
+      if (isDrawLocked) {
+        const msg = "El sorteo está programado o finalizado. La participación está deshabilitada.";
+        setError(msg);
+        return;
+      }
+      if (!selectedCount) {
+        setError("Debes seleccionar al menos un ticket para participar");
+        return;
       }
 
-      setResults({ successes, failures });
+      // ✅ ENFORCE mínimo obligatorio
+      if (needsMinimum && selectedCount < minTicketsRequired) {
+        setError(
+          `Este sorteo requiere un mínimo de ${minTicketsRequired} ticket${
+            minTicketsRequired > 1 ? "s" : ""
+          } por participante. Seleccionaste ${selectedCount}.`
+        );
+        return;
+      }
 
-      // Avisar al padre para refrescar participantes (aunque haya fallos parciales)
+      if (!raffle?.id) {
+        setError("Error: ID del sorteo no válido");
+        return;
+      }
+
+      setParticipating(true);
+      setError(null);
+      setResults(null);
+      setShowSummary(true);
+
+      const ids = Array.from(selectedIds);
+      setProgress({ total: ids.length, done: 0 });
+
+      const url = `/api/raffles/${encodeURIComponent(String(raffle.id))}/participate`;
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ ticketIds: ids }),
+      });
+
+      const data = await safeParseJSON(res);
+
+      // Estructura de salida unificada
+      let successes = [];
+      let failures = [];
+
+      if (!res.ok) {
+        const msg = data?.error || data?.raw || res.statusText || "No se pudo procesar la participación";
+        setError(msg);
+        failures = ids.map((ticketId) => ({ ticketId, message: msg }));
+      } else {
+        const normalized = normalizeParticipateResponse(data, ids);
+
+        if (normalized.length === 0) {
+          const msg = data?.message || "Respuesta inesperada del servidor";
+          setError(msg);
+          failures = ids.map((ticketId) => ({ ticketId, message: msg }));
+        } else {
+          for (const r of normalized) {
+            if (r.ok) {
+              successes.push({
+                ticketId: r.ticketId,
+                data: r.participation || null,
+              });
+            } else {
+              failures.push({
+                ticketId: r.ticketId || "desconocido",
+                message: r.error || "No se pudo participar con este ticket",
+              });
+            }
+          }
+        }
+      }
+
+      // Mostrar códigos amigables
+      successes = successes.map((s) => ({
+        ...s,
+        displayCode: getDisplayCodeById(s.ticketId),
+      }));
+      failures = failures.map((f) => ({
+        ...f,
+        displayCode: getDisplayCodeById(f.ticketId),
+      }));
+
+      setResults({ successes, failures });
+      setProgress({ total: ids.length, done: ids.length });
+
       if (typeof onSuccess === "function") {
-        onSuccess({ successes, failures });
+        try {
+          onSuccess({ successes, failures });
+        } catch {
+          /* ignore */
+        }
       }
 
       // Refrescar tickets disponibles
       await loadUserTickets(abortRef.current?.signal);
 
-      // Si todos OK, limpiar selección y cerrar
+      // Si todos OK, limpiar selección y cerrar modal
       if (failures.length === 0) {
         setSelectedIds(new Set());
         onClose();
@@ -246,6 +332,7 @@ export default function ParticipateModal({
         aria-modal="true"
         aria-labelledby="pm-title"
         className="bg-gradient-to-br from-purple-900/95 via-blue-900/95 to-indigo-900/95 backdrop-blur-lg rounded-3xl border border-white/20 shadow-2xl max-w-lg w-full max-h-[90vh] overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="p-6 border-b border-white/10">
@@ -257,7 +344,11 @@ export default function ParticipateModal({
               <p className="text-white/70 text-sm">{raffle?.title || "Cargando..."}</p>
             </div>
             <button
-              onClick={handleClose}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                handleClose();
+              }}
               disabled={participating}
               className="text-white/60 hover:text-white transition-colors disabled:opacity-50"
               aria-label="Cerrar"
@@ -270,7 +361,13 @@ export default function ParticipateModal({
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-6">
+        <form
+          className="p-6 space-y-6"
+          onSubmit={(e) => e.preventDefault()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.preventDefault();
+          }}
+        >
           {/* Aviso si el sorteo ya está bloqueado */}
           {isDrawLocked && (
             <div className="bg-yellow-500/20 border border-yellow-500/30 rounded-2xl p-4">
@@ -302,13 +399,21 @@ export default function ParticipateModal({
               <p className="text-white/70 mb-6 text-sm">{error}</p>
               <div className="flex gap-3 justify-center">
                 <button
-                  onClick={() => loadUserTickets(abortRef.current?.signal)}
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    loadUserTickets(abortRef.current?.signal);
+                  }}
                   className="px-6 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-xl transition-colors"
                 >
                   Reintentar
                 </button>
                 <button
-                  onClick={handleClose}
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    handleClose();
+                  }}
                   className="px-6 py-2 bg-white/20 hover:bg-white/30 text-white rounded-xl transition-colors"
                 >
                   Cerrar
@@ -324,7 +429,11 @@ export default function ParticipateModal({
               <h3 className="text-xl font-bold text-white mb-2">No tienes tickets disponibles</h3>
               <p className="text-white/70 mb-6">Necesitas comprar o generar tickets para participar.</p>
               <button
-                onClick={handleClose}
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleClose();
+                }}
                 className="px-6 py-2 bg-white/20 hover:bg-white/30 text-white rounded-xl transition-colors"
               >
                 Cerrar
@@ -335,25 +444,49 @@ export default function ParticipateModal({
           {/* Selección de tickets */}
           {!isDrawLocked && !loading && userTickets.length > 0 && (
             <>
-              {/* Info */}
-              <div className="bg-yellow-500/20 border border-yellow-500/30 rounded-2xl p-4">
-                <div className="flex items-start gap-3">
-                  <span className="text-2xl">ℹ️</span>
-                  <div>
-                    <h4 className="text-yellow-300 font-bold mb-1">Importante</h4>
-                    <p className="text-yellow-200/80 text-sm">
-                      Al usar tickets en este sorteo, quedarán vinculados hasta que termine.
-                    </p>
+              {/* Info mínima requerida/sugerida */}
+              {(minTicketsRequired > 1 || minTicketsIsMandatory) && (
+                <div
+                  className={`rounded-2xl p-4 border ${
+                    minTicketsIsMandatory
+                      ? "bg-red-500/15 border-red-500/30"
+                      : "bg-yellow-500/20 border-yellow-500/30"
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <span className="text-2xl">{minTicketsIsMandatory ? "❗" : "ℹ️"}</span>
+                    <div className="text-sm">
+                      <h4 className={`font-bold mb-1 ${minTicketsIsMandatory ? "text-red-300" : "text-yellow-300"}`}>
+                        {minTicketsIsMandatory ? "Mínimo obligatorio" : "Mínimo sugerido"}
+                      </h4>
+                      <p className={`${minTicketsIsMandatory ? "text-red-200/90" : "text-yellow-200/90"}`}>
+                        {minTicketsIsMandatory
+                          ? `Debes participar con al menos ${minTicketsRequired} ticket${
+                              minTicketsRequired > 1 ? "s" : ""
+                            }.`
+                          : `Se recomienda participar con ${minTicketsRequired} ticket${
+                              minTicketsRequired > 1 ? "s" : ""
+                            }.`}
+                      </p>
+                      {lacksTicketsToMeetMinimum && (
+                        <p className="mt-1 text-red-200/90">
+                          No tenés suficientes tickets disponibles para cumplir el mínimo.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               {/* Controles de selección */}
               <div className="flex items-center justify-between">
                 <h4 className="text-white font-bold">Selecciona tus tickets:</h4>
                 <button
                   type="button"
-                  onClick={toggleSelectAll}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    toggleSelectAll();
+                  }}
                   className="text-sm px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
                 >
                   {allSelected ? "Deseleccionar todo" : "Seleccionar todo"}
@@ -411,11 +544,11 @@ export default function ParticipateModal({
                 </div>
               )}
 
-              {/* Progreso */}
+              {/* Progreso (simple) */}
               {participating && (
                 <div className="bg-white/10 border border-white/20 rounded-2xl p-4">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-white/80 text-sm">Enviando participaciones…</span>
+                    <span className="text-white/80 text-sm">Procesando…</span>
                     <span className="text-white/80 text-sm">
                       {progress.done}/{progress.total}
                     </span>
@@ -440,7 +573,11 @@ export default function ParticipateModal({
           {results && (results.successes.length > 0 || results.failures.length > 0) && (
             <div className="space-y-3">
               <button
-                onClick={() => setShowSummary((v) => !v)}
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setShowSummary((v) => !v);
+                }}
                 className="text-sm px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
               >
                 {showSummary ? "Ocultar resumen" : "Mostrar resumen"}
@@ -458,8 +595,9 @@ export default function ParticipateModal({
                           <span
                             key={`s-${s.ticketId}`}
                             className="px-2 py-0.5 rounded bg-green-500/20 border border-green-500/30 font-mono"
+                            title={s.ticketId}
                           >
-                            {s.ticketId.slice(-6)}
+                            {s.displayCode}
                           </span>
                         ))}
                       </div>
@@ -475,8 +613,8 @@ export default function ParticipateModal({
                       <div className="space-y-1 text-sm">
                         {results.failures.map((f) => (
                           <div key={`f-${f.ticketId}`} className="flex items-start gap-2">
-                            <span className="font-mono bg-white/10 px-2 py-0.5 rounded">
-                              {f.ticketId.slice(-6)}
+                            <span className="font-mono bg-white/10 px-2 py-0.5 rounded" title={f.ticketId}>
+                              {f.displayCode}
                             </span>
                             <span className="text-red-200/80">{f.message}</span>
                           </div>
@@ -484,13 +622,21 @@ export default function ParticipateModal({
                       </div>
                       <div className="mt-3 flex gap-2">
                         <button
-                          onClick={retryFailures}
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            retryFailures();
+                          }}
                           className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-sm"
                         >
                           Reintentar fallidos
                         </button>
                         <button
-                          onClick={() => setResults(null)}
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            setResults(null);
+                          }}
                           className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-sm"
                         >
                           Limpiar resumen
@@ -506,15 +652,28 @@ export default function ParticipateModal({
           {/* Footer acciones */}
           <div className="flex flex-col sm:flex-row gap-3">
             <button
-              onClick={handleClose}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                handleClose();
+              }}
               disabled={participating}
               className="flex-1 py-3 bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white font-bold rounded-xl transition-colors"
             >
               Cerrar
             </button>
             <button
-              onClick={handleParticipate}
-              disabled={participating || selectedCount === 0 || isDrawLocked}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                handleParticipate();
+              }}
+              disabled={
+                participating ||
+                selectedCount === 0 ||
+                isDrawLocked ||
+                (needsMinimum && (selectedCount < minTicketsRequired || lacksTicketsToMeetMinimum))
+              }
               className="flex-1 py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
             >
               {participating ? (
@@ -527,7 +686,7 @@ export default function ParticipateModal({
               )}
             </button>
           </div>
-        </div>
+        </form>
       </div>
     </div>
   );

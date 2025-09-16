@@ -4,7 +4,7 @@ export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import { TICKET_PRICE } from "@/lib/ticket.server";
+import { TICKET_PRICE } from '@/lib/ticket.server';
 
 function toInt(v, def) {
   const n = parseInt(v, 10);
@@ -22,9 +22,11 @@ export async function GET(req) {
     const page = toInt(searchParams.get('page'), 1);
     const perPage = Math.min(toInt(searchParams.get('perPage'), 12), 50);
 
+    // Catálogo público: solo no privados y estados visibles por defecto,
+    // ahora incluye READY_TO_DRAW (y FINISHED como en el patch propuesto)
     const where = {
       isPrivate: false,
-      status: { in: ['PUBLISHED', 'ACTIVE'] },
+      status: { in: ['PUBLISHED', 'ACTIVE', 'READY_TO_DRAW', 'FINISHED'] },
       ...(q
         ? {
             OR: [
@@ -42,7 +44,6 @@ export async function GET(req) {
     } else if (sortBy === 'createdat') {
       orderBy = [{ createdAt: order }];
     }
-    // Nota: ordenar por "timeLeft" se hará en el cliente (es calculado)
 
     const skip = (page - 1) * perPage;
     const take = perPage;
@@ -68,20 +69,16 @@ export async function GET(req) {
           updatedAt: true,
           ownerId: true,
           isPrivate: true,
-          owner: {
-            select: { name: true, image: true },
-          },
-          _count: {
-            select: { participations: true, tickets: true },
-          },
+          owner: { select: { name: true, image: true } },
+          _count: { select: { participations: true, tickets: true } },
         },
       }),
     ]);
 
-    // Attach precio derivado del server
+    // Adjuntar precio derivado del server (constante)
     const items = rows.map((r) => ({
       ...r,
-      unitPrice: RAFFLES_TICKET_PRICE,
+      unitPrice: TICKET_PRICE,
     }));
 
     return NextResponse.json({
@@ -90,7 +87,7 @@ export async function GET(req) {
       perPage,
       total,
       items,
-      meta: { ticketPrice: RAFFLES_TICKET_PRICE },
+      meta: { ticketPrice: TICKET_PRICE },
     });
   } catch (err) {
     console.error('GET /api/raffles/public error:', err);

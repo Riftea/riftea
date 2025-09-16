@@ -7,8 +7,8 @@ import { TicketsService } from './tickets.service';
  * Programa el autodraw cuando se llena el cupo.
  * - Si la rifa está PUBLISHED/ACTIVE
  * - Si alcanzó maxParticipants
- * - Si aún no tiene scheduledDrawAt
- * Setea status = READY y scheduledDrawAt = now + countdown (default 600s)
+ * - Si aún no tiene drawAt (no programada)
+ * Setea status = READY_TO_DRAW y drawAt = now + countdown (default 600s)
  */
 export async function maybeTriggerAutoDraw(raffleId, opts = {}) {
   const seconds = Number(process.env.RAFFLES_DEFAULT_COUNTDOWN_SECONDS ?? 600);
@@ -18,7 +18,7 @@ export async function maybeTriggerAutoDraw(raffleId, opts = {}) {
     select: {
       id: true,
       status: true,
-      scheduledDrawAt: true,
+      drawAt: true,
       maxParticipants: true,
       _count: { select: { participations: true } },
     },
@@ -30,14 +30,15 @@ export async function maybeTriggerAutoDraw(raffleId, opts = {}) {
     raffle.maxParticipants &&
     raffle._count.participations >= raffle.maxParticipants;
 
-  if (!active || !filled || raffle.scheduledDrawAt) return;
+  // Si no está activa, no llegó al cupo, o ya está programada, salir
+  if (!active || !filled || raffle.drawAt) return;
 
   const eta = new Date(Date.now() + seconds * 1000);
 
-  // Actualiza a READY y programa la hora del sorteo
+  // Actualiza a READY_TO_DRAW y programa la hora del sorteo
   await prisma.raffle.update({
     where: { id: raffleId },
-    data: { status: 'READY', scheduledDrawAt: eta },
+    data: { status: 'READY_TO_DRAW', drawAt: eta },
   });
 
   // TODO: notificar a todos los participantes que el sorteo está “listo para realizar”

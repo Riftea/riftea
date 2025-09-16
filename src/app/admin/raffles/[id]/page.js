@@ -1,234 +1,346 @@
 // src/app/admin/raffles/[id]/page.js
 "use client";
-import { useEffect, useState, use } from "react";
-import { useRouter } from "next/navigation";
-import Link from "next/link";
 
-export default function AdminRaffleEdit({ params }) {
-  const { id } = use(params);
+import { useEffect, useMemo, useState } from "react";
+import { useRouter, useParams } from "next/navigation";
+
+/* =======================
+   Helpers
+   ======================= */
+
+function onlyDigits(s = "") {
+  return String(s).replace(/[^\d]/g, "");
+}
+function parseIntOrNull(v) {
+  if (v === "" || v == null) return null;
+  const n = parseInt(String(v), 10);
+  return Number.isFinite(n) ? n : null;
+}
+// Regla en miles: 1 → 1000, 10 → 10000; ≥1000 literal
+function normalizeThousandRule(raw) {
+  const clean = onlyDigits(raw);
+  if (!clean) return null;
+  const n = parseInt(clean, 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n < 1000 ? n * 1000 : n;
+}
+function toLocalDateTimeInputValue(d) {
+  if (!d) return "";
+  const dt = d instanceof Date ? d : new Date(d);
+  if (isNaN(dt.getTime())) return "";
+  const pad = (x) => String(x).padStart(2, "0");
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(
+    dt.getDate()
+  )}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+
+// Probabilidad aprox.: 1 - ((N-1)/N)^k
+function probabilityPct(k, total) {
+  const kk = parseIntOrNull(k);
+  const tt = parseIntOrNull(total);
+  if (!kk || !tt || kk <= 0 || tt <= 0) return null;
+  const p = 1 - Math.pow((tt - 1) / tt, kk);
+  return Math.max(0, Math.min(1, p)) * 100;
+}
+
+// Resize en el browser → WebP
+const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB
+async function resizeImageFile(file, maxW = 1600, quality = 0.85) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxW / bitmap.width);
+  const w = Math.round(bitmap.width * scale);
+  const h = Math.round(bitmap.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  let blob = await new Promise((r) => canvas.toBlob(r, "image/webp", quality));
+  if (!blob) {
+    blob = await new Promise((r) =>
+      canvas.toBlob(r, file.type || "image/jpeg", 0.9)
+    );
+  }
+  const name = (file.name || "upload").replace(/\.\w+$/, ".webp");
+  return new File([blob], name, { type: blob.type });
+}
+
+// Aporte al pozo por ticket (UX); el server usa su propia constante
+const POT_CONTRIBUTION_CLIENT = 500;
+
+export default function AdminRaffleEditPage() {
   const router = useRouter();
+  const { id } = useParams();
 
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState(null);
-  const [success, setSuccess] = useState(null);
+  // ----- estado base
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
+
+  // Datos del sorteo
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState("");
+  const [isPrivate, setIsPrivate] = useState(false);
+
+  const [prizeValueInput, setPrizeValueInput] = useState("");
+  const [participantGoal, setParticipantGoal] = useState("");
+
+  const [startsAt, setStartsAt] = useState("");
+  const [endsAt, setEndsAt] = useState("");
 
   // Imagen
-  const [originalImageUrl, setOriginalImageUrl] = useState(null);
-  const [imagePreview, setImagePreview] = useState("");
-  const [isEditingImage, setIsEditingImage] = useState(false);
+  const [currentImageUrl, setCurrentImageUrl] = useState("");
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [imageError, setImageError] = useState("");
 
-  // Notificaciones
-  const [notify, setNotify] = useState(true);
+  // Mínimo tickets (stepper)
+  const [minTicketsPerParticipant, setMinTickets] = useState(1);
+
+  // UI
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
+
+  // Fmt money
+  const moneyFmt = useMemo(
+    () =>
+      new Intl.NumberFormat("es-AR", {
+        style: "currency",
+        currency: "ARS",
+        maximumFractionDigits: 0,
+      }),
+    []
+  );
+
+  // -------- Derivados
+  const prizeValueNormalized = useMemo(
+    () => normalizeThousandRule(prizeValueInput),
+    [prizeValueInput]
+  );
+
+  const minParticipantsUX = useMemo(() => {
+    if (!prizeValueNormalized) return null;
+    return Math.ceil(prizeValueNormalized / POT_CONTRIBUTION_CLIENT);
+  }, [prizeValueNormalized]);
+
+  // Estimación de total de tickets en juego: objetivo si lo hay, si no el mínimo requerido
+  const totalTicketsEstimado = useMemo(() => {
+    const explicit = parseIntOrNull(participantGoal);
+    if (explicit && explicit > 0) return explicit;
+    return minParticipantsUX || null;
+  }, [participantGoal, minParticipantsUX]);
+
+  // Tope del stepper: floor(totalEstimado / 2) para que siempre haya ≥2 participantes
+  const maxMinTickets = useMemo(() => {
+    if (!totalTicketsEstimado) return 1;
+    return Math.max(1, Math.floor(totalTicketsEstimado / 2));
+  }, [totalTicketsEstimado]);
 
   useEffect(() => {
-    let mounted = true;
+    setMinTickets((v) => Math.min(Math.max(1, v), maxMinTickets));
+  }, [maxMinTickets]);
 
-    async function fetchRaffle() {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch(`/api/raffles/${id}`);
-        if (!res.ok) {
-          const errJson = await res.json().catch(() => null);
-          throw new Error(errJson?.error || `Status ${res.status}`);
-        }
-        const json = await res.json();
-        const raffle = json?.raffle;
-        if (!raffle) throw new Error("Sorteo no encontrado");
-
-        if (mounted) {
-          const processed = {
-            ...raffle,
-            // Toggle publicado: si nunca se publicó, arranca en true (visible)
-            published:
-              raffle.publishedAt != null
-                ? raffle.status === "PUBLISHED" || raffle.status === "ACTIVE"
-                : true,
-            participantLimit: raffle.maxParticipants ?? null,
-          };
-
-          setData(processed);
-          setOriginalImageUrl(raffle.imageUrl || null);
-          setImagePreview(raffle.imageUrl || "");
-          const hasParts =
-            (raffle?._count?.participations ?? 0) > 0 ||
-            (raffle?._count?.tickets ?? 0) > 0;
-          setNotify(hasParts ? true : false); // si hay participantes/tickets, ON por defecto
-          setLoading(false);
-        }
-      } catch (err) {
-        console.error("Error loading raffle:", err);
-        if (mounted) {
-          setError("Error al cargar el sorteo: " + err.message);
-          setLoading(false);
-        }
-      }
+  // Preview de archivo
+  useEffect(() => {
+    if (!file) {
+      setPreview("");
+      return;
     }
+    const url = URL.createObjectURL(file);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
 
-    fetchRaffle();
+  // -------- Carga inicial
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setLoadError("");
+      try {
+        const res = await fetch(`/api/raffles/${id}`, { credentials: "include" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || data?.message || "No se pudo cargar el sorteo");
+        const r = data?.raffle || data;
+
+        if (!mounted) return;
+
+        setTitle(r.title || "");
+        // limpiar posible footer de reglas antes de editar
+        setDescription((r.description || "").replace(/\n—\nℹ️ Reglas sugeridas:[\s\S]*$/m, "").trim());
+        setCategory(r.prizeCategory || "");
+        setIsPrivate(!!r.isPrivate);
+
+        setPrizeValueInput(String(r.prizeValue ?? ""));
+        setParticipantGoal(String(r.maxParticipants ?? ""));
+
+        setStartsAt(toLocalDateTimeInputValue(r.startsAt));
+        setEndsAt(toLocalDateTimeInputValue(r.endsAt));
+
+        setCurrentImageUrl(r.imageUrl || "");
+        setLoaded(true);
+      } catch (e) {
+        if (!mounted) return;
+        setLoadError(e.message || "Error cargando el sorteo");
+      }
+    })();
     return () => {
       mounted = false;
     };
   }, [id]);
 
-  const ticketsSold = data?._count?.tickets ?? 0;
-  const hasParticipants =
-    (data?._count?.participations ?? 0) > 0 || ticketsSold > 0;
-  const isFinalized =
-    data?.status === "FINISHED" ||
-    data?.status === "COMPLETED" ||
-    data?.status === "CANCELLED";
+  // -------- Validaciones
+  const validate = () => {
+    if (!title.trim()) return "El título es requerido";
+    if (!description.trim()) return "La descripción no puede estar vacía";
 
-  // Título bloqueado si ya hay participantes y no finalizó
-  const titleDisabled = hasParticipants && !isFinalized;
+    const prizeFinal = normalizeThousandRule(prizeValueInput);
+    if (!prizeFinal || prizeFinal < 1000) {
+      return "El valor del premio es obligatorio y debe ser un entero ≥ 1000";
+    }
 
-  // Extender +7 días (si no se alcanzó el objetivo)
-  function handleExtend7Days() {
-    if (!data) return;
-    const reached =
-      (data?._count?.tickets ?? 0) >=
-      (data?.maxParticipants ?? Number.MAX_SAFE_INTEGER);
-    if (reached) {
-      setError(
-        "Ya se alcanzó el objetivo de participantes, no es necesario extender."
-      );
+    if (String(participantGoal).trim() !== "") {
+      const goalInt = parseIntOrNull(participantGoal);
+      if (!goalInt || goalInt <= 0)
+        return "El objetivo de participantes debe ser un entero mayor a 0";
+      const minNeeded = Math.ceil(prizeFinal / POT_CONTRIBUTION_CLIENT);
+      if (goalInt < minNeeded) {
+        return `El objetivo de participantes debe ser ≥ ${minNeeded}`;
+      }
+    }
+
+    // Fechas
+    const now = new Date();
+    const endDate = endsAt ? new Date(endsAt) : null;
+    const startDate = startsAt ? new Date(startsAt) : null;
+
+    if (endDate && isNaN(endDate.getTime())) return "Fecha de finalización inválida";
+    if (startDate && isNaN(startDate.getTime())) return "Fecha de inicio inválida";
+    if (endDate && endDate <= now) return "La fecha de finalización debe ser futura";
+    if (startDate && startDate <= now) return "La fecha de inicio debe ser futura";
+    if (startDate && endDate && startDate >= endDate)
+      return "La fecha de inicio debe ser anterior a la fecha de finalización";
+
+    if (file) {
+      if (!ALLOWED_TYPES.includes(file.type))
+        return "Formato de imagen no soportado (usa JPG/PNG/WebP)";
+      if (file.size > MAX_FILE_BYTES) return "La imagen supera el tamaño máximo (10MB)";
+    }
+
+    if (minTicketsPerParticipant < 1)
+      return "El mínimo de tickets por participante debe ser al menos 1";
+    if (minTicketsPerParticipant > maxMinTickets)
+      return `El mínimo de tickets por participante no puede superar ${maxMinTickets} (asegura que haya al menos 2 participantes).`;
+
+    return null;
+  };
+
+  // -------- Subida de imagen (si se cambió)
+  const maybeUploadImage = async () => {
+    if (!file) return currentImageUrl || null; // mantener la actual
+    setImageError("");
+    setUploading(true);
+    try {
+      let toUpload = file;
+      try {
+        toUpload = await resizeImageFile(file, 1600, 0.85);
+      } catch (e) {
+        console.warn("Resize falló; subiendo original:", e);
+      }
+      const fd = new FormData();
+      fd.append("file", toUpload);
+      const res = await fetch("/api/uploads", { method: "POST", body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "No se pudo subir la imagen");
+      return data?.url || null;
+    } catch (e) {
+      setImageError(e.message || "Error subiendo imagen");
+      return currentImageUrl || null; // volvemos a la anterior si falla
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // -------- Guardar cambios (PUT /api/raffles)
+  const handleSave = async (e) => {
+    e.preventDefault();
+    setError("");
+
+    const v = validate();
+    if (v) {
+      setError(v);
       return;
     }
-    const base = data.endsAt ? new Date(data.endsAt) : new Date();
-    const extended = new Date(base.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const iso = extended.toISOString();
-    setData((prev) => ({ ...prev, endsAt: iso }));
-    setSuccess("Fecha extendida +7 días (sin guardar aún)");
-    setTimeout(() => setSuccess(null), 2000);
-  }
 
-  // Fecha → input datetime-local (local time)
-  function formatDateForInput(dateString) {
-    if (!dateString) return "";
-    try {
-      const date = new Date(dateString);
-      const pad = (n) => String(n).padStart(2, "0");
-      const yyyy = date.getFullYear();
-      const mm = pad(date.getMonth() + 1);
-      const dd = pad(date.getDate());
-      const hh = pad(date.getHours());
-      const min = pad(date.getMinutes());
-      return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
-    } catch {
-      return "";
-    }
-  }
+    const prizeFinal = normalizeThousandRule(prizeValueInput);
 
-  async function handleSave(e) {
-    e.preventDefault();
+    // Si se deja vacío el objetivo, aplicamos el mínimo requerido automáticamente
+    const goalFromUx =
+      String(participantGoal).trim() === "" && prizeFinal
+        ? Math.ceil(prizeFinal / POT_CONTRIBUTION_CLIENT)
+        : null;
+
+    const maxParticipants =
+      String(participantGoal).trim() === ""
+        ? goalFromUx
+        : parseInt(participantGoal, 10);
+
+    // Footer informativo opcional
+    const baseDesc = description.trim().replace(/\n—\nℹ️ Reglas sugeridas:[\s\S]*$/m, "");
+    const footer =
+      minTicketsPerParticipant > 1
+        ? `\n\n—\nℹ️ Reglas sugeridas:\n• Mínimo de tickets por participante: ${minTicketsPerParticipant}`
+        : "";
+    const finalDescription = `${baseDesc}${footer}`;
+
     setSaving(true);
-    setError(null);
-    setSuccess(null);
-
     try {
-      if (!data) throw new Error("Datos inválidos");
+      const finalImageUrl = await maybeUploadImage();
 
-      const payload = {};
+      const payload = {
+        id: String(id),
+        title: title.trim(),
+        description: finalDescription,
+        prizeValue: prizeFinal,
+        ...(maxParticipants != null ? { maxParticipants } : {}),
+        ...(finalImageUrl ? { imageUrl: finalImageUrl } : { imageUrl: null }),
+        ...(startsAt ? { startsAt } : { startsAt: null }),
+        ...(endsAt ? { endsAt } : { endsAt: null }),
+        ...(category ? { category } : { category: null }),
+        isPrivate,
+      };
 
-      // Título (bloqueado si ya hay participantes y no finalizó)
-      if (data.title?.trim()) {
-        if (!titleDisabled) {
-          payload.title = data.title.trim();
-        }
-      } else if (!titleDisabled) {
-        throw new Error("El título es requerido");
-      }
-
-      // Descripción
-      if (data.description !== undefined) {
-        payload.description = data.description;
-      }
-
-      // Imagen
-      // Solo enviar si realmente cambió respecto al original
-      const imageChanged = (data.imageUrl || null) !== originalImageUrl;
-      if (imageChanged) {
-        payload.imageUrl = data.imageUrl?.trim() || null; // si la quitás, va null
-      }
-
-      // Límite de participantes
-      if (data.participantLimit !== undefined && data.participantLimit !== "") {
-        const limit = parseInt(data.participantLimit, 10);
-        if (!Number.isFinite(limit) || limit <= 0) {
-          throw new Error(
-            "El límite de participantes debe ser un número mayor a 0"
-          );
-        }
-        payload.participantLimit = limit;
-      } else {
-        payload.participantLimit = null;
-      }
-
-      // Fecha de finalización
-      payload.endsAt = data.endsAt ? new Date(data.endsAt).toISOString() : null;
-
-      // Publicado → al publicar, pasa a público (sale de privado por link)
-      payload.published = !!data.published;
-      payload.makePublicIfPublished = true;
-
-      // Notificar participantes
-      payload.notifyParticipants = !!notify;
-
-      const res = await fetch(`/api/raffles/${id}`, {
+      const res = await fetch("/api/raffles", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(payload),
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `Error ${res.status}`);
-      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || data?.message || "No se pudo guardar");
 
-      const json = await res.json();
-      const updated = json?.raffle || json;
-
-      const processedUpdated = {
-        ...updated,
-        published:
-          updated.publishedAt != null &&
-          (updated.status === "PUBLISHED" || updated.status === "ACTIVE"),
-        participantLimit: updated.maxParticipants,
-      };
-
-      setData(processedUpdated);
-      setOriginalImageUrl(processedUpdated.imageUrl || null);
-      setImagePreview(processedUpdated.imageUrl || "");
-      setIsEditingImage(false);
-      setSuccess("Sorteo guardado exitosamente");
-
-      // ✔ Redirigir a la vista pública para ver cómo quedó
-      setTimeout(() => router.push(`/sorteo/${id}`), 1200);
+      // Volvemos a la misma página (refresca datos)
+      router.refresh?.();
     } catch (err) {
       console.error("Error saving raffle:", err);
       setError(err.message || "No se pudo guardar el sorteo");
     } finally {
       setSaving(false);
     }
-  }
+  };
 
-  async function handleDelete() {
-    if (
-      !confirm("¿Eliminar este sorteo? Esta acción no se puede deshacer.")
-    )
-      return;
-
+  // -------- Eliminar sorteo
+  const handleDelete = async () => {
+    if (!confirm("¿Eliminar este sorteo? Esta acción no se puede deshacer.")) return;
     setDeleting(true);
-    setError(null);
+    setError("");
     try {
-      const res = await fetch(`/api/raffles/${id}`, { method: "DELETE" });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `Error ${res.status}`);
-      }
+      const res = await fetch(`/api/raffles?id=${id}`, { method: "DELETE", credentials: "include" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || data?.message || "No se pudo eliminar");
       router.push("/admin");
     } catch (err) {
       console.error("Error deleting raffle:", err);
@@ -236,9 +348,53 @@ export default function AdminRaffleEdit({ params }) {
     } finally {
       setDeleting(false);
     }
+  };
+
+  const onChangePrize = (e) => setPrizeValueInput(onlyDigits(e.target.value));
+  const onChangeGoal = (e) => setParticipantGoal(onlyDigits(e.target.value));
+
+  const canSubmit =
+    loaded &&
+    !!title.trim() &&
+    !!description.trim() &&
+    !!normalizeThousandRule(prizeValueInput) &&
+    !uploading &&
+    !saving;
+
+  const disabledReason = !loaded
+    ? "Cargando sorteo…"
+    : !normalizeThousandRule(prizeValueInput)
+    ? "Ingresá un valor de premio válido"
+    : !title.trim()
+    ? "Completá el título"
+    : !description.trim()
+    ? "Completá la descripción"
+    : uploading
+    ? "Esperá a que termine la subida de imagen"
+    : "";
+
+  const DESC_MAX = 600;
+
+  const minTicketsProb = useMemo(() => {
+    if (!minTicketsPerParticipant || !totalTicketsEstimado) return null;
+    return probabilityPct(minTicketsPerParticipant, totalTicketsEstimado);
+  }, [minTicketsPerParticipant, totalTicketsEstimado]);
+
+  // -------- UI
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-slate-50 p-6">
+        <div className="max-w-2xl mx-auto">
+          <div className="bg-gradient-to-br from-rose-900/10 to-slate-800/50 border border-rose-900/20 rounded-2xl p-8 backdrop-blur-sm">
+            <h1 className="text-xl font-semibold text-rose-300 mb-2">No se pudo cargar el sorteo</h1>
+            <p className="text-slate-300">{loadError}</p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
-  if (loading) {
+  if (!loaded) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-slate-50 p-6">
         <div className="max-w-2xl mx-auto">
@@ -252,573 +408,336 @@ export default function AdminRaffleEdit({ params }) {
     );
   }
 
-  if (!data || data.error) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-slate-50 p-6">
-        <div className="max-w-2xl mx-auto">
-          <div className="bg-gradient-to-br from-rose-900/10 to-slate-800/50 border border-rose-900/20 rounded-2xl p-8 backdrop-blur-sm">
-            <div className="flex items-center space-x-4 mb-4">
-              <div className="p-3 bg-rose-500/5 rounded-xl">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-6 w-6 text-rose-400"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                  />
-                </svg>
-              </div>
-              <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-rose-400 to-pink-400">
-                Sorteo no encontrado
-              </h1>
-            </div>
-            <p className="text-slate-300 mb-6">
-              {error ||
-                "El sorteo que buscas no existe o no tienes permisos para editarlo."}
-            </p>
-            <Link
-              href="/admin"
-              className="group inline-flex items-center text-rose-400 hover:text-rose-300 transition-all"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-4 w-4 mr-2 group-hover:-translate-x-1 transition-transform"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M10 19l-7-7m0 0l7-7m-7 7h18"
-                />
-              </svg>
-              Volver al panel admin
-            </Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const readOnlyUnitPrice =
-    data?.unitPrice ?? data?.derivedTicketPrice ?? null;
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-slate-50">
-      {/* Header */}
-      <div className="backdrop-blur-md bg-slate-900/60 border-b border-slate-700/20 sticky top-0 z-10">
-        <div className="max-w-2xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="flex items-center space-x-3 mb-1">
-                <div className="w-2 h-2 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 animate-pulse" />
-                <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">
-                  Editar Sorteo
-                </h1>
+    <div className="min-h-screen bg-gradient-to-br from-gray-950 to-gray-900 text-gray-100">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-2xl overflow-hidden shadow-2xl">
+          {/* Header */}
+          <div className="relative p-8 bg-gradient-to-r from-gray-800 to-gray-800/90 border-b border-gray-700">
+            <div className="absolute inset-0 bg-gradient-to-r from-orange-500/5 to-transparent pointer-events-none"></div>
+            <div className="relative">
+              <div className="flex items-center mb-4">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center mr-4">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                </div>
+                <h1 className="text-2xl font-bold text-white">Editar Sorteo</h1>
               </div>
-              <p className="text-slate-400 flex items-center">
-                <span className="bg-slate-800/40 px-2 py-0.5 rounded mr-2 text-xs border border-slate-700/30">
-                  ID:
-                </span>
-                <span className="font-mono text-indigo-300">{id}</span>
-              </p>
+              <p className="text-gray-300">ID: <span className="font-mono text-orange-300">{id}</span></p>
             </div>
-            <Link
-              href={`/sorteo/${id}`}
-              className="group bg-slate-800/40 hover:bg-slate-700/40 border border-slate-700/30 text-slate-300 px-4 py-2 rounded-lg transition-all flex items-center"
-            >
-              <span className="mr-2 group-hover:translate-x-0.5 transition-transform">
-                →
-              </span>
-              Vista pública
-            </Link>
           </div>
-        </div>
-      </div>
 
-      <div className="max-w-2xl mx-auto p-6 pt-0">
-        {/* Breadcrumbs */}
-        <div className="flex items-center text-sm text-slate-400 mb-6">
-          <Link
-            href="/admin"
-            className="hover:text-indigo-400 transition-colors"
-          >
-            Admin
-          </Link>
-          <span className="mx-2">/</span>
-          <span className="text-slate-300">Editar Sorteo</span>
-        </div>
-
-        {/* Alerts */}
-        {error && (
-          <div className="mb-6 p-4 rounded-xl border border-rose-900/20 bg-gradient-to-r from-rose-900/10 to-slate-800/40 backdrop-blur-sm">
-            <div className="flex items-start">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-5 w-5 text-rose-400 mt-0.5 mr-3 flex-shrink-0"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                />
-              </svg>
-              <p className="text-slate-200">{error}</p>
-            </div>
-          </div>
-        )}
-
-        {success && (
-          <div className="mb-6 p-4 rounded-xl border border-emerald-900/20 bg-gradient-to-r from-emerald-900/10 to-slate-800/40 backdrop-blur-sm">
-            <div className="flex items-start">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-5 w-5 text-emerald-400 mt-0.5 mr-3 flex-shrink-0"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-              <p className="text-slate-200">{success}</p>
-            </div>
-          </div>
-        )}
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 gap-4 mb-8">
-          <div className="bg-slate-800/40 border border-slate-700/30 rounded-xl p-5 backdrop-blur-sm">
-            <div className="text-sm text-slate-400 mb-1">Participantes</div>
-            <div className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-400">
-              {data._count?.participations || 0}
-            </div>
-          </div>
-          <div className="bg-slate-800/40 border border-slate-700/30 rounded-xl p-5 backdrop-blur-sm">
-            <div className="text-sm text-slate-400 mb-1">Tickets</div>
-            <div className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">
-              {data._count?.tickets || 0}
-            </div>
-          </div>
-          <div className="bg-slate-800/40 border border-slate-700/30 rounded-xl p-5 backdrop-blur-sm col-span-2">
-            <div className="flex justify-between items-center">
-              <div>
-                <div className="text-sm text-slate-400">Estado</div>
-                <div
-                  className={`px-3 py-1.5 rounded-full text-sm font-medium mt-1 ${
-                    data.status === "PUBLISHED"
-                      ? "bg-emerald-900/20 text-emerald-300"
-                      : data.status === "ACTIVE"
-                      ? "bg-blue-900/20 text-blue-300"
-                      : data.status === "DRAFT"
-                      ? "bg-slate-700/30 text-slate-200"
-                      : "bg-amber-900/20 text-amber-300"
-                  }`}
-                >
-                  {data.status}
+          <div className="p-8">
+            {/* Error */}
+            {error && (
+              <div className="mb-6 p-5 bg-red-900/30 border border-red-800 rounded-xl">
+                <div className="flex items-start">
+                  <svg className="h-5 w-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                    <path
+                      fillRule="evenodd"
+                      d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  <div>
+                    <h3 className="text-lg font-medium text-red-200">No se pudo guardar</h3>
+                    <div className="mt-2 text-red-300">
+                      <p>{error}</p>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className="text-right">
-                <div className="text-sm text-slate-400">Creador</div>
-                <div className="font-medium text-slate-200">
-                  {data.owner?.name || "N/A"}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Form */}
-        <form onSubmit={handleSave} className="space-y-8">
-          {/* Título */}
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center">
-              <span>Título *</span>
-              <span className="ml-2 px-1.5 py-0.5 text-xs bg-indigo-900/20 text-indigo-300 rounded">
-                Requerido
-              </span>
-            </label>
-            <input
-              type="text"
-              required={!titleDisabled}
-              disabled={titleDisabled}
-              className={`w-full bg-slate-800/40 border border-slate-700/30 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500/30 transition-all placeholder:text-slate-500 ${
-                titleDisabled ? "opacity-70 cursor-not-allowed" : ""
-              }`}
-              value={data.title || ""}
-              onChange={(e) => setData({ ...data, title: e.target.value })}
-              placeholder="Título del sorteo"
-            />
-            {titleDisabled && (
-              <p className="text-xs text-slate-400 mt-1">
-                No puedes cambiar el título porque el sorteo ya tiene
-                participantes y no ha finalizado.
-              </p>
             )}
-          </div>
 
-          {/* Descripción */}
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">
-              Descripción
-            </label>
-            <textarea
-              rows={4}
-              className="w-full bg-slate-800/40 border border-slate-700/30 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500/30 transition-all placeholder:text-slate-500"
-              value={data.description || ""}
-              onChange={(e) =>
-                setData({ ...data, description: e.target.value })
-              }
-              placeholder="Describe el sorteo..."
-            />
-          </div>
-
-          {/* Imagen (recuadro responsive + acciones) */}
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">
-              Imagen del sorteo
-            </label>
-
-            {/* Recuadro responsive 16:9 */}
-            <div className="relative w-full rounded-xl overflow-hidden border border-slate-700/30 bg-slate-900/30">
-              <div style={{ paddingTop: "56.25%" }} />
-              {imagePreview ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  alt="Preview"
-                  src={imagePreview}
-                  className="absolute inset-0 w-full h-full object-cover"
-                />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm">
-                  Sin imagen
+            <form onSubmit={handleSave} className="space-y-7">
+              {/* Título */}
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="block text-sm font-medium text-gray-200">
+                    Título del Sorteo <span className="text-orange-400">*</span>
+                  </label>
+                  <span className="text-xs text-gray-400">{title.length}/100</span>
                 </div>
-              )}
-            </div>
+                <input
+                  type="text"
+                  className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
+                  placeholder="Ej: iPhone 15 Pro Max"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  maxLength={100}
+                  required
+                />
+              </div>
 
-            {/* Controles de imagen */}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {!isEditingImage ? (
-                <>
-                  <button
-                    type="button"
-                    className="px-3 py-2 rounded-lg border border-slate-700/40 bg-slate-800/40 hover:bg-slate-800/60 transition"
-                    onClick={() => setIsEditingImage(true)}
+              {/* Descripción */}
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="block text-sm font-medium text-gray-200">
+                    Descripción <span className="text-orange-400">*</span>
+                  </label>
+                  <span className="text-xs text-gray-400">{description.length}/{DESC_MAX}</span>
+                </div>
+                <textarea
+                  className={`w-full bg-gray-700/50 border ${description.trim() ? "border-gray-600" : "border-amber-600"} rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400 min-h-[140px]`}
+                  placeholder="Describe el premio y las condiciones del sorteo..."
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  maxLength={DESC_MAX}
+                  required
+                />
+              </div>
+
+              {/* Premio / objetivo / visibilidad */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">
+                    Valor del premio <span className="text-orange-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
+                    placeholder="Ej: 500 (→ $500.000) o 1000 literal"
+                    value={prizeValueInput}
+                    onChange={onChangePrize}
+                    required
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    Se enviará: {moneyFmt.format(prizeValueNormalized || 0)}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">
+                    Objetivo de participantes (opcional)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
+                    placeholder={minParticipantsUX ? `≥ ${minParticipantsUX}` : "Ej: 100"}
+                    value={participantGoal}
+                    onChange={onChangeGoal}
+                    title="Si lo dejás vacío, se usará automáticamente el mínimo requerido"
+                  />
+                  {minParticipantsUX && (
+                    <p className="text-xs mt-1 text-gray-300">
+                      Mínimo requerido para realizar el sorteo: <b className="text-orange-300">{minParticipantsUX}</b>
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Visibilidad</label>
+                  <div className="flex items-center h-[52px] bg-gray-700/50 border border-gray-600 rounded-xl px-4">
+                    <input
+                      id="isPrivate"
+                      type="checkbox"
+                      checked={isPrivate}
+                      onChange={(e) => setIsPrivate(e.target.checked)}
+                      className="h-4 w-4 text-orange-600 rounded border-gray-600"
+                    />
+                    <label htmlFor="isPrivate" className="ml-3 text-sm text-gray-300">
+                      Hacer sorteo privado
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Categoría + mínimo tickets (stepper) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Categoría</label>
+                  <select
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value)}
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 text-white"
                   >
-                    Cambiar imagen
-                  </button>
-                  {imagePreview && (
+                    {[
+                      { value: "", label: "Sin categoría" },
+                      { value: "Tecnología", label: "Tecnología" },
+                      { value: "Electrodomésticos", label: "Electrodomésticos" },
+                      { value: "Hogar y Deco", label: "Hogar y Deco" },
+                      { value: "Moda y Accesorios", label: "Moda y Accesorios" },
+                      { value: "Deportes", label: "Deportes" },
+                      { value: "Gaming", label: "Gaming" },
+                      { value: "Otros", label: "Otros" },
+                    ].map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-gray-200">
+                      Mínimo de tickets por participante
+                    </label>
+                    <span className="text-xs text-gray-400">
+                      Máx: {maxMinTickets} {maxMinTickets <= 1 ? "" : "(asegura ≥2 participantes)"}
+                    </span>
+                  </div>
+
+                  <div className="inline-flex items-center bg-gray-700/50 border border-gray-600 rounded-xl overflow-hidden">
                     <button
                       type="button"
-                      className="px-3 py-2 rounded-lg border border-slate-700/40 bg-slate-800/40 hover:bg-slate-800/60 transition"
-                      onClick={() => {
-                        setData((p) => ({ ...p, imageUrl: "" }));
-                        setImagePreview("");
-                      }}
+                      onClick={() => setMinTickets((v) => Math.max(1, v - 1))}
+                      aria-label="Disminuir"
+                      className="px-4 py-3.5 hover:bg-gray-700 disabled:opacity-50"
+                      disabled={minTicketsPerParticipant <= 1}
+                    >
+                      <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor"><path d="M5 12h14"></path></svg>
+                    </button>
+
+                    <div className="min-w-[64px] text-center px-3 py-3.5 font-semibold text-white select-none">
+                      {minTicketsPerParticipant}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setMinTickets((v) => Math.min(maxMinTickets, v + 1))}
+                      aria-label="Aumentar"
+                      className="px-4 py-3.5 hover:bg-gray-700 disabled:opacity-50"
+                      disabled={minTicketsPerParticipant >= maxMinTickets}
+                    >
+                      <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor"><path d="M12 5v14M5 12h14"></path></svg>
+                    </button>
+                  </div>
+
+                  {minTicketsProb != null && totalTicketsEstimado != null && (
+                    <p className="text-xs text-gray-400 mt-2">
+                      Con <b>{minTicketsPerParticipant} ticket(s)</b> y ~<b>{totalTicketsEstimado}</b> en juego, tu prob. ≈{" "}
+                      <b>{minTicketsProb.toFixed(1)}%</b>
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Fechas */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Fecha de inicio (opcional)</label>
+                  <input
+                    type="datetime-local"
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white"
+                    value={startsAt}
+                    onChange={(e) => setStartsAt(e.target.value)}
+                    min={new Date().toISOString().slice(0, 16)}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Fecha de finalización</label>
+                  <input
+                    type="datetime-local"
+                    className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white"
+                    value={endsAt}
+                    onChange={(e) => setEndsAt(e.target.value)}
+                    min={new Date().toISOString().slice(0, 16)}
+                  />
+                </div>
+              </div>
+
+              {/* Imagen (solo subir/tomar) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Imagen actual</label>
+                  <div className="relative w-full h-56 overflow-hidden rounded-lg border border-gray-700 bg-gray-800">
+                    <img
+                      src={preview || currentImageUrl || "/avatar-default.png"}
+                      alt="Imagen del sorteo"
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  {currentImageUrl && !preview && (
+                    <button
+                      type="button"
+                      onClick={() => setCurrentImageUrl("")}
+                      className="mt-2 px-3 py-2 rounded-lg border border-gray-600 bg-gray-700/40 hover:bg-gray-700/60 transition text-sm"
                     >
                       Quitar imagen
                     </button>
                   )}
-                  {(originalImageUrl || "") !== (imagePreview || "") && (
-                    <button
-                      type="button"
-                      className="px-3 py-2 rounded-lg border border-slate-700/40 bg-slate-800/40 hover:bg-slate-800/60 transition"
-                      onClick={() => {
-                        setData((p) => ({ ...p, imageUrl: originalImageUrl }));
-                        setImagePreview(originalImageUrl || "");
-                        setIsEditingImage(false);
-                      }}
-                    >
-                      Restaurar
-                    </button>
-                  )}
-                </>
-              ) : (
-                <div className="w-full">
-                  <input
-                    type="text" // ← no valida como URL, no te obliga
-                    className="w-full bg-slate-800/40 border border-slate-700/30 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500/30 transition-all placeholder:text-slate-500"
-                    value={data.imageUrl || ""}
-                    onChange={(e) => {
-                      setData({ ...data, imageUrl: e.target.value });
-                      setImagePreview(e.target.value);
-                    }}
-                    placeholder="Pega una URL (opcional)"
-                  />
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      type="button"
-                      className="px-3 py-2 rounded-lg border border-slate-700/40 bg-slate-800/40 hover:bg-slate-800/60 transition"
-                      onClick={() => setIsEditingImage(false)}
-                    >
-                      Listo
-                    </button>
-                    <button
-                      type="button"
-                      className="px-3 py-2 rounded-lg border border-slate-700/40 bg-slate-800/40 hover:bg-slate-800/60 transition"
-                      onClick={() => {
-                        setData((p) => ({ ...p, imageUrl: originalImageUrl }));
-                        setImagePreview(originalImageUrl || "");
-                        setIsEditingImage(false);
-                      }}
-                    >
-                      Cancelar cambios
-                    </button>
-                  </div>
-                  <p className="text-xs text-slate-400 mt-2">
-                    Si no pegás nada, se mantiene la imagen actual.
-                  </p>
                 </div>
-              )}
-            </div>
-          </div>
 
-          {/* Precio del ticket (solo lectura) */}
-          {readOnlyUnitPrice !== null && (
-            <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">
-                Precio del ticket (fijo)
-              </label>
-              <div className="w-full bg-slate-800/40 border border-slate-700/30 rounded-xl px-4 py-3 text-slate-300">
-                ${Number(readOnlyUnitPrice).toLocaleString()}
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Subir / Tomar nueva imagen</label>
+                  <input
+                    type="file"
+                    accept={ALLOWED_TYPES.join(",")}
+                    capture="environment"
+                    onChange={(e) => setFile(e.target.files?.[0] || null)}
+                    className="block w-full text-sm text-gray-300
+                      file:mr-4 file:py-2.5 file:px-4
+                      file:rounded-lg file:border-0
+                      file:text-sm file:font-semibold
+                      file:bg-orange-600 file:text-white
+                      hover:file:bg-orange-700"
+                    title="Formatos permitidos: JPG, PNG, WebP (máx. 10MB)"
+                  />
+                  {imageError && <p className="mt-2 text-sm text-red-300">{imageError}</p>}
+                  {uploading && <p className="mt-2 text-xs text-gray-400">Subiendo y optimizando imagen…</p>}
+                </div>
               </div>
-              <p className="text-xs text-slate-400 mt-1">
-                Valor definido en el servidor (.env). No se edita desde aquí.
-              </p>
-            </div>
-          )}
 
-          {/* Límite de participantes */}
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">
-              Límite de participantes
-            </label>
-            <input
-              type="number"
-              min="1"
-              className="w-full bg-slate-800/40 border border-slate-700/30 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500/30 transition-all placeholder:text-slate-500"
-              value={data.participantLimit ?? ""}
-              onChange={(e) =>
-                setData({
-                  ...data,
-                  participantLimit: e.target.value
-                    ? parseInt(e.target.value, 10)
-                    : null,
-                })
-              }
-              placeholder="Deja vacío para sin límite"
-            />
-            <p className="text-xs text-slate-400 mt-1">
-              Déjalo vacío si no quieres límite de participantes
-            </p>
-          </div>
+              {/* Botones */}
+              <div className="flex flex-col sm:flex-row gap-4 pt-6 border-t border-gray-700">
+                <button
+                  type="submit"
+                  disabled={!canSubmit}
+                  className="group flex-1 px-6 py-3.5 bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-xl font-medium hover:from-orange-600 hover:to-orange-700 focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+                  title={!canSubmit ? disabledReason : undefined}
+                >
+                  {saving ? "Guardando..." : "Guardar cambios"}
+                  {!canSubmit && (
+                    <span className="ml-2 text-xs opacity-80 hidden sm:inline">— {disabledReason}</span>
+                  )}
+                </button>
 
-          {/* Fecha de finalización + Extender */}
-          <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">
-              Fecha de finalización
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="datetime-local"
-                className="flex-1 bg-slate-800/40 border border-slate-700/30 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500/30 transition-all"
-                value={formatDateForInput(data.endsAt)}
-                onChange={(e) =>
-                  setData({
-                    ...data,
-                    endsAt: e.target.value
-                      ? new Date(e.target.value).toISOString()
-                      : null,
-                  })
-                }
-              />
-              <button
-                type="button"
-                onClick={handleExtend7Days}
-                className="px-4 py-3 bg-slate-800/40 border border-slate-700/30 rounded-xl hover:bg-slate-800/60 transition"
-                title="Extender +7 días"
-              >
-                +7d
-              </button>
-            </div>
-            <p className="text-xs text-slate-400 mt-1">
-              Déjalo vacío si no tiene fecha límite
-            </p>
-          </div>
+                <button
+                  type="button"
+                  onClick={() => router.push(`/admin/raffles/${id}`)}
+                  className="px-6 py-3.5 border border-gray-600 text-gray-300 rounded-xl font-medium hover:bg-gray-700/50 transition-all"
+                >
+                  Cancelar
+                </button>
 
-          {/* Publicado (pasa a público si estaba privado) */}
-          <div className="pt-4 border-t border-slate-700/30">
-            <label className="flex items-center gap-3 cursor-pointer group">
-              <div className="relative">
-                <input
-                  type="checkbox"
-                  checked={!!data.published}
-                  onChange={(e) =>
-                    setData({ ...data, published: e.target.checked })
-                  }
-                  className="sr-only"
-                />
-                <div
-                  className={`w-12 h-6 rounded-full transition-colors duration-300 ${
-                    data.published
-                      ? "bg-gradient-to-r from-indigo-600 to-purple-600"
-                      : "bg-slate-600"
-                  }`}
-                ></div>
-                <div
-                  className={`absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform duration-300 ${
-                    data.published ? "transform translate-x-6" : ""
-                  }`}
-                ></div>
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  className="px-6 py-3.5 bg-gradient-to-r from-rose-600 to-rose-700 text-white rounded-xl hover:from-rose-700 hover:to-rose-800 disabled:opacity-70 disabled:cursor-not-allowed transition-all font-medium"
+                >
+                  {deleting ? "Eliminando..." : "Eliminar sorteo"}
+                </button>
               </div>
-              <div>
-                <span className="font-medium text-slate-200 group-hover:text-white transition-colors">
-                  Publicado
-                </span>
-                <p className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
-                  Al publicar, el sorteo se vuelve visible (sale de “privado por
-                  link”).
-                </p>
+            </form>
+          </div>
+
+          {/* Footer info */}
+          <div className="px-8 pb-6 bg-gray-800/30 border-t border-gray-700">
+            <div className="flex items-start p-4 bg-gray-700/30 rounded-xl border border-gray-600">
+              <div className="flex-shrink-0 mt-0.5">
+                <svg className="h-5 w-5 text-orange-400" fill="currentColor" viewBox="0 0 20 20">
+                  <path
+                    fillRule="evenodd"
+                    d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                    clipRule="evenodd"
+                  />
+                </svg>
               </div>
-            </label>
-          </div>
-
-          {/* Notificar participantes */}
-          <div className="flex items-center gap-3">
-            <input
-              id="notify"
-              type="checkbox"
-              className="h-4 w-4 text-indigo-600 rounded border-slate-700/30 bg-slate-800/40"
-              checked={notify}
-              onChange={(e) => setNotify(e.target.checked)}
-            />
-            <label htmlFor="notify" className="text-sm text-slate-300">
-              Notificar a los participantes sobre estos cambios
-            </label>
-          </div>
-
-        {/* Botones */}
-          <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-slate-700/30">
-            <button
-              type="submit"
-              disabled={saving}
-              className="flex-1 sm:flex-none px-6 py-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl hover:from-indigo-700 hover:to-purple-700 disabled:opacity-70 disabled:cursor-not-allowed transition-all font-medium shadow-lg shadow-indigo-500/10 hover:shadow-indigo-500/20"
-            >
-              {saving ? (
-                <span className="flex items-center justify-center">
-                  <svg
-                    className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    ></circle>
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    ></path>
-                  </svg>
-                  Guardando...
-                </span>
-              ) : (
-                "Guardar y ver público"
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => router.push("/admin")}
-              className="flex-1 sm:flex-none px-6 py-3.5 border border-slate-600/50 text-slate-300 rounded-xl hover:bg-slate-800/30 transition-all font-medium backdrop-blur-sm"
-            >
-              Cancelar
-            </button>
-
-            <button
-              type="button"
-              onClick={handleDelete}
-              disabled={deleting}
-              className="flex-1 sm:flex-none px-6 py-3.5 bg-gradient-to-r from-rose-600 to-rose-700 text-white rounded-xl hover:from-rose-700 hover:to-rose-800 disabled:opacity-70 disabled:cursor-not-allowed transition-all font-medium shadow-lg shadow-rose-500/10 hover:shadow-rose-500/20"
-            >
-              {deleting ? (
-                <span className="flex items-center justify-center">
-                  <svg
-                    className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    ></circle>
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    ></path>
-                  </svg>
-                  Eliminando...
-                </span>
-              ) : (
-                "Eliminar sorteo"
-              )}
-            </button>
-          </div>
-        </form>
-
-        {/* Info adicional */}
-        <div className="mt-8 text-xs text-slate-400 bg-slate-800/40 rounded-xl p-5 border border-slate-700/30 backdrop-blur-sm">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <p className="text-slate-500">Creado</p>
-              <p>
-                {data.createdAt
-                  ? new Date(data.createdAt).toLocaleString()
-                  : "N/A"}
-              </p>
-            </div>
-            <div>
-              <p className="text-slate-500">Última actualización</p>
-              <p>
-                {data.updatedAt
-                  ? new Date(data.updatedAt).toLocaleString()
-                  : "N/A"}
-              </p>
-            </div>
-            {data.publishedAt && (
-              <div className="col-span-2">
-                <p className="text-slate-500">Publicado</p>
-                <p>{new Date(data.publishedAt).toLocaleString()}</p>
+              <div className="ml-3 flex-1 text-sm text-gray-300">
+                <p>Si dejás vacío el objetivo, se aplicará automáticamente el mínimo requerido para cubrir el premio.</p>
+                <p>El mínimo de tickets por participante tiene tope dinámico para asegurar ≥2 participantes (mitad del total estimado).</p>
               </div>
-            )}
+            </div>
           </div>
+          {/* /Footer */}
         </div>
       </div>
     </div>

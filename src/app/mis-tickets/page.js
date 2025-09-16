@@ -133,6 +133,15 @@ function MisTicketsContent() {
   // toast por query (?new=N)
   const newCount = searchParams.get("new");
 
+  /* === (A) lectura de rol y asUser solo si SUPERADMIN === */
+  const role = String(session?.user?.role || "").toLowerCase();
+  const isSuperAdmin = role === "superadmin";
+
+  const asUser = useMemo(() => {
+    if (!isSuperAdmin) return "";
+    return (searchParams.get("asUser") || "").trim();
+  }, [searchParams, isSuperAdmin]);
+
   useEffect(() => {
     if (status === "loading") return;
     if (status === "unauthenticated") {
@@ -143,11 +152,14 @@ function MisTicketsContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
+  /* === (B) al pedir los tickets, pasar asUser si corresponde === */
   async function fetchTickets() {
     try {
       setLoading(true);
       setMsg("");
-      const res = await fetch("/api/tickets/my", { cache: "no-store" });
+      const q = new URLSearchParams();
+      if (isSuperAdmin && asUser) q.set("asUser", asUser);
+      const res = await fetch(`/api/tickets/my?${q.toString()}`, { cache: "no-store" });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json?.error || "No se pudieron cargar tus tickets");
       const list = Array.isArray(json?.tickets) ? json.tickets : Array.isArray(json) ? json : [];
@@ -281,6 +293,14 @@ function MisTicketsContent() {
             </div>
           )}
         </div>
+
+        {/* (C) Banner de impersonación */}
+        {isSuperAdmin && asUser && (
+          <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 px-5 py-3 text-blue-200 mb-6">
+            <strong>Viendo como:</strong>{" "}
+            <code className="px-1.5 py-0.5 bg-white/10 rounded">{asUser}</code>
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="flex flex-wrap gap-3 mb-8">

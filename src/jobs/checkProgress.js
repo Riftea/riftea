@@ -1,167 +1,122 @@
 // src/jobs/checkProgress.job.js
-import prisma from "@/src/lib/prisma";
-import { enqueueJob, JobTypes } from "@/src/lib/queue";
-import { logAuditEvent } from "@/src/services/audit.service";
+import prisma from "@/lib/prisma";
+import { enqueueJob, JobTypes } from "@/lib/queue";
+import { logAuditEvent } from "@/services/audit.service";
+import { maybeTriggerAutoDraw, drawRaffle } from "@/services/raffles.service";
 
 /**
- * 📊 Verifica si un sorteo alcanzó el 100% y lo activa automáticamente
+ * 📊 Verifica si una rifa alcanzó el cupo y programa el sorteo automáticamente.
+ * - Usa maxParticipants vs participations (no "funding").
+ * - Si llega al cupo y no tiene drawAt, cambia a READY_TO_DRAW y setea drawAt (countdown).
  */
 export async function checkRaffleProgressJob(job) {
-  const { raffleId, newFunding } = job.data;
-  
-  try {
-    console.log(`📊 Verificando progreso del sorteo ${raffleId}...`);
+  const { raffleId, deltaParticipants } = job?.data || {};
 
-    // 🎯 Obtener datos actuales de la rifa
+  try {
+    console.log(`📊 Verificando progreso de la rifa ${raffleId}...`);
+
     const raffle = await prisma.raffle.findUnique({
       where: { id: raffleId },
-      include: {
-        _count: {
-          select: { tickets: true }
-        }
-      }
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        maxParticipants: true,
+        drawAt: true,
+        endsAt: true,
+        _count: { select: { participations: true } },
+      },
     });
 
     if (!raffle) {
-      throw new Error(`Sorteo ${raffleId} no encontrado`);
+      throw new Error(`Rifa ${raffleId} no encontrada`);
     }
 
-    // 💰 Calcular progreso actual
-    const progressPercentage = (raffle.currentFunding / raffle.targetFunding) * 100;
-    const wasCompleted = raffle.status === 'COMPLETED';
+    const total = raffle._count.participations ?? 0;
+    const target = raffle.maxParticipants ?? null;
+    const percent = target ? (total / target) * 100 : null;
 
-    console.log(`📈 Sorteo ${raffle.title}: ${progressPercentage.toFixed(2)}% (${raffle.currentFunding}/${raffle.targetFunding})`);
+    console.log(
+      `📈 ${raffle.title} — ${percent != null ? percent.toFixed(2) + "%" : "sin objetivo"} (${total}${target ? "/" + target : ""})`
+    );
 
-    // 🎉 ¿Alcanzamos el 100%?
-    if (progressPercentage >= 100 && !wasCompleted) {
-      
-      // 🔄 Actualizar estado a COMPLETED
-      const updatedRaffle = await prisma.raffle.update({
-        where: { id: raffleId },
-        data: {
-          status: 'COMPLETED',
-          completedAt: new Date(),
-          finalFunding: raffle.currentFunding
-        }
-      });
-
-      // 📝 Registrar en auditoría
+    // Si llenó cupo y aún no está programado, programar autodraw
+    if (
+      target &&
+      total >= target &&
+      ["PUBLISHED", "ACTIVE"].includes(raffle.status) &&
+      !raffle.drawAt
+    ) {
+      await maybeTriggerAutoDraw(raffleId);
       await logAuditEvent({
-        action: 'RAFFLE_FULLY_FUNDED',
-        entityType: 'RAFFLE',
+        action: "RAFFLE_READY_TO_DRAW",
+        entityType: "RAFFLE",
         entityId: raffleId,
-        userId: null, // sistema
         metadata: {
-          finalFunding: raffle.currentFunding,
-          targetFunding: raffle.targetFunding,
-          progressPercentage: progressPercentage.toFixed(2),
-          totalTickets: raffle._count.tickets,
-          triggeredBy: 'automated_check'
-        }
-      });
-
-      // 🚀 Programar ejecución automática del sorteo (ej: en 1 hora)
-      await enqueueJob(JobTypes.EXECUTE_RAFFLE, {
-        raffleId,
-        scheduledBy: 'system',
-        reason: 'fully_funded'
-      }, {
-        delay: 60 * 60 * 1000, // 1 hora de delay
-        priority: 10
-      });
-
-      // 📧 Enviar notificaciones a todos los participantes
-      const participants = await prisma.user.findMany({
-        where: {
-          tickets: {
-            some: {
-              raffleId,
-              status: 'ACTIVE'
-            }
-          }
+          totalParticipants: total,
+          maxParticipants: target,
+          statusFrom: raffle.status,
+          scheduled: true,
         },
-        select: { id: true, email: true, name: true }
       });
-
-      // 🎊 Encolar notificaciones
-      for (const participant of participants) {
-        await enqueueJob('sendRaffleCompleteNotification', {
-          userId: participant.id,
-          raffleId,
-          raffleTitle: raffle.title,
-          executeDate: new Date(Date.now() + 60 * 60 * 1000).toISOString()
-        });
-      }
-
-      console.log(`🎉 ¡Sorteo ${raffle.title} completamente financiado! Ejecutándose en 1 hora.`);
-      console.log(`👥 Notificando a ${participants.length} participantes`);
-
       return {
-        status: 'COMPLETED',
-        progressPercentage,
-        participantsNotified: participants.length,
-        executeScheduled: true
+        status: "READY_TO_DRAW",
+        totalParticipants: total,
+        maxParticipants: target,
+        scheduled: true,
       };
     }
 
-    // 📊 Actualizar métricas si no está completo
-    if (progressPercentage < 100) {
-      
-      // 🔔 Notificar hitos importantes (25%, 50%, 75%, 90%)
+    // Hitos (25/50/75/90) basados en participantes
+    if (target && percent != null && deltaParticipants != null) {
+      const prevPercent = ((total - Number(deltaParticipants || 0)) / target) * 100;
       const milestones = [25, 50, 75, 90];
-      const previousPercentage = ((raffle.currentFunding - newFunding) / raffle.targetFunding) * 100;
-      
-      for (const milestone of milestones) {
-        if (previousPercentage < milestone && progressPercentage >= milestone) {
-          
-          // 📝 Log del hito alcanzado
+      for (const m of milestones) {
+        if (prevPercent < m && percent >= m) {
           await logAuditEvent({
-            action: 'RAFFLE_MILESTONE_REACHED',
-            entityType: 'RAFFLE',
+            action: "RAFFLE_MILESTONE_REACHED",
+            entityType: "RAFFLE",
             entityId: raffleId,
             metadata: {
-              milestone: `${milestone}%`,
-              currentFunding: raffle.currentFunding,
-              progressPercentage: progressPercentage.toFixed(2)
-            }
+              milestone: `${m}%`,
+              totalParticipants: total,
+              maxParticipants: target,
+              percent: percent.toFixed(2),
+            },
           });
 
-          // 🎯 Notificación especial para 90% (urgencia)
-          if (milestone === 90) {
-            await enqueueJob('sendUrgentFundingNotification', {
+          // Notificación especial en 90% (urgencia)
+          if (m === 90) {
+            await enqueueJob("sendRaffleAlmostFullNotification", {
               raffleId,
-              progressPercentage: progressPercentage.toFixed(2),
-              remainingAmount: raffle.targetFunding - raffle.currentFunding
+              percent: Number(percent.toFixed(2)),
+              remaining: Math.max(0, target - total),
             });
           }
-
-          console.log(`🎯 Hito ${milestone}% alcanzado para sorteo ${raffle.title}`);
           break;
         }
       }
     }
 
     return {
-      status: 'IN_PROGRESS',
-      progressPercentage: progressPercentage.toFixed(2),
-      currentFunding: raffle.currentFunding,
-      targetFunding: raffle.targetFunding,
-      remainingAmount: raffle.targetFunding - raffle.currentFunding
+      status: raffle.status,
+      totalParticipants: total,
+      maxParticipants: target,
+      percent: percent != null ? Number(percent.toFixed(2)) : null,
+      scheduled: Boolean(raffle.drawAt),
     };
-
   } catch (error) {
-    console.error(`❌ Error verificando progreso del sorteo ${raffleId}:`, error);
-    
-    // 📝 Log del error
+    console.error(`❌ Error verificando progreso de la rifa ${raffleId}:`, error);
+
     await logAuditEvent({
-      action: 'RAFFLE_PROGRESS_CHECK_FAILED',
-      entityType: 'RAFFLE',
+      action: "RAFFLE_PROGRESS_CHECK_FAILED",
+      entityType: "RAFFLE",
       entityId: raffleId,
       metadata: {
-        error: error.message,
-        newFunding,
-        timestamp: new Date().toISOString()
-      }
+        error: String(error?.message || error),
+        deltaParticipants,
+        ts: new Date().toISOString(),
+      },
     });
 
     throw error;
@@ -169,258 +124,208 @@ export async function checkRaffleProgressJob(job) {
 }
 
 /**
- * 🎲 Ejecutar sorteo automáticamente
+ * 🎲 Ejecutar sorteo automáticamente (cuando drawAt llega o si se fuerza).
+ * - Requiere status READY_TO_DRAW (o ACTIVE con drawAt vencido y condiciones).
+ * - Usa drawRaffle() del service (marca ganador y FINISHED).
  */
 export async function executeRaffleJob(job) {
-  const { raffleId, scheduledBy = 'system', reason = 'scheduled' } = job.data;
-  
+  const { raffleId, force = false, scheduledBy = "system", reason = "scheduled" } = job?.data || {};
+
   try {
     console.log(`🎲 Ejecutando sorteo ${raffleId}...`);
 
-    // 🔍 Verificar que el sorteo esté listo
+    // Cargar rifa + participaciones mínimas
     const raffle = await prisma.raffle.findUnique({
       where: { id: raffleId },
-      include: {
-        tickets: {
-          where: { status: 'ACTIVE' },
-          include: {
-            user: {
-              select: { id: true, name: true, email: true }
-            }
-          }
-        }
-      }
-    });
-
-    if (!raffle || raffle.status !== 'COMPLETED') {
-      throw new Error(`Sorteo ${raffleId} no está listo para ejecutar`);
-    }
-
-    if (raffle.tickets.length === 0) {
-      throw new Error(`No hay tickets activos para el sorteo ${raffleId}`);
-    }
-
-    // 🎲 Selección aleatoria del ganador
-    const crypto = require("crypto");
-    const randomIndex = crypto.randomInt(0, raffle.tickets.length);
-    const winnerTicket = raffle.tickets[randomIndex];
-    const randomSeed = crypto.randomBytes(32).toString('hex');
-
-    console.log(`🏆 Ticket ganador: ${winnerTicket.displayCode} (${winnerTicket.user.name})`);
-
-    // 🔄 Transacción atómica para actualizar todo
-    await prisma.$transaction(async (tx) => {
-      
-      // 🏆 Marcar ticket ganador
-      await tx.ticket.update({
-        where: { uuid: winnerTicket.uuid },
-        data: { 
-          status: 'WINNER',
-          wonAt: new Date()
-        }
-      });
-
-      // 😢 Marcar tickets perdedores
-      await tx.ticket.updateMany({
-        where: {
-          raffleId,
-          uuid: { not: winnerTicket.uuid },
-          status: 'ACTIVE'
-        },
-        data: { status: 'LOST' }
-      });
-
-      // 🎯 Actualizar estado del sorteo
-      await tx.raffle.update({
-        where: { id: raffleId },
-        data: {
-          status: 'EXECUTED',
-          executedAt: new Date(),
-          winnerTicketId: winnerTicket.uuid,
-          winnerId: winnerTicket.userId
-        }
-      });
-
-      // 📝 Auditoría completa del sorteo
-      await logAuditEvent({
-        action: 'RAFFLE_EXECUTED',
-        entityType: 'RAFFLE',
-        entityId: raffleId,
-        userId: winnerTicket.userId,
-        metadata: {
-          winnerTicketId: winnerTicket.uuid,
-          winnerUserId: winnerTicket.userId,
-          totalParticipants: raffle.tickets.length,
-          finalFunding: raffle.finalFunding,
-          randomSeed,
-          scheduledBy,
-          reason,
-          executionTime: new Date().toISOString()
-        },
-        tx
-      });
-    });
-
-    // 🎊 Notificar al ganador
-    await enqueueJob(JobTypes.SEND_WINNER_NOTIFICATION, {
-      winnerId: winnerTicket.userId,
-      raffleId,
-      raffleTitle: raffle.title,
-      ticketCode: winnerTicket.displayCode,
-      prizeAmount: raffle.finalFunding
-    }, {
-      priority: 100 // máxima prioridad
-    });
-
-    // 📧 Notificar a perdedores (consolación)
-    const losers = raffle.tickets.filter(t => t.uuid !== winnerTicket.uuid);
-    for (const loserTicket of losers) {
-      await enqueueJob('sendConsolationNotification', {
-        userId: loserTicket.userId,
-        raffleId,
-        raffleTitle: raffle.title,
-        winnerName: winnerTicket.user.name.split(' ')[0] // solo primer nombre
-      }, {
-        delay: 300000 // 5 minutos después
-      });
-    }
-
-    console.log(`✅ Sorteo ${raffle.title} ejecutado exitosamente`);
-    console.log(`🏆 Ganador: ${winnerTicket.user.name} (${winnerTicket.displayCode})`);
-    console.log(`💰 Premio: ${raffle.finalFunding}`);
-    console.log(`👥 Total participantes: ${raffle.tickets.length}`);
-
-    return {
-      status: 'EXECUTED',
-      winner: {
-        ticketId: winnerTicket.uuid,
-        ticketCode: winnerTicket.displayCode,
-        userId: winnerTicket.userId,
-        userName: winnerTicket.user.name
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        drawAt: true,
+        drawnAt: true,
+        maxParticipants: true,
+        winnerParticipationId: true,
+        _count: { select: { participations: true } },
       },
-      totalParticipants: raffle.tickets.length,
-      prizeAmount: raffle.finalFunding,
-      randomSeed
-    };
+    });
 
-  } catch (error) {
-    console.error(`❌ Error ejecutando sorteo ${raffleId}:`, error);
-    
-    // 📝 Log del error crítico
+    if (!raffle) {
+      throw new Error(`Rifa ${raffleId} no encontrada`);
+    }
+    if (raffle.drawnAt || raffle.winnerParticipationId) {
+      throw new Error(`Rifa ${raffleId} ya fue sorteada`);
+    }
+
+    const now = new Date();
+    const canRunTime = raffle.drawAt && new Date(raffle.drawAt) <= now;
+    const canRunStatus = ["READY_TO_DRAW", "ACTIVE"].includes(raffle.status);
+
+    if (!force) {
+      if (!canRunStatus) {
+        throw new Error(`Estado inválido para ejecutar (${raffle.status})`);
+      }
+      if (!canRunTime) {
+        throw new Error(`Aún no es el horario del sorteo (drawAt: ${raffle.drawAt || "—"})`);
+      }
+    }
+
+    // Validar cupo (si aplica)
+    const total = raffle._count.participations ?? 0;
+    if (raffle.maxParticipants && total < raffle.maxParticipants) {
+      throw new Error(`La rifa no alcanzó el cupo (${total}/${raffle.maxParticipants})`);
+    }
+    if (total < 2) {
+      throw new Error("Se requieren al menos 2 participaciones para sortear");
+    }
+
+    // Ejecutar draw (marca FINISHED, drawnAt y winnerParticipationId)
+    await drawRaffle(raffleId);
+
+    // Cargar datos para notificación
+    const updated = await prisma.raffle.findUnique({
+      where: { id: raffleId },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        drawnAt: true,
+        winnerParticipationId: true,
+        participations: {
+          select: {
+            id: true,
+            isWinner: true,
+            ticket: {
+              select: {
+                id: true,
+                code: true,
+                userId: true,
+                user: { select: { id: true, name: true, email: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const winnerPart = updated?.participations?.find((p) => p.id === updated?.winnerParticipationId);
+    const winnerUser = winnerPart?.ticket?.user || null;
+
+    // Auditoría
     await logAuditEvent({
-      action: 'RAFFLE_EXECUTION_FAILED',
-      entityType: 'RAFFLE',
+      action: "RAFFLE_EXECUTED",
+      entityType: "RAFFLE",
       entityId: raffleId,
+      userId: winnerUser?.id ?? null,
       metadata: {
-        error: error.message,
+        winnerParticipationId: updated?.winnerParticipationId,
+        winnerUserId: winnerUser?.id,
+        status: updated?.status,
+        drawnAt: updated?.drawnAt,
         scheduledBy,
         reason,
-        timestamp: new Date().toISOString()
-      }
+        executionTime: new Date().toISOString(),
+      },
     });
 
-    // 🚨 Notificar administradores
-    await enqueueJob('sendAdminAlert', {
-      type: 'RAFFLE_EXECUTION_FAILED',
+    // Notificar ganador (si existe JobTypes)
+    try {
+      if (winnerUser?.id) {
+        await enqueueJob(JobTypes.SEND_WINNER_NOTIFICATION, {
+          winnerId: winnerUser.id,
+          raffleId,
+          raffleTitle: updated?.title,
+          ticketCode: winnerPart?.ticket?.code,
+        }, { priority: 100 });
+      }
+    } catch (e) {
+      console.warn("Winner notification enqueue failed (non-critical):", e?.message || e);
+    }
+
+    console.log(`✅ Sorteo ${updated?.title} ejecutado. Ganador: ${winnerUser?.name || "—"}`);
+
+    return {
+      status: updated?.status,
       raffleId,
-      error: error.message
+      winnerUserId: winnerUser?.id ?? null,
+      winnerTicketCode: winnerPart?.ticket?.code ?? null,
+      drawnAt: updated?.drawnAt ?? null,
+    };
+  } catch (error) {
+    console.error(`❌ Error ejecutando sorteo ${raffleId}:`, error);
+
+    await logAuditEvent({
+      action: "RAFFLE_EXECUTION_FAILED",
+      entityType: "RAFFLE",
+      entityId: raffleId,
+      metadata: {
+        error: String(error?.message || error),
+        scheduledBy,
+        reason,
+        ts: new Date().toISOString(),
+      },
     });
+
+    // Notificar admins (best-effort)
+    try {
+      await enqueueJob("sendAdminAlert", {
+        type: "RAFFLE_EXECUTION_FAILED",
+        raffleId,
+        error: String(error?.message || error),
+      });
+    } catch (e) {
+      console.warn("Admin alert enqueue failed (non-critical):", e?.message || e);
+    }
 
     throw error;
   }
 }
 
 /**
- * 🧹 Job de limpieza: cancelar sorteos vencidos sin financiamiento completo
+ * 🧹 Limpieza: cancelar rifas vencidas sin ganador.
+ * - Cancela rifas con endsAt pasado y sin winner, en estados activos.
+ * - No toca tickets (no hay estado CANCELLED en TicketStatus).
  */
-export async function cleanupExpiredRafflesJob(job) {
+export async function cleanupExpiredRafflesJob(_job) {
   try {
-    console.log('🧹 Limpiando sorteos vencidos...');
+    console.log("🧹 Limpiando rifas vencidas...");
 
-    const expiredDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 días atrás
+    const now = new Date();
 
-    const expiredRaffles = await prisma.raffle.findMany({
+    const expired = await prisma.raffle.findMany({
       where: {
-        status: 'ACTIVE',
-        createdAt: { lt: expiredDate },
-        currentFunding: { lt: prisma.raffle.fields.targetFunding }
+        endsAt: { lt: now },
+        winnerParticipationId: null,
+        status: { in: ["PUBLISHED", "ACTIVE", "READY_TO_DRAW"] },
       },
-      include: {
-        tickets: {
-          include: {
-            user: { select: { id: true, email: true, name: true } },
-            purchase: { select: { id: true, ticketFund: true } }
-          }
-        }
-      }
+      select: { id: true, title: true, endsAt: true },
     });
 
     const results = [];
 
-    for (const raffle of expiredRaffles) {
-      
-      // 🔄 Cancelar sorteo
+    for (const r of expired) {
       await prisma.raffle.update({
-        where: { id: raffle.id },
-        data: {
-          status: 'CANCELLED',
-          cancelledAt: new Date(),
-          cancellationReason: 'EXPIRED_INSUFFICIENT_FUNDING'
-        }
+        where: { id: r.id },
+        data: { status: "CANCELLED" },
       });
 
-      // 🎫 Marcar tickets como cancelados
-      await prisma.ticket.updateMany({
-        where: { raffleId: raffle.id },
-        data: { status: 'CANCELLED' }
-      });
-
-      // 💰 Procesar reembolsos proporcionales
-      const uniquePurchases = [...new Map(
-        raffle.tickets.map(t => [t.purchase.id, t.purchase])
-      ).values()];
-
-      for (const purchase of uniquePurchases) {
-        await enqueueJob(JobTypes.PROCESS_REFUND, {
-          purchaseId: purchase.id,
-          reason: 'RAFFLE_CANCELLED_EXPIRED',
-          refundAmount: purchase.ticketFund
-        });
-      }
-
-      // 📝 Auditoría
       await logAuditEvent({
-        action: 'RAFFLE_CANCELLED_EXPIRED',
-        entityType: 'RAFFLE',
-        entityId: raffle.id,
+        action: "RAFFLE_CANCELLED_EXPIRED",
+        entityType: "RAFFLE",
+        entityId: r.id,
         metadata: {
-          reason: 'EXPIRED_INSUFFICIENT_FUNDING',
-          currentFunding: raffle.currentFunding,
-          targetFunding: raffle.targetFunding,
-          totalTickets: raffle.tickets.length,
-          refundsScheduled: uniquePurchases.length
-        }
+          reason: "EXPIRED_WITHOUT_WINNER",
+          endedAt: r.endsAt,
+        },
       });
 
-      results.push({
-        raffleId: raffle.id,
-        title: raffle.title,
-        ticketsAffected: raffle.tickets.length,
-        refundsScheduled: uniquePurchases.length
-      });
-
-      console.log(`❌ Sorteo cancelado: ${raffle.title} (${raffle.tickets.length} tickets)`);
+      results.push({ raffleId: r.id, title: r.title });
+      console.log(`❌ Rifa cancelada por vencimiento: ${r.title}`);
     }
 
-    console.log(`🧹 Limpieza completada: ${expiredRaffles.length} sorteos cancelados`);
-
-    return {
-      cleanedRaffles: expiredRaffles.length,
-      details: results
-    };
-
+    console.log(`🧹 Limpieza completada: ${results.length} rifas canceladas`);
+    return { cleanedRaffles: results.length, details: results };
   } catch (error) {
-    console.error('❌ Error en limpieza de sorteos:', error);
+    console.error("❌ Error en limpieza de rifas:", error);
     throw error;
   }
 }

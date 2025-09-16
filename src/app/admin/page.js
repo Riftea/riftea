@@ -71,9 +71,7 @@ export default function AdminPage() {
         return;
       }
 
-      // data.tickets es un array [{ id, uuid, code, generatedAt, userId }]
       const t = Array.isArray(data?.tickets) ? data.tickets[0] : null;
-
       const uuid = t?.uuid ?? "—";
       const code = t?.code ?? t?.displayCode ?? "—";
 
@@ -168,6 +166,7 @@ export default function AdminPage() {
 
           <div className="p-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+              {/* Crear sorteo */}
               <button
                 onClick={() => router.push("/admin/crear-sorteo")}
                 className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-orange-500/10 to-orange-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(249,115,22,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500/50 focus:ring-offset-gray-900"
@@ -185,6 +184,7 @@ export default function AdminPage() {
                 </div>
               </button>
 
+              {/* Mis sorteos */}
               <button
                 onClick={() => router.push("/mis-sorteos")}
                 className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-indigo-500/10 to-indigo-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(79,70,229,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500/50 focus:ring-offset-gray-900"
@@ -202,6 +202,7 @@ export default function AdminPage() {
                 </div>
               </button>
 
+              {/* Mis tickets */}
               <button
                 onClick={() => router.push("/mis-tickets")}
                 className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-emerald-500/10 to-emerald-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(16,185,129,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500/50 focus:ring-offset-gray-900"
@@ -219,6 +220,25 @@ export default function AdminPage() {
                 </div>
               </button>
 
+              {/* Mis Favoritos (nuevo) */}
+              <button
+                onClick={() => router.push("/mis-favoritos")}
+                className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-pink-500/10 to-pink-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(236,72,153,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-pink-500/50 focus:ring-offset-gray-900"
+              >
+                <div className="flex items-center justify-center gap-3 bg-gray-800/70 border border-gray-700/50 rounded-xl p-5 text-left transition-all duration-300 group-hover:bg-gray-700/70 group-hover:border-gray-600/50">
+                  <div className="bg-pink-500/10 p-3 rounded-lg border border-pink-500/20">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-pink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 016.364 0L12 7.636l1.318-1.318a4.5 4.5 0 116.364 6.364L12 21l-7.682-7.682a4.5 4.5 0 010-6.364z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-lg font-semibold text-white">Mis Favoritos</p>
+                    <p className="text-sm text-gray-400">Accede a tus rifas marcadas</p>
+                  </div>
+                </div>
+              </button>
+
+              {/* SuperAdmin: generar 1 ticket */}
               {isSuperAdmin && (
                 <button
                   onClick={generateDirectTicket}
@@ -256,6 +276,7 @@ export default function AdminPage() {
                 </button>
               )}
 
+              {/* SuperAdmin: generar múltiples */}
               {isSuperAdmin && (
                 <button
                   onClick={() => router.push("/admin/generar-tickets")}
@@ -275,6 +296,7 @@ export default function AdminPage() {
                 </button>
               )}
 
+              {/* SuperAdmin: Usuarios (perfiles / verificación) */}
               {isSuperAdmin && (
                 <button
                   onClick={() => router.push("/admin/usuarios")}
@@ -287,8 +309,8 @@ export default function AdminPage() {
                       </svg>
                     </div>
                     <div>
-                      <p className="text-lg font-semibold text-white">Usuarios</p>
-                      <p className="text-sm text-gray-400">Ver y cambiar roles</p>
+                      <p className="text-lg font-semibold text-white">Usuarios (perfiles / verificación)</p>
+                      <p className="text-sm text-gray-400">Ver perfiles, roles y verificar cuentas</p>
                     </div>
                   </div>
                 </button>
@@ -353,8 +375,7 @@ export default function AdminPage() {
                           />
                         </svg>
                         <span>
-                          <strong className="text-white">Mis Tickets:</strong> Ver todos tus tickets (incluidos los de
-                          prueba)
+                          <strong className="text-white">Usuarios:</strong> Ver perfiles, roles y <em>verificar</em> cuentas.
                         </span>
                       </li>
                       <li className="flex items-start">
@@ -365,7 +386,7 @@ export default function AdminPage() {
                             clipRule="evenodd"
                           />
                         </svg>
-                        <span>Los tickets generados aparecen en «Mis Tickets» inmediatamente</span>
+                        <span>Los tickets generados aparecen en «Mis Tickets» inmediatamente.</span>
                       </li>
                     </ul>
                   </div>

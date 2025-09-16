@@ -12,7 +12,8 @@ const intOr = (v, fallback) => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
-const parseSortBy = (v) => (["name", "email", "role", "isActive", "createdAt"].includes(v) ? v : "name");
+const parseSortBy = (v) =>
+  (["name", "email", "role", "isActive", "createdAt"].includes(v) ? v : "name");
 const parseSortDir = (v) => (v === "desc" ? "desc" : "asc");
 
 /**
@@ -126,18 +127,21 @@ export async function GET(req) {
     return NextResponse.json({ success: true, users, total, page, pageSize });
   } catch (error) {
     console.error("[ADMIN/USUARIOS] GET error:", error);
-    return NextResponse.json({ success: false, error: "Error interno del servidor" }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: "Error interno del servidor" },
+      { status: 500 }
+    );
   }
 }
 
 /**
  * PATCH /api/admin/usuarios
- * Body: { userId: string, role: "USER" | "ADMIN" }
+ * Body: { userId: string, role?: "USER" | "ADMIN", isActive?: boolean, isVerified?: boolean }
  * Reglas:
  *  - Solo SUPERADMIN
- *  - No puede cambiarse a sí mismo (salvo a SUPERADMIN -> SUPERADMIN, que no cambia)
- *  - No tocar a otro SUPERADMIN (si no es el mismo)
+ *  - No tocar a otro SUPERADMIN (si no es uno mismo)
  *  - No degradar al último SUPERADMIN
+ *  - No puedes suspender tu propia cuenta (isActive=false)
  */
 export async function PATCH(req) {
   try {
@@ -150,7 +154,7 @@ export async function PATCH(req) {
           success: false,
           error: !session?.user
             ? "No has iniciado sesión"
-            : "Solo el SUPERADMIN puede cambiar roles de usuario",
+            : "Solo el SUPERADMIN puede modificar usuarios",
         },
         { status }
       );
@@ -158,70 +162,139 @@ export async function PATCH(req) {
 
     const body = await req.json();
     const { userId } = body || {};
-    const role = normalizeRole(body?.role);
-
     if (!userId || typeof userId !== "string") {
-      return NextResponse.json({ success: false, error: "ID de usuario inválido" }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "ID de usuario inválido" },
+        { status: 400 }
+      );
     }
 
-    if (![ROLES.USER, ROLES.ADMIN].includes(role)) {
+    const role = body?.role ? normalizeRole(body.role) : undefined;
+    const wantsRoleChange = typeof role === "string";
+    const wantsActiveChange = typeof body?.isActive === "boolean";
+    const wantsVerifiedChange = typeof body?.isVerified === "boolean";
+
+    if (!wantsRoleChange && !wantsActiveChange && !wantsVerifiedChange) {
       return NextResponse.json(
-        { success: false, error: `Rol inválido. Solo se permite: ${ROLES.USER}, ${ROLES.ADMIN}` },
+        { success: false, error: "Nada para actualizar" },
         { status: 400 }
       );
     }
 
     const targetUser = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, name: true, email: true, role: true },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        isActive: true,
+        isVerified: true,
+      },
     });
 
     if (!targetUser) {
-      return NextResponse.json({ success: false, error: "Usuario no encontrado" }, { status: 404 });
-    }
-
-    // Evitar auto-degradación de SUPERADMIN
-    if (targetUser.id === session.user.id && role !== ROLES.SUPERADMIN) {
       return NextResponse.json(
-        { success: false, error: "No puedes cambiar tu propio rol de SUPERADMIN" },
-        { status: 400 }
+        { success: false, error: "Usuario no encontrado" },
+        { status: 404 }
       );
     }
 
-    // No modificar a otro SUPERADMIN (si no es uno mismo)
-    if (normalizeRole(targetUser.role) === ROLES.SUPERADMIN && targetUser.id !== session.user.id) {
-      return NextResponse.json(
-        { success: false, error: "No puedes cambiar el rol de otro SUPERADMIN" },
-        { status: 403 }
-      );
-    }
+    const updates = {};
 
-    // No dejar al sistema sin SUPERADMIN
-    if (normalizeRole(targetUser.role) === ROLES.SUPERADMIN && role !== ROLES.SUPERADMIN) {
-      const superadmins = await prisma.user.count({ where: { role: ROLES.SUPERADMIN } });
-      if (superadmins <= 1) {
+    // ===== Manejo de ROLE (opcional)
+    if (wantsRoleChange) {
+      // Solo permitir USER o ADMIN (no se asigna SUPERADMIN desde este endpoint)
+      if (![ROLES.USER, ROLES.ADMIN].includes(role)) {
         return NextResponse.json(
           {
             success: false,
-            error:
-              "No puedes degradar al último SUPERADMIN. Crea otro SUPERADMIN y luego intenta de nuevo.",
+            error: `Rol inválido. Solo se permite: ${ROLES.USER}, ${ROLES.ADMIN}`,
           },
           { status: 400 }
         );
       }
+
+      // Evitar auto-degradación de SUPERADMIN
+      if (targetUser.id === session.user.id && role !== ROLES.SUPERADMIN) {
+        return NextResponse.json(
+          { success: false, error: "No puedes cambiar tu propio rol de SUPERADMIN" },
+          { status: 400 }
+        );
+      }
+
+      // No tocar a otro SUPERADMIN (si no es uno mismo)
+      if (
+        normalizeRole(targetUser.role) === ROLES.SUPERADMIN &&
+        targetUser.id !== session.user.id
+      ) {
+        return NextResponse.json(
+          { success: false, error: "No puedes cambiar el rol de otro SUPERADMIN" },
+          { status: 403 }
+        );
+      }
+
+      // No dejar al sistema sin SUPERADMIN
+      if (
+        normalizeRole(targetUser.role) === ROLES.SUPERADMIN &&
+        role !== ROLES.SUPERADMIN
+      ) {
+        const superadmins = await prisma.user.count({
+          where: { role: ROLES.SUPERADMIN },
+        });
+        if (superadmins <= 1) {
+          return NextResponse.json(
+            {
+              success: false,
+              error:
+                "No puedes degradar al último SUPERADMIN. Crea otro SUPERADMIN y luego intenta de nuevo.",
+            },
+            { status: 400 }
+          );
+        }
+      }
+
+      updates.role = role;
+    }
+
+    // ===== Manejo de isActive (opcional)
+    if (wantsActiveChange) {
+      // Evitar suspender tu propia cuenta
+      if (targetUser.id === session.user.id && body.isActive === false) {
+        return NextResponse.json(
+          { success: false, error: "No puedes suspender tu propia cuenta" },
+          { status: 400 }
+        );
+      }
+      updates.isActive = body.isActive;
+    }
+
+    // ===== Manejo de isVerified (opcional)
+    if (wantsVerifiedChange) {
+      updates.isVerified = body.isVerified;
     }
 
     await prisma.user.update({
       where: { id: userId },
-      data: { role },
+      data: updates,
     });
 
-    return NextResponse.json({ success: true, message: `Rol de usuario actualizado a ${role}` });
+    return NextResponse.json({
+      success: true,
+      message: "Usuario actualizado",
+      updated: updates,
+    });
   } catch (error) {
     console.error("[ADMIN/USUARIOS] PATCH error:", error);
     if (error?.code === "P2025") {
-      return NextResponse.json({ success: false, error: "Usuario no encontrado" }, { status: 404 });
+      return NextResponse.json(
+        { success: false, error: "Usuario no encontrado" },
+        { status: 404 }
+      );
     }
-    return NextResponse.json({ success: false, error: "Error interno del servidor" }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: "Error interno del servidor" },
+      { status: 500 }
+    );
   }
 }

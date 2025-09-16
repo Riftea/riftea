@@ -1,11 +1,12 @@
 // src/app/sorteo/[id]/en-vivo/page.js
 "use client";
 
-import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import CountdownTimer from "@/components/ui/CountdownTimer";
 
 export default function LiveDrawPage({ params }) {
-  const { id } = use(params);
+  const { id } = params || {};
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
@@ -28,6 +29,7 @@ export default function LiveDrawPage({ params }) {
   // refs para limpiar timers
   const intervalRef = useRef(null);
   const timeoutRef  = useRef(null);
+  const pollRef     = useRef(null);
 
   // util: mapa id → participant
   const byId = useMemo(() => {
@@ -37,6 +39,7 @@ export default function LiveDrawPage({ params }) {
   }, [participants]);
 
   const load = useCallback(async () => {
+    if (!id) return;
     try {
       setLoading(true);
       setError(null);
@@ -70,19 +73,33 @@ export default function LiveDrawPage({ params }) {
     }
   }, [id]);
 
+  // carga inicial + cleanup timers
   useEffect(() => {
     void load();
     return () => {
       clearInterval(intervalRef.current);
       clearTimeout(timeoutRef.current);
+      clearInterval(pollRef.current);
     };
   }, [load]);
+
+  // polling suave mientras no esté finalizado ni corriendo
+  useEffect(() => {
+    clearInterval(pollRef.current);
+    if (!finished && !running) {
+      pollRef.current = setInterval(() => {
+        void load();
+      }, 10000); // 10s
+    }
+    return () => clearInterval(pollRef.current);
+  }, [finished, running, load]);
 
   const canRun = useMemo(() => {
     if (!raffle) return false;
     const now = Date.now();
     const drawAt = raffle.drawAt ? new Date(raffle.drawAt).getTime() : 0;
-    return raffle.status === "READY_TO_DRAW" && now >= drawAt && !finished;
+    const statusOK = ["READY_TO_DRAW"].includes(raffle.status) || (raffle.status === "ACTIVE" && drawAt && now >= drawAt);
+    return statusOK && now >= drawAt && !finished;
   }, [raffle, finished]);
 
   async function startDraw() {
@@ -199,6 +216,19 @@ export default function LiveDrawPage({ params }) {
             <div className="flex flex-wrap items-center gap-3">
               <div>Status: <b>{raffle.status}</b></div>
               <div>Programado: <b>{drawAtLocal}</b></div>
+              {raffle.drawAt && !finished && (
+                <CountdownTimer
+                  className="ml-auto"
+                  mode="draw"
+                  endsAt={raffle.drawAt}
+                  startAt={raffle.publishedAt || raffle.startsAt || undefined}
+                  onExpire={() => {
+                    // al expirar habilitá el botón automáticamente
+                    void load();
+                  }}
+                  compact
+                />
+              )}
             </div>
             {(commitment || reveal) && (
               <div className="mt-3 text-sm text-white/80 space-y-1">
@@ -232,6 +262,12 @@ export default function LiveDrawPage({ params }) {
           >
             ▶ Ir al sorteo
           </button>
+        )}
+
+        {!canRun && raffle?.drawAt && !finished && (
+          <div className="mt-2 text-white/70 text-sm">
+            Esperando el horario del sorteo…
+          </div>
         )}
 
         {running && (

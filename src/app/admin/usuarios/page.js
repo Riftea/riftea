@@ -194,8 +194,6 @@ export default function UsuariosAdminPage() {
           <div className="relative mb-6">
             <div className="w-16 h-16 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
           </div>
-          <h2 className="text-xl font-semibold text-white mb-2">Cargando usuarios…</h2>
-          <p className="text-gray-400">Obteniendo datos</p>
         </div>
       </div>
     );
@@ -414,15 +412,68 @@ export default function UsuariosAdminPage() {
                             {u.isActive ? "Activo" : "Inactivo"}
                           </span>
                         </td>
+
+                        {/* ───────────────────────── Acciones ───────────────────────── */}
                         <td className="px-4 py-3 text-right">
-                          <button
-                            disabled
-                            className="px-3 py-1.5 text-xs bg-white/5 border border-gray-700 rounded-md text-gray-400 cursor-not-allowed"
-                            title="Acciones futuras"
-                          >
-                            Próximamente
-                          </button>
+                          <div className="flex items-center justify-end gap-2">
+                            {/* Ver como… */}
+                            <div className="relative">
+                              <div className="inline-flex rounded-md shadow-sm" role="group">
+                                <button
+                                  onClick={() => router.push(`/mis-sorteos?asUser=${encodeURIComponent(u.id)}&includePrivate=1`)}
+                                  className="px-2 py-1.5 text-xs bg-white/5 border border-gray-700 rounded-l-md text-gray-200 hover:bg-white/10"
+                                  title="Ver sorteos como este usuario"
+                                >
+                                  Sorteos
+                                </button>
+                                <button
+                                  onClick={() => router.push(`/mis-tickets?asUser=${encodeURIComponent(u.id)}`)}
+                                  className="px-2 py-1.5 text-xs bg-white/5 border-t border-b border-gray-700 text-gray-200 hover:bg-white/10"
+                                  title="Ver tickets como este usuario"
+                                >
+                                  Tickets
+                                </button>
+                                <button
+                                  onClick={() => router.push(`/mis-favoritos?asUser=${encodeURIComponent(u.id)}`)}
+                                  className="px-2 py-1.5 text-xs bg-white/5 border border-gray-700 rounded-r-md text-gray-200 hover:bg-white/10"
+                                  title="Ver favoritos como este usuario"
+                                >
+                                  Favoritos
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Suspender / Activar */}
+                            {u.id !== session?.user?.id && (
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    const res = await fetch('/api/admin/usuarios', {
+                                      method: 'PATCH',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ userId: u.id, isActive: !u.isActive }),
+                                    });
+                                    const data = await res.json();
+                                    if (!res.ok || !data?.success) throw new Error(data?.error || 'No se pudo actualizar');
+                                    await reload();
+                                    setAutoClearMessage(`✅ Cuenta ${!u.isActive ? 'activada' : 'suspendida'} para ${u.email}`);
+                                  } catch (e) {
+                                    setAutoClearMessage(`❌ ${e.message}`);
+                                  }
+                                }}
+                                className={`px-3 py-1.5 text-xs rounded-md border ${
+                                  u.isActive
+                                    ? 'bg-rose-500/10 border-rose-500/30 text-rose-300 hover:bg-rose-500/20'
+                                    : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20'
+                                }`}
+                                title={u.isActive ? 'Suspender cuenta' : 'Activar cuenta'}
+                              >
+                                {u.isActive ? 'Suspender' : 'Activar'}
+                              </button>
+                            )}
+                          </div>
                         </td>
+                        {/* ─────────────────────── fin Acciones ─────────────────────── */}
                       </tr>
                     );
                   })}

@@ -175,7 +175,7 @@ export async function POST(req, { params }) {
     const [items, target] = await Promise.all([
       prisma.participation.findMany({
         where: { raffleId },
-      select: {
+        select: {
           id: true,
           ticketId: true,
           createdAt: true,
@@ -192,6 +192,15 @@ export async function POST(req, { params }) {
       raffle.maxParticipants ?? null,
     ]);
     const total = items.length;
+
+    // Estados no válidos para operar
+    const forbidden = ['CANCELLED', 'FINISHED', 'COMPLETED'];
+    if (forbidden.includes(raffle.status)) {
+      return NextResponse.json(
+        { ok: false, error: `Estado actual no permite operar (${raffle.status})` },
+        { status: 400 }
+      );
+    }
 
     /* ====== 1) Programar ====== */
     if (action === 'schedule') {
@@ -218,7 +227,7 @@ export async function POST(req, { params }) {
       const updated = await prisma.raffle.update({
         where: { id: raffleId },
         data: {
-          // NOTA: no cambiamos status para no romper el enum
+          status: 'READY_TO_DRAW',  // ← pasamos a listo para sortear
           drawAt,
           drawSeedReveal,
           drawSeedHash,
@@ -242,6 +251,7 @@ export async function POST(req, { params }) {
           ok: true,
           message: `Sorteo programado en ${minutes} minutos`,
           drawAt: updated.drawAt,
+          status: updated.status,
           commitment: `sha256:${updated.drawSeedHash}`,
         },
         { status: 200 }
@@ -256,6 +266,15 @@ export async function POST(req, { params }) {
       if (!raffle.drawAt || new Date(raffle.drawAt) > new Date()) {
         return NextResponse.json({ ok: false, error: 'Aún no es el horario del sorteo' }, { status: 400 });
       }
+
+      // Estado permitido: READY_TO_DRAW o ACTIVE (si cumplió condiciones)
+      if (!['READY_TO_DRAW', 'ACTIVE'].includes(raffle.status)) {
+        return NextResponse.json(
+          { ok: false, error: `Estado inválido para ejecutar sorteo (${raffle.status})` },
+          { status: 400 }
+        );
+      }
+
       if (!raffle.drawSeedReveal || !raffle.drawSeedHash) {
         return NextResponse.json({ ok: false, error: 'Compromiso ausente' }, { status: 400 });
       }

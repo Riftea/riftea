@@ -9,7 +9,7 @@ import { TicketsService } from "@/services/tickets.service";
 /**
  * POST /api/tickets/use
  * Body: { ticketId: string, raffleId: string }
- * - Aplica un ticket GENÉRICO (status: AVAILABLE) a una rifa.
+ * - Aplica un ticket GENÉRICO (AVAILABLE/PENDING/ACTIVE y sin uso previo ni rifa) a una rifa.
  * - Cambia el ticket a IN_RAFFLE, setea raffleId y crea Participation.
  * - Valida HMAC internamente vía TicketsService.
  */
@@ -20,7 +20,17 @@ export async function POST(request) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
 
-    const { ticketId, raffleId } = await request.json();
+    let body = {};
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Body inválido: se esperaba JSON" },
+        { status: 400 }
+      );
+    }
+
+    const { ticketId, raffleId } = body || {};
     if (!ticketId || !raffleId) {
       return NextResponse.json(
         { error: "ticketId y raffleId son requeridos" },
@@ -39,7 +49,10 @@ export async function POST(request) {
       return NextResponse.json(
         {
           error: compatibility.reason,
-          canRetry: /no disponible|límite máximo|finalizado/i.test(compatibility.reason) ? false : true,
+          // Reintentar solo si no es final/definitivo
+          canRetry: !/no disponible|límite máximo|finalizad|asociado|usado/i.test(
+            compatibility.reason || ""
+          ),
         },
         { status: 400 }
       );
@@ -52,21 +65,24 @@ export async function POST(request) {
       session.user.id
     );
 
-    return NextResponse.json({
-      success: true,
-      message: "Ticket usado exitosamente en el sorteo",
-      participation,
-      ticketInfo: {
-        id: participation.ticket.id,
-        code: participation.ticket.code,
-        wasGeneric: participation.ticket.raffleId === raffleId, // debe ser true tras aplicar
+    return NextResponse.json(
+      {
+        success: true,
+        message: "Ticket usado exitosamente en el sorteo",
+        participation,
+        ticketInfo: {
+          id: participation.ticket.id,
+          code: participation.ticket.code,
+          wasGeneric: participation.ticket.raffleId === raffleId, // debe ser true tras aplicar
+        },
+        raffleInfo: {
+          id: participation.raffle.id,
+          title: participation.raffle.title,
+          endsAt: participation.raffle.endsAt,
+        },
       },
-      raffleInfo: {
-        id: participation.raffle.id,
-        title: participation.raffle.title,
-        endsAt: participation.raffle.endsAt,
-      },
-    });
+      { status: 201 }
+    );
   } catch (error) {
     console.error("[tickets/use] error:", error);
 
@@ -82,6 +98,7 @@ export async function POST(request) {
       "El ticket no está disponible para usar": 409,
       "El ticket ya está asociado a una rifa": 409,
       "Este ticket ya está participando en esta rifa": 409,
+      "El ticket ya fue usado": 409,
     };
 
     const statusCode = map[error?.message] || 400;
