@@ -251,8 +251,29 @@ export default function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [dropdownTop, setDropdownTop] = useState(0);
   const notifRef = useRef(null);
   const menuRef = useRef(null);
+  const headerRef = useRef(null);
+
+  // Calcular posición del dropdown
+  useEffect(() => {
+    const calculateDropdownPosition = () => {
+      if (headerRef.current) {
+        const headerRect = headerRef.current.getBoundingClientRect();
+        setDropdownTop(headerRect.bottom + 8); // 8px de margen
+      }
+    };
+
+    calculateDropdownPosition();
+    window.addEventListener('resize', calculateDropdownPosition);
+    window.addEventListener('orientationchange', calculateDropdownPosition);
+
+    return () => {
+      window.removeEventListener('resize', calculateDropdownPosition);
+      window.removeEventListener('orientationchange', calculateDropdownPosition);
+    };
+  }, [notifOpen, menuOpen]);
 
   // Cerrar dropdowns al hacer click fuera
   useEffect(() => {
@@ -398,7 +419,7 @@ export default function Header() {
   };
 
   return (
-    <header className="fixed top-0 left-0 w-full bg-orange-500 text-white shadow-md z-50">
+    <header ref={headerRef} className="fixed top-0 left-0 w-full bg-orange-500 text-white shadow-md z-50">
       <div className="max-w-6xl mx-auto flex justify-between items-center px-4 py-3">
         {/* Logo */}
         <Link href="/" className="flex items-center gap-3">
@@ -441,13 +462,19 @@ export default function Header() {
                 )}
               </button>
 
-              {/* Dropdown de notificaciones - Responsive */}
+              {/* Dropdown de notificaciones - CORREGIDO */}
               {notifOpen && (
-                <div className="absolute right-0 mt-2 w-[calc(100vw-1rem)] max-w-sm bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5 sm:w-80 md:w-96 sm:max-w-none z-50">
+                <div 
+                  className="fixed inset-x-4 bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5 z-[9999] sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80 md:w-96" 
+                  style={{ 
+                    top: window.innerWidth < 640 ? `${dropdownTop}px` : 'calc(100% + 8px)',
+                    maxHeight: window.innerWidth < 640 ? `calc(100vh - ${dropdownTop + 20}px)` : '20rem'
+                  }}
+                >
                   <div className="p-3 border-b text-sm font-medium bg-gray-50">
                     <span>Notificaciones</span>
                   </div>
-                  <div className="max-h-64 overflow-auto sm:max-h-56">
+                  <div className="max-h-64 overflow-auto sm:max-h-80">
                     {loading ? (
                       <div className="p-3 text-sm text-gray-500 text-center">
                         Cargando...
@@ -520,9 +547,15 @@ export default function Header() {
                 </svg>
               </button>
 
-              {/* Dropdown del menú de usuario - Responsive */}
+              {/* Dropdown del menú de usuario */}
               {menuOpen && (
-                <div className="absolute right-0 mt-2 w-56 max-w-[calc(100vw-1rem)] bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5 z-50">
+                <div 
+                  className="fixed inset-x-4 bg-white text-gray-800 rounded-lg shadow-lg overflow-hidden ring-1 ring-black ring-opacity-5 z-[9999] sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-56"
+                  style={{ 
+                    top: window.innerWidth < 640 ? `${dropdownTop}px` : 'calc(100% + 8px)',
+                    maxHeight: window.innerWidth < 640 ? `calc(100vh - ${dropdownTop + 20}px)` : 'auto'
+                  }}
+                >
                   <div className="p-2">
                     <Link 
                       href="/perfil" 
