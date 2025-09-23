@@ -11,7 +11,7 @@ export default function PerfilPage() {
   const [userStats, setUserStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  
+
   // Estados para edición
   const [isEditingName, setIsEditingName] = useState(false);
   const [isEditingPhoto, setIsEditingPhoto] = useState(false);
@@ -28,27 +28,26 @@ export default function PerfilPage() {
       router.push("/auth/signin");
       return;
     }
-
     fetchUserStats();
   }, [status, router]);
 
   useEffect(() => {
     if (session?.user) {
-      setNewDisplayName(session.user.displayName || session.user.name || "");
+      // Usamos "name" (sin tocar DB)
+      setNewDisplayName(session.user.name || "");
       setNewWhatsApp(session.user.whatsapp || "");
     }
   }, [session]);
 
   const fetchUserStats = async () => {
     try {
-      const res = await fetch("/api/users/me");
+      const res = await fetch("/api/users/me", { cache: "no-store" });
       if (!res.ok) throw new Error("Error al cargar datos");
-      
       const data = await res.json();
       setUserStats(data);
       setLoading(false);
     } catch (err) {
-      setError(err.message);
+      setError(err.message || "Error al cargar datos");
       setLoading(false);
     }
   };
@@ -56,41 +55,62 @@ export default function PerfilPage() {
   const handlePhotoChange = (e) => {
     const file = e.target.files[0];
     if (file) {
-      if (file.size > 5 * 1024 * 1024) { // 5MB máximo
+      if (file.size > 5 * 1024 * 1024) {
         alert("La imagen debe ser menor a 5MB");
         return;
       }
-      if (!file.type.startsWith('image/')) {
+      if (!file.type.startsWith("image/")) {
         alert("Solo se permiten archivos de imagen");
         return;
       }
       setPhotoFile(file);
       const reader = new FileReader();
-      reader.onload = (e) => setPhotoPreview(e.target.result);
+      reader.onload = (ev) => setPhotoPreview(ev.target.result);
       reader.readAsDataURL(file);
     }
   };
 
+  // Preferimos el valor fresco del endpoint si existe
+  const getLastNameChange = () =>
+    userStats?.lastNameChange || session?.user?.lastNameChange || null;
+
   const canChangeName = () => {
-    if (!session?.user?.lastNameChange) return true;
-    const lastChange = new Date(session.user.lastNameChange);
+    const last = getLastNameChange();
+    if (!last) return true;
+    const lastChange = new Date(last);
     const monthAgo = new Date();
     monthAgo.setMonth(monthAgo.getMonth() - 1);
     return lastChange < monthAgo;
   };
 
   const getNextNameChangeDate = () => {
-    if (!session?.user?.lastNameChange) return null;
-    const lastChange = new Date(session.user.lastNameChange);
-    lastChange.setMonth(lastChange.getMonth() + 1);
-    return lastChange.toLocaleDateString();
+    const last = getLastNameChange();
+    if (!last) return null;
+    const next = new Date(last);
+    next.setMonth(next.getMonth() + 1);
+    return next.toLocaleDateString();
   };
 
   const validateWhatsApp = (phone) => {
-    // Remover espacios y caracteres especiales
-    const cleanPhone = phone.replace(/\D/g, '');
-    // Validar que tenga entre 10 y 15 dígitos
+    const cleanPhone = String(phone || "").replace(/\D/g, "");
     return cleanPhone.length >= 10 && cleanPhone.length <= 15;
+  };
+
+  // Refresco de sesión + datos para propagar el nombre actualizado a TODA la app
+  const refreshEverywhere = async (patch = {}) => {
+    try {
+      await update(patch); // optimista
+    } catch {}
+    try {
+      await fetch("/api/auth/session?update", { cache: "no-store" });
+    } catch {}
+    await fetchUserStats().catch(() => {});
+    try {
+      router.refresh();
+    } catch {}
+    try {
+      window.dispatchEvent(new Event("session-updated"));
+    } catch {}
   };
 
   const updateDisplayName = async () => {
@@ -99,26 +119,34 @@ export default function PerfilPage() {
       return;
     }
 
-    if (newDisplayName.trim().length < 2) {
+    const trimmed = newDisplayName.trim();
+    if (trimmed.length < 2) {
       alert("El nombre debe tener al menos 2 caracteres");
       return;
     }
 
     setUpdateLoading(true);
     try {
-      const res = await fetch("/api/users/update-profile", {
+      const res = await fetch("/api/users/me/update-profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ displayName: newDisplayName.trim() })
+        body: JSON.stringify({ name: trimmed }),
       });
 
-      if (!res.ok) throw new Error("Error al actualizar nombre");
-      
-      await update(); // Refrescar sesión
+      if (!res.ok) {
+        let apiMsg = "";
+        try {
+          const data = await res.json();
+          apiMsg = data?.error || data?.message || "";
+        } catch {}
+        throw new Error(apiMsg || `HTTP ${res.status}`);
+      }
+
+      await refreshEverywhere({ name: trimmed });
       setIsEditingName(false);
       alert("Nombre actualizado correctamente");
     } catch (err) {
-      alert("Error al actualizar nombre: " + err.message);
+      alert("Error al actualizar nombre: " + (err?.message || "desconocido"));
     } finally {
       setUpdateLoading(false);
     }
@@ -126,7 +154,6 @@ export default function PerfilPage() {
 
   const updatePhoto = async () => {
     if (!photoFile) return;
-
     setUpdateLoading(true);
     try {
       const formData = new FormData();
@@ -134,18 +161,25 @@ export default function PerfilPage() {
 
       const res = await fetch("/api/users/update-photo", {
         method: "POST",
-        body: formData
+        body: formData,
       });
 
-      if (!res.ok) throw new Error("Error al actualizar foto");
-      
-      await update(); // Refrescar sesión
+      if (!res.ok) {
+        let apiMsg = "";
+        try {
+          const data = await res.json();
+          apiMsg = data?.error || data?.message || "";
+        } catch {}
+        throw new Error(apiMsg || "Error al actualizar foto");
+      }
+
+      await refreshEverywhere();
       setIsEditingPhoto(false);
       setPhotoFile(null);
       setPhotoPreview(null);
       alert("Foto actualizada correctamente");
     } catch (err) {
-      alert("Error al actualizar foto: " + err.message);
+      alert("Error al actualizar foto: " + (err?.message || "desconocido"));
     } finally {
       setUpdateLoading(false);
     }
@@ -159,19 +193,26 @@ export default function PerfilPage() {
 
     setUpdateLoading(true);
     try {
-      const res = await fetch("/api/users/update-profile", {
+      const res = await fetch("/api/users/me/update-profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ whatsapp: newWhatsApp })
+        body: JSON.stringify({ whatsapp: newWhatsApp }),
       });
 
-      if (!res.ok) throw new Error("Error al actualizar WhatsApp");
-      
-      await update(); // Refrescar sesión
+      if (!res.ok) {
+        let apiMsg = "";
+        try {
+          const data = await res.json();
+          apiMsg = data?.error || data?.message || "";
+        } catch {}
+        throw new Error(apiMsg || `HTTP ${res.status}`);
+      }
+
+      await refreshEverywhere({ whatsapp: newWhatsApp });
       setIsEditingWhatsApp(false);
       alert("WhatsApp actualizado correctamente");
     } catch (err) {
-      alert("Error al actualizar WhatsApp: " + err.message);
+      alert("Error al actualizar WhatsApp: " + (err?.message || "desconocido"));
     } finally {
       setUpdateLoading(false);
     }
@@ -220,7 +261,6 @@ export default function PerfilPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 via-purple-900 to-indigo-900 pt-20">
       <div className="container mx-auto px-4 py-8">
-        
         <h1 className="text-4xl font-bold text-white mb-8">Mi Perfil</h1>
 
         {/* Información Personal */}
@@ -230,7 +270,7 @@ export default function PerfilPage() {
             <div className="relative group">
               <Image
                 src={photoPreview || user?.image || "/avatar-default.png"}
-                alt={user?.displayName || user?.name || "Avatar"}
+                alt={user?.name || "Avatar"}
                 width={96}
                 height={96}
                 className="rounded-full border-4 border-white/20 object-cover"
@@ -244,7 +284,7 @@ export default function PerfilPage() {
             </div>
 
             <div className="flex-1">
-              {/* Nombre para mostrar */}
+              {/* Nombre */}
               <div className="mb-4">
                 {isEditingName ? (
                   <div className="flex items-center gap-2">
@@ -253,7 +293,7 @@ export default function PerfilPage() {
                       value={newDisplayName}
                       onChange={(e) => setNewDisplayName(e.target.value)}
                       className="bg-white/10 border border-white/30 rounded-lg px-3 py-2 text-white placeholder-white/50"
-                      placeholder="Nombre para mostrar"
+                      placeholder="Tu nombre"
                       maxLength={30}
                     />
                     <button
@@ -266,7 +306,7 @@ export default function PerfilPage() {
                     <button
                       onClick={() => {
                         setIsEditingName(false);
-                        setNewDisplayName(user?.displayName || user?.name || "");
+                        setNewDisplayName(user?.name || "");
                       }}
                       className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm"
                     >
@@ -276,13 +316,17 @@ export default function PerfilPage() {
                 ) : (
                   <div className="flex items-center gap-3">
                     <h2 className="text-3xl font-bold text-white">
-                      {user?.displayName || user?.name}
+                      {user?.name}
                     </h2>
                     <button
                       onClick={() => setIsEditingName(true)}
                       disabled={!canChangeName()}
                       className="text-white/70 hover:text-white disabled:text-white/30 disabled:cursor-not-allowed"
-                      title={!canChangeName() ? `Podrás cambiar tu nombre el ${getNextNameChangeDate()}` : "Editar nombre"}
+                      title={
+                        !canChangeName()
+                          ? `Podrás cambiar tu nombre el ${getNextNameChangeDate()}`
+                          : "Editar nombre"
+                      }
                     >
                       ✏️
                     </button>
@@ -342,17 +386,24 @@ export default function PerfilPage() {
               </div>
 
               <div className="flex items-center gap-4 text-sm">
-                <span className={`px-3 py-1 rounded-full ${
-                  user?.role === 'ADMIN' ? 'bg-purple-500/20 text-purple-300' :
-                  user?.role === 'SUPERADMIN' ? 'bg-red-500/20 text-red-300' :
-                  'bg-blue-500/20 text-blue-300'
-                }`}>
-                  {user?.role === 'ADMIN' ? '👑 Admin' :
-                   user?.role === 'SUPERADMIN' ? '⚡ Super Admin' :
-                   '👤 Usuario'}
+                <span
+                  className={`px-3 py-1 rounded-full ${
+                    user?.role === "ADMIN"
+                      ? "bg-purple-500/20 text-purple-300"
+                      : user?.role === "SUPERADMIN"
+                      ? "bg-red-500/20 text-red-300"
+                      : "bg-blue-500/20 text-blue-300"
+                  }`}
+                >
+                  {user?.role === "ADMIN"
+                    ? "👑 Admin"
+                    : user?.role === "SUPERADMIN"
+                    ? "⚡ Super Admin"
+                    : "👤 Usuario"}
                 </span>
                 <span className="text-white/70">
-                  Miembro desde: {new Date(stats.createdAt || Date.now()).toLocaleDateString()}
+                  Miembro desde:{" "}
+                  {new Date(stats.createdAt || Date.now()).toLocaleDateString()}
                 </span>
               </div>
             </div>
@@ -364,7 +415,7 @@ export default function PerfilPage() {
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 max-w-md w-full mx-4 border border-white/20">
               <h3 className="text-2xl font-bold text-white mb-6">Cambiar Foto</h3>
-              
+
               <div className="space-y-4">
                 <input
                   type="file"
@@ -372,7 +423,7 @@ export default function PerfilPage() {
                   onChange={handlePhotoChange}
                   className="w-full p-3 bg-white/10 border border-white/30 rounded-lg text-white file:bg-white/20 file:border-0 file:text-white file:px-4 file:py-2 file:rounded file:mr-4"
                 />
-                
+
                 {photoPreview && (
                   <div className="flex justify-center">
                     <Image
@@ -384,7 +435,7 @@ export default function PerfilPage() {
                     />
                   </div>
                 )}
-                
+
                 <div className="flex gap-3 mt-6">
                   <button
                     onClick={updatePhoto}
@@ -411,11 +462,12 @@ export default function PerfilPage() {
 
         {/* Estadísticas */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          
           <div className="bg-gradient-to-r from-green-500/20 to-emerald-500/20 backdrop-blur-lg rounded-2xl p-6 border border-green-500/20">
             <div className="flex items-center justify-between mb-4">
               <div className="text-green-400">🎟️</div>
-              <div className="text-2xl font-bold text-white">{stats.totalTickets || 0}</div>
+              <div className="text-2xl font-bold text-white">
+                {stats.totalTickets || 0}
+              </div>
             </div>
             <div className="text-white/90 font-medium">Tickets Activos</div>
             <div className="text-green-400/70 text-sm">En sorteos activos</div>
@@ -424,7 +476,9 @@ export default function PerfilPage() {
           <div className="bg-gradient-to-r from-blue-500/20 to-cyan-500/20 backdrop-blur-lg rounded-2xl p-6 border border-blue-500/20">
             <div className="flex items-center justify-between mb-4">
               <div className="text-blue-400">🎯</div>
-              <div className="text-2xl font-bold text-white">{stats.totalRaffles || 0}</div>
+              <div className="text-2xl font-bold text-white">
+                {stats.totalRaffles || 0}
+              </div>
             </div>
             <div className="text-white/90 font-medium">Sorteos Creados</div>
             <div className="text-blue-400/70 text-sm">Como organizador</div>
@@ -433,7 +487,9 @@ export default function PerfilPage() {
           <div className="bg-gradient-to-r from-purple-500/20 to-pink-500/20 backdrop-blur-lg rounded-2xl p-6 border border-purple-500/20">
             <div className="flex items-center justify-between mb-4">
               <div className="text-purple-400">🏆</div>
-              <div className="text-2xl font-bold text-white">{stats.rafflesWon || 0}</div>
+              <div className="text-2xl font-bold text-white">
+                {stats.rafflesWon || 0}
+              </div>
             </div>
             <div className="text-white/90 font-medium">Sorteos Ganados</div>
             <div className="text-purple-400/70 text-sm">¡Felicitaciones!</div>
@@ -443,7 +499,7 @@ export default function PerfilPage() {
             <div className="flex items-center justify-between mb-4">
               <div className="text-yellow-400">💰</div>
               <div className="text-2xl font-bold text-white">
-                ${stats.totalSpent ? stats.totalSpent.toLocaleString() : '0'}
+                ${stats.totalSpent ? stats.totalSpent.toLocaleString() : "0"}
               </div>
             </div>
             <div className="text-white/90 font-medium">Total Invertido</div>
@@ -454,22 +510,29 @@ export default function PerfilPage() {
         {/* Actividad Reciente */}
         <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 border border-white/20">
           <h3 className="text-2xl font-bold text-white mb-6">Actividad Reciente</h3>
-          
+
           <div className="space-y-4">
-            {stats.recentActivity ? stats.recentActivity.map((activity, index) => (
-              <div key={index} className="flex items-center justify-between p-4 bg-white/5 rounded-2xl">
-                <div className="flex items-center gap-4">
-                  <div className="text-2xl">{activity.icon}</div>
-                  <div>
-                    <p className="text-white font-medium">{activity.title}</p>
-                    <p className="text-white/70 text-sm">{activity.description}</p>
+            {stats.recentActivity ? (
+              stats.recentActivity.map((activity, index) => (
+                <div
+                  key={index}
+                  className="flex items-center justify-between p-4 bg-white/5 rounded-2xl"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="text-2xl">{activity.icon}</div>
+                    <div>
+                      <p className="text-white font-medium">{activity.title}</p>
+                      <p className="text-white/70 text-sm">
+                        {activity.description}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-white/70 text-sm">
+                    {new Date(activity.date).toLocaleDateString()}
                   </div>
                 </div>
-                <div className="text-white/70 text-sm">
-                  {new Date(activity.date).toLocaleDateString()}
-                </div>
-              </div>
-            )) : (
+              ))
+            ) : (
               <div className="text-center py-8 text-white/70">
                 <p>No hay actividad reciente</p>
               </div>
@@ -479,21 +542,21 @@ export default function PerfilPage() {
 
         {/* Acciones Rápidas */}
         <div className="mt-8 flex flex-wrap gap-4">
-          <button 
-            onClick={() => router.push('/mis-sorteos')}
+          <button
+            onClick={() => router.push("/mis-sorteos")}
             className="px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-medium rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
           >
             Ver Mis Sorteos
           </button>
-          <button 
-            onClick={() => router.push('/mis-tickets')}
+          <button
+            onClick={() => router.push("/mis-tickets")}
             className="px-6 py-3 bg-white/20 hover:bg-white/30 text-white font-medium rounded-xl transition-colors"
           >
             Ver Mis Tickets
           </button>
-          {(user?.role === 'ADMIN' || user?.role === 'SUPERADMIN') && (
-            <button 
-              onClick={() => router.push('/admin/crear-sorteo')}
+          {(user?.role === "ADMIN" || user?.role === "SUPERADMIN") && (
+            <button
+              onClick={() => router.push("/admin/crear-sorteo")}
               className="px-6 py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 text-white font-medium rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
             >
               Crear Nuevo Sorteo

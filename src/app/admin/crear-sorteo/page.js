@@ -98,8 +98,12 @@ export default function CrearSorteoAdminPage() {
   const [imageError, setImageError] = useState("");
   const [uploading, setUploading] = useState(false);
 
-  // Extras
+  // Visibilidad: usar el mismo flag pero con semántica de “listado/no listado”
+  // isPrivate = true  -> No listado (por link)  -> no requiere aprobación
+  // isPrivate = false -> Listado (público)      -> requiere aprobación
   const [isPrivate, setIsPrivate] = useState(false);
+
+  // Términos
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [termsOpen, setTermsOpen] = useState(false);
 
@@ -301,12 +305,12 @@ export default function CrearSorteoAdminPage() {
         ...(startsAt && { startsAt }),
         ...(endsAt && { endsAt }),
         ...(category && { prizeCategory: category }),
-        isPrivate,
+        isPrivate, // true: no listado; false: listado (pendiente de aprobación)
         termsAccepted: true,
 
         // UX / reglas
         minTicketsPerParticipant: Math.max(1, Number(minTicketsPerParticipant)),
-        minTicketsIsMandatory: Boolean(minTicketsMandatory), // NUEVO
+        minTicketsIsMandatory: Boolean(minTicketsMandatory),
       };
 
       const res = await fetch("/api/raffles", {
@@ -545,9 +549,14 @@ export default function CrearSorteoAdminPage() {
                       disabled={loading}
                     />
                     <label htmlFor="isPrivate" className="ml-3 text-sm text-gray-300">
-                      Hacer sorteo privado
+                      No listado (acceso por link)
                     </label>
                   </div>
+                  <p className="text-xs text-gray-400 mt-2">
+                    {isPrivate
+                      ? "No aparecerá en 'Explorar'; cualquiera con el link podrá verlo."
+                      : "Se solicitará aprobación de un admin para aparecer públicamente en 'Explorar'."}
+                  </p>
                 </div>
               </div>
 
@@ -818,6 +827,10 @@ export default function CrearSorteoAdminPage() {
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
                     <span>Si dejás vacío el objetivo, usamos el mínimo requerido automáticamente.</span>
+                  </li>
+                  <li className="flex items-start">
+                    <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
+                    <span>“No listado (por link)” no requiere aprobación; “Listado” solicitará aprobación para aparecer en “Explorar”.</span>
                   </li>
                 </ul>
               </div>

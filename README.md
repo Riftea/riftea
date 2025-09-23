@@ -35,6 +35,10 @@ riftea
 │  │  │  └─ migration.sql
 │  │  ├─ 20250912042109_add_favorites_is_verified_is_locked
 │  │  │  └─ migration.sql
+│  │  ├─ 20250915222339_productos_digitales_mp
+│  │  │  └─ migration.sql
+│  │  ├─ 20250916005510_add_min_tickets_fields
+│  │  │  └─ migration.sql
 │  │  └─ migration_lock.toml
 │  └─ schema.prisma
 ├─ public
@@ -46,18 +50,30 @@ riftea
 │  ├─ uploads
 │  │  ├─ 091f558e82f44da0aecdeb24be7e66fe.webp
 │  │  ├─ 091f558e82f44da0aecdeb24be7e66fe_thumb.webp
+│  │  ├─ 0d20fa11722c4466a3290cbb090dd702.webp
+│  │  ├─ 0d20fa11722c4466a3290cbb090dd702_thumb.webp
 │  │  ├─ 2207dd1ccb0342c5b2d191f53546120d.webp
 │  │  ├─ 2207dd1ccb0342c5b2d191f53546120d_thumb.webp
 │  │  ├─ 26c537eb9f364c4c81639aef7d858997.webp
 │  │  ├─ 26c537eb9f364c4c81639aef7d858997_thumb.webp
+│  │  ├─ 279386892a3d4a369c1a37625f7674c5.webp
+│  │  ├─ 279386892a3d4a369c1a37625f7674c5_thumb.webp
+│  │  ├─ 2885044e4c1a4171a0dcdf2f5279d2a8.webp
+│  │  ├─ 2885044e4c1a4171a0dcdf2f5279d2a8_thumb.webp
 │  │  ├─ 2a3ff738f89240f1aaaf3c84f9eb750c.webp
 │  │  ├─ 2a3ff738f89240f1aaaf3c84f9eb750c_thumb.webp
+│  │  ├─ 2aacef8a737e4fbba1cdd6cd6ad55558.webp
+│  │  ├─ 2aacef8a737e4fbba1cdd6cd6ad55558_thumb.webp
 │  │  ├─ 3c435979b1644c3a94c5a8a194bd75d4.webp
 │  │  ├─ 3c435979b1644c3a94c5a8a194bd75d4_thumb.webp
 │  │  ├─ 46ab8d996cc24325ae7df0ff5195e718.webp
 │  │  ├─ 46ab8d996cc24325ae7df0ff5195e718_thumb.webp
+│  │  ├─ 4be30790bb3749beb853f80d0f67e94f.webp
+│  │  ├─ 4be30790bb3749beb853f80d0f67e94f_thumb.webp
 │  │  ├─ 4d1083518c414a9281a617c68a1fc3cb.webp
 │  │  ├─ 4d1083518c414a9281a617c68a1fc3cb_thumb.webp
+│  │  ├─ 4f8c62c43cf2488c8c820fd14e509fe3.webp
+│  │  ├─ 4f8c62c43cf2488c8c820fd14e509fe3_thumb.webp
 │  │  ├─ 5be3b354d8054ea982fe9b54feef308f.webp
 │  │  ├─ 5be3b354d8054ea982fe9b54feef308f_thumb.webp
 │  │  ├─ 6e315663d2bf4d478a23de5fe7d7041b.webp
@@ -72,8 +88,12 @@ riftea
 │  │  ├─ 81b85b6a1b5d4e8ba97620550596a35d_thumb.webp
 │  │  ├─ 89d9e4b177314f76b533c88db1ee84fc.webp
 │  │  ├─ 89d9e4b177314f76b533c88db1ee84fc_thumb.webp
+│  │  ├─ 8ecac14284c84faab8389ef455028adb.webp
+│  │  ├─ 8ecac14284c84faab8389ef455028adb_thumb.webp
 │  │  ├─ 939965541b7a4ce680ee1577b7083d02.webp
 │  │  ├─ 939965541b7a4ce680ee1577b7083d02_thumb.webp
+│  │  ├─ 93b18c4ea82444448853b5d90ccf611b.webp
+│  │  ├─ 93b18c4ea82444448853b5d90ccf611b_thumb.webp
 │  │  ├─ 9eded9db9dac4b8787eb5335b018d455.webp
 │  │  ├─ 9eded9db9dac4b8787eb5335b018d455_thumb.webp
 │  │  ├─ a458c28e313d4d40a019748736c29330.webp
@@ -110,6 +130,8 @@ riftea
 │  │  ├─ ef8b72b3054e460babd0c7ef8b9dec83_thumb.webp
 │  │  ├─ f4ced4d12032470bbeae02ab69b6d042.webp
 │  │  ├─ f4ced4d12032470bbeae02ab69b6d042_thumb.webp
+│  │  ├─ f55529c6e7544f9f9d727089e073b0b1.webp
+│  │  ├─ f55529c6e7544f9f9d727089e073b0b1_thumb.webp
 │  │  ├─ f7ecd08d44ab4e328b6f5ed506dc3efb.webp
 │  │  ├─ f7ecd08d44ab4e328b6f5ed506dc3efb_thumb.webp
 │  │  ├─ fd8b55917af6410c89b9d2618b88b5f9.webp
@@ -136,6 +158,8 @@ riftea
 │  │  ├─ api
 │  │  │  ├─ admin
 │  │  │  │  ├─ generar-tickets
+│  │  │  │  │  └─ route.js
+│  │  │  │  ├─ init-crons
 │  │  │  │  │  └─ route.js
 │  │  │  │  ├─ raffles
 │  │  │  │  │  └─ [id]
@@ -176,13 +200,17 @@ riftea
 │  │  │  │     │  └─ route.js
 │  │  │  │     ├─ favorite
 │  │  │  │     │  └─ route.js
+│  │  │  │     ├─ manual-draw
+│  │  │  │     │  └─ route.js
 │  │  │  │     ├─ notify-participants
 │  │  │  │     │  └─ route.js
 │  │  │  │     ├─ participate
 │  │  │  │     │  └─ route.js
 │  │  │  │     ├─ progress
 │  │  │  │     │  └─ route.js
-│  │  │  │     └─ route.js
+│  │  │  │     ├─ route.js
+│  │  │  │     └─ update-status
+│  │  │  │        └─ route.js
 │  │  │  ├─ tickets
 │  │  │  │  ├─ issue
 │  │  │  │  │  └─ route.js
@@ -196,19 +224,21 @@ riftea
 │  │  │  ├─ uploads
 │  │  │  │  └─ route.js
 │  │  │  ├─ users
-│  │  │  │  └─ me
+│  │  │  │  ├─ me
+│  │  │  │  │  ├─ route.js
+│  │  │  │  │  └─ update-profile
+│  │  │  │  │     └─ route.js
+│  │  │  │  └─ update-photo
 │  │  │  │     └─ route.js
 │  │  │  └─ whoami
 │  │  │     └─ route.js
-│  │  ├─ debug
-│  │  │  └─ participate-test
-│  │  │     └─ page.jsx
 │  │  ├─ estadisticas
 │  │  │  └─ page.js
 │  │  ├─ favicon.ico
 │  │  ├─ globals.css
 │  │  ├─ layout.js
 │  │  ├─ mis-sorteos
+│  │  │  ├─ MisSorteosContent.jsx
 │  │  │  └─ page.js
 │  │  ├─ mis-tickets
 │  │  │  └─ page.js
@@ -244,9 +274,10 @@ riftea
 │  │  │  └─ ProgressBar.js
 │  │  ├─ tickets
 │  │  │  └─ UserTicketsDisplay.jsx
-│  │  └─ ui
-│  │     ├─ CountdownTimer.jsx
-│  │     └─ SmartImage.jsx
+│  │  ├─ ui
+│  │  │  ├─ CountdownTimer.jsx
+│  │  │  └─ SmartImage.jsx
+│  │  └─ UserDisplay.js
 │  ├─ contexts
 │  │  └─ NotificationsContext.js
 │  ├─ hooks
@@ -258,6 +289,8 @@ riftea
 │  │  ├─ auth-utils.js
 │  │  ├─ auth.js
 │  │  ├─ authz.js
+│  │  ├─ cron-jobs.js
+│  │  ├─ cron-jobs.js.backup
 │  │  ├─ crypto.js
 │  │  ├─ crypto.server.js
 │  │  ├─ generateTickets.js
@@ -269,6 +302,7 @@ riftea
 │  │  └─ tickets.js
 │  ├─ services
 │  │  ├─ audit.service.js
+│  │  ├─ auto-draw.service.js
 │  │  ├─ purchases.service.js
 │  │  ├─ raffles.service.js
 │  │  └─ tickets.service.js

@@ -1,10 +1,11 @@
-// src/app/api/raffles/route.js
+// app/api/raffles/route.js
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { getServerSession } from "next-auth";
+import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import {
   TICKET_PRICE,
@@ -14,6 +15,11 @@ import {
 /* =======================
    Helpers
    ======================= */
+
+function isAdminish(role) {
+  const r = String(role || "").toUpperCase();
+  return r === "ADMIN" || r === "SUPERADMIN";
+}
 
 // Valida fechas
 function validateDates(startsAt, endsAt) {
@@ -99,13 +105,22 @@ export async function POST(request) {
       startsAt,          // opcional
       endsAt,            // opcional
       imageUrl,          // opcional (solo local /uploads/*.webp)
-      category,          // opcional → prizeCategory
-      isPrivate,         // opcional (default false)
 
-      // UX (no persistidos como columnas reales)
+      // nombres alternativos de categoría (front puede mandar prizeCategory)
+      category,
+      prizeCategory,
+
+      // Visibilidad actual (checkbox): true = NO LISTADO (por link), false = LISTADO (público, requiere aprobación)
+      isPrivate,
+
+      // UX (no columnas reales, pero afectan mínimo requerido)
       minTicketsPerParticipant,
-      recommendedTicketsPerParticipant
+      minTicketsIsMandatory,
     } = body ?? {};
+
+    const normalizedCategory =
+      (typeof prizeCategory === "string" && prizeCategory.trim()) ||
+      (typeof category === "string" && category.trim()) || null;
 
     if (!title?.trim()) {
       return NextResponse.json(
@@ -132,7 +147,7 @@ export async function POST(request) {
       );
     }
 
-    // Si hay fechas, validarlas (ya no exigimos endsAt cuando no hay goal)
+    // Si hay fechas, validarlas
     let processedStartDate = null;
     let processedEndDate = null;
     if (startsAt || endsAt) {
@@ -147,10 +162,26 @@ export async function POST(request) {
       processedEndDate = dateValidation.endDate;
     }
 
-    const minParticipants = Math.ceil(prizeValueInt / POT_CONTRIBUTION_PER_TICKET);
+    // === Mínimo requerido considerando "mínimo de tickets por participación (obligatorio)" ===
+    const baseTicketsNeeded = Math.ceil(prizeValueInt / POT_CONTRIBUTION_PER_TICKET);
+
+    const minTicketsPP =
+      Number.isFinite(Number(minTicketsPerParticipant)) && Number(minTicketsPerParticipant) > 0
+        ? Math.floor(Number(minTicketsPerParticipant))
+        : 1;
+
+    const isMandatory = Boolean(minTicketsIsMandatory);
+    const divisor = isMandatory ? Math.max(1, minTicketsPP) : 1;
+
+    // Mínimo de participantes “real” si la regla es obligatoria
+    const minParticipants = Math.ceil(baseTicketsNeeded / divisor);
 
     let maxParticipants = minParticipants;
-    if (participantGoal !== undefined && participantGoal !== null && String(participantGoal).trim() !== "") {
+    if (
+      participantGoal !== undefined &&
+      participantGoal !== null &&
+      String(participantGoal).trim() !== ""
+    ) {
       const goalInt = Math.trunc(Number(participantGoal));
       if (!Number.isFinite(goalInt) || goalInt < minParticipants) {
         return NextResponse.json(
@@ -167,8 +198,13 @@ export async function POST(request) {
     // Solo aceptar imágenes locales
     const finalImageUrl = sanitizeLocalImageUrl(imageUrl);
 
+    // Estado de sorteo
     const initialStatus = processedStartDate ? "PUBLISHED" : "ACTIVE";
-    const isPrivateFlag = typeof isPrivate === "boolean" ? isPrivate : false;
+    // Semántica de listado:
+    // - isPrivate = true  => No listado (link)  => listingStatus = APPROVED (no requiere moderación)
+    // - isPrivate = false => Listado (público)  => listingStatus = PENDING (requiere aprobación)
+    const isPrivateFlag = Boolean(isPrivate);
+    const listingStatus = isPrivateFlag ? "APPROVED" : "PENDING";
 
     let raffle;
     try {
@@ -180,12 +216,13 @@ export async function POST(request) {
           maxParticipants,
           startsAt: processedStartDate,
           endsAt: processedEndDate,
-          imageUrl: finalImageUrl,             // <= solo /uploads/*
-          prizeCategory: category?.trim() || null,
+          imageUrl: finalImageUrl,
+          prizeCategory: normalizedCategory,
           status: initialStatus,
           publishedAt: new Date(),
           ownerImage: dbUser.image || session.user.image || null,
           isPrivate: isPrivateFlag,
+          listingStatus,
           owner: { connect: { id: dbUser.id } },
         },
         include: {
@@ -215,6 +252,14 @@ export async function POST(request) {
             status: raffle.status,
             isPrivate: raffle.isPrivate,
             prizeCategory: raffle.prizeCategory || null,
+            listingStatus: raffle.listingStatus,
+            meta: {
+              minTicketsPerParticipant: minTicketsPP,
+              minTicketsIsMandatory: isMandatory,
+              baseTicketsNeeded,
+              divisor,
+              minParticipants,
+            },
           },
         },
       });
@@ -227,11 +272,12 @@ export async function POST(request) {
       await prisma.notification.create({
         data: {
           userId: dbUser.id,
-          type: "RAFFLE_CREATED",
-          title: "Rifa creada exitosamente",
-          message: `Tu rifa "${raffle.title}" ha sido creada${
-            raffle.status === "ACTIVE" ? " y ya está activa" : ""
-          }.`,
+          type: "SYSTEM_ALERT",
+          title: "Rifa creada",
+          message:
+            raffle.listingStatus === "PENDING"
+              ? `Tu rifa "${raffle.title}" fue creada. Está pendiente de aprobación para ser listada públicamente.`
+              : `Tu rifa "${raffle.title}" fue creada como "no listada" (acceso por link).`,
           raffleId: raffle.id,
         },
       });
@@ -245,8 +291,12 @@ export async function POST(request) {
         message: "Rifa creada exitosamente",
         raffle,
         meta: {
-          minParticipants,  // auxiliar para UI
           ticketPrice: TICKET_PRICE,
+          potContributionPerTicket: POT_CONTRIBUTION_PER_TICKET,
+          baseTicketsNeeded,
+          minTicketsPerParticipant: minTicketsPP,
+          minTicketsIsMandatory: isMandatory,
+          minParticipants,
         },
         code: "RAFFLE_CREATED",
       },
@@ -310,6 +360,8 @@ export async function GET(request) {
     const includePrivate =
       sp.get("includePrivate") === "1" || sp.get("includePrivate") === "true";
 
+    const listingStatusFilter = (sp.get("listingStatus") || "").toUpperCase(); // PENDING|APPROVED|REJECTED
+
     const sortBy = (sp.get("sortBy") || "createdAt").toLowerCase();
     const order = (sp.get("order") || "desc").toLowerCase() === "asc" ? "asc" : "desc";
 
@@ -317,15 +369,17 @@ export async function GET(request) {
     const userId = session?.user?.id || null;
     const role = String(session?.user?.role || "").toUpperCase();
     const isSuperAdmin = role === "SUPERADMIN";
+    const isAdmin = isAdminish(role);
 
     const where = {};
-    let effectiveOwnerId = null;
     const impersonating = isSuperAdmin && !!asUserParam;
 
     if (impersonating) {
-      effectiveOwnerId = asUserParam;
       where.ownerId = asUserParam;
       if (!includePrivate) where.isPrivate = false;
+      if (listingStatusFilter && ["PENDING","APPROVED","REJECTED"].includes(listingStatusFilter)) {
+        where.listingStatus = listingStatusFilter;
+      }
     } else if (mine) {
       if (!userId) {
         return NextResponse.json(
@@ -333,15 +387,24 @@ export async function GET(request) {
           { status: 401 }
         );
       }
-      effectiveOwnerId = userId;
       where.ownerId = userId;
+      if (listingStatusFilter && ["PENDING","APPROVED","REJECTED"].includes(listingStatusFilter)) {
+        where.listingStatus = listingStatusFilter;
+      }
     } else {
+      // Listado público (Explorar): solo rifas no privadas y APROBADAS para aparecer
       where.isPrivate = false;
+      where.listingStatus = "APPROVED";
+
       if (!status) {
-        where.status = { in: ["PUBLISHED", "ACTIVE", "READY_TO_DRAW", "FINISHED"] };
+        // Incluye COMPLETED si querés que también se vea públicamente
+        where.status = { in: ["PUBLISHED", "ACTIVE", "READY_TO_DRAW", "FINISHED", "COMPLETED"] };
       }
       if (ownerIdParam) {
         where.ownerId = ownerIdParam;
+      }
+      if (isAdmin && listingStatusFilter && ["PENDING","APPROVED","REJECTED"].includes(listingStatusFilter)) {
+        where.listingStatus = listingStatusFilter;
       }
     }
 
@@ -387,6 +450,7 @@ export async function GET(request) {
           createdAt: true,
           updatedAt: true,
           isPrivate: true,
+          listingStatus: true,
           ownerId: true,
           owner: {
             select: { id: true, name: true, email: true, image: true, role: true },
@@ -437,6 +501,7 @@ export async function GET(request) {
         mine: mine ? "1" : undefined,
         asUser: isSuperAdmin ? (asUserParam || undefined) : undefined,
         includePrivate: isSuperAdmin ? (includePrivate ? "1" : "0") : undefined,
+        listingStatus: listingStatusFilter || undefined,
       },
       code: "RAFFLES_FETCHED",
     });
@@ -496,7 +561,7 @@ export async function PUT(request) {
 
     const existingRaffle = await prisma.raffle.findUnique({
       where: { id: id.trim() },
-      include: { owner: true },
+      include: { owner: true, _count: { select: { tickets: true, participations: true } } },
     });
     if (!existingRaffle) {
       return NextResponse.json(
@@ -507,7 +572,111 @@ export async function PUT(request) {
 
     const role = String(dbUser.role || "").toUpperCase();
     const isOwner = existingRaffle.ownerId === dbUser.id;
-    if (!isOwner && role !== "ADMIN" && role !== "SUPERADMIN") {
+    const isAdmin = isAdminish(role);
+    const isSuper = role === "SUPERADMIN";
+
+    // Acciones de moderación (aprobación/rechazo de listado)
+    if (action === "approve_listing" || action === "reject_listing" || action === "request_listing") {
+      if (action === "request_listing") {
+        // Creador o admin puede volver a pedir aprobación (si el sorteo es público/listado)
+        if (!isOwner && !isAdmin) {
+          return NextResponse.json(
+            { error: "No tienes permisos para solicitar publicación", code: "FORBIDDEN" },
+            { status: 403 }
+          );
+        }
+        if (existingRaffle.isPrivate) {
+          return NextResponse.json(
+            { error: "El sorteo está como 'no listado'. Debe ser público para solicitar aprobación.", code: "INVALID_STATE" },
+            { status: 400 }
+          );
+        }
+        const updated = await prisma.raffle.update({
+          where: { id: id.trim() },
+          data: { listingStatus: "PENDING" },
+        });
+
+        // notificar owner
+        try {
+          await prisma.notification.create({
+            data: {
+              userId: existingRaffle.ownerId,
+              type: "SYSTEM_ALERT",
+              title: "Publicación solicitada",
+              message: `Tu rifa "${existingRaffle.title}" fue enviada a revisión para aparecer públicamente.`,
+              raffleId: existingRaffle.id,
+            },
+          });
+        } catch { /* no-op */ }
+
+        return NextResponse.json({
+          success: true,
+          message: "Solicitud de publicación enviada",
+          raffle: updated,
+          code: "LISTING_PENDING",
+        });
+      }
+
+      // approve/reject: solo ADMIN/SUPERADMIN
+      if (!isAdmin) {
+        return NextResponse.json(
+          { error: "Solo un administrador puede moderar publicaciones", code: "FORBIDDEN" },
+          { status: 403 }
+        );
+      }
+
+      const newListingStatus = action === "approve_listing" ? "APPROVED" : "REJECTED";
+      const updated = await prisma.raffle.update({
+        where: { id: id.trim() },
+        data: { listingStatus: newListingStatus },
+      });
+
+      // Notificación al dueño
+      try {
+        await prisma.notification.create({
+          data: {
+            userId: existingRaffle.ownerId,
+            type: "SYSTEM_ALERT",
+            title:
+              newListingStatus === "APPROVED"
+                ? "Publicación aprobada"
+                : "Publicación rechazada",
+            message:
+              newListingStatus === "APPROVED"
+                ? `Tu rifa "${existingRaffle.title}" fue aprobada y ahora aparece públicamente.`
+                : `Tu rifa "${existingRaffle.title}" fue rechazada para listado público.`,
+            raffleId: existingRaffle.id,
+          },
+        });
+      } catch { /* no-op */ }
+
+      // Audit (best-effort)
+      try {
+        await prisma.auditLog.create({
+          data: {
+            action: `raffle_${action}`,
+            userId: dbUser.id,
+            targetType: "raffle",
+            targetId: id.trim(),
+            oldValues: { listingStatus: existingRaffle.listingStatus },
+            newValues: { listingStatus: newListingStatus },
+          },
+        });
+      } catch { /* no-op */ }
+
+      return NextResponse.json({
+        success: true,
+        message:
+          newListingStatus === "APPROVED"
+            ? "Rifa aprobada para listado público"
+            : "Rifa rechazada para listado público",
+        raffle: updated,
+        code: `LISTING_${newListingStatus}`,
+      });
+    }
+
+    // Resto de acciones (publicar/activar/finalizar/cancelar o edición)
+    if (!isOwner && !isAdmin && !isSuper) {
       return NextResponse.json(
         { error: "No tienes permisos para modificar esta rifa", code: "FORBIDDEN" },
         { status: 403 }
@@ -562,6 +731,7 @@ export async function PUT(request) {
         break;
 
       default:
+        // Edición de campos
         if (updateData.title !== undefined) {
           const t = String(updateData.title).trim();
           if (!t) {
@@ -636,17 +806,18 @@ export async function PUT(request) {
           updateObject.maxParticipants = mp;
         }
 
-        // Solo permitimos URLs locales
+        // Solo URLs locales
         if (updateData.imageUrl !== undefined) {
           updateObject.imageUrl = sanitizeLocalImageUrl(updateData.imageUrl);
         }
 
-        if (updateData.category !== undefined) {
-          updateObject.prizeCategory = updateData.category
-            ? String(updateData.category).trim()
-            : null;
+        // Aceptar category o prizeCategory
+        if (updateData.category !== undefined || updateData.prizeCategory !== undefined) {
+          const cat = updateData.prizeCategory ?? updateData.category;
+          updateObject.prizeCategory = cat ? String(cat).trim() : null;
         }
 
+        // Cambiar “no listado / listado”
         if (updateData.isPrivate !== undefined) {
           if (typeof updateData.isPrivate !== "boolean") {
             return NextResponse.json(
@@ -655,6 +826,11 @@ export async function PUT(request) {
             );
           }
           updateObject.isPrivate = updateData.isPrivate;
+
+          // Si pasa a listado público (isPrivate=false) y no estaba aprobado, lo dejamos PENDING
+          if (updateData.isPrivate === false && existingRaffle.listingStatus !== "APPROVED") {
+            updateObject.listingStatus = "PENDING";
+          }
         }
 
         if (updateData.endsAt !== undefined || updateData.startsAt !== undefined) {
@@ -712,6 +888,7 @@ export async function PUT(request) {
             maxParticipants: existingRaffle.maxParticipants,
             isPrivate: existingRaffle.isPrivate,
             prizeCategory: existingRaffle.prizeCategory || null,
+            listingStatus: existingRaffle.listingStatus,
           },
           newValues: updateObject,
         },
@@ -790,6 +967,7 @@ export async function DELETE(request) {
         prizeValue: true,
         maxParticipants: true,
         isPrivate: true,
+        listingStatus: true,
         prizeCategory: true,
         _count: { select: { tickets: true, participations: true } },
       },
@@ -817,11 +995,12 @@ export async function DELETE(request) {
     const hasTickets = (existingRaffle._count?.tickets ?? 0) > 0;
     const hasParts = (existingRaffle._count?.participations ?? 0) > 0;
 
-    if (!isSuperAdmin && (hasTickets || hasParts)) {
+    // Regla: si hay tickets/participaciones, solo SUPERADMIN puede eliminar
+    if ((hasTickets || hasParts) && !isSuperAdmin) {
       return NextResponse.json(
         {
           error:
-            "No se puede eliminar: la rifa tiene tickets o participaciones registradas",
+            "Solo un SUPERADMIN puede eliminar rifas con tickets o participaciones registradas",
           code: "HAS_REFS",
         },
         { status: 409 }
@@ -844,6 +1023,7 @@ export async function DELETE(request) {
             prizeValue: existingRaffle.prizeValue,
             maxParticipants: existingRaffle.maxParticipants,
             isPrivate: existingRaffle.isPrivate,
+            listingStatus: existingRaffle.listingStatus,
             prizeCategory: existingRaffle.prizeCategory || null,
             _count: existingRaffle._count,
           },

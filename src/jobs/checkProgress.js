@@ -1,4 +1,4 @@
-// src/jobs/checkProgress.job.js
+// src/jobs/checkProgress.js
 import prisma from "@/lib/prisma";
 import { enqueueJob, JobTypes } from "@/lib/queue";
 import { logAuditEvent } from "@/services/audit.service";
@@ -6,11 +6,14 @@ import { maybeTriggerAutoDraw, drawRaffle } from "@/services/raffles.service";
 
 /**
  * 📊 Verifica si una rifa alcanzó el cupo y programa el sorteo automáticamente.
- * - Usa maxParticipants vs participations (no "funding").
+ * - Compara maxParticipants vs participations.
  * - Si llega al cupo y no tiene drawAt, cambia a READY_TO_DRAW y setea drawAt (countdown).
  */
 export async function checkRaffleProgressJob(job) {
   const { raffleId, deltaParticipants } = job?.data || {};
+  if (!raffleId) {
+    throw new Error("[checkRaffleProgressJob] Falta raffleId en job.data");
+  }
 
   try {
     console.log(`📊 Verificando progreso de la rifa ${raffleId}...`);
@@ -32,7 +35,7 @@ export async function checkRaffleProgressJob(job) {
       throw new Error(`Rifa ${raffleId} no encontrada`);
     }
 
-    const total = raffle._count.participations ?? 0;
+    const total = raffle._count?.participations ?? 0;
     const target = raffle.maxParticipants ?? null;
     const percent = target ? (total / target) * 100 : null;
 
@@ -48,6 +51,7 @@ export async function checkRaffleProgressJob(job) {
       !raffle.drawAt
     ) {
       await maybeTriggerAutoDraw(raffleId);
+
       await logAuditEvent({
         action: "RAFFLE_READY_TO_DRAW",
         entityType: "RAFFLE",
@@ -59,6 +63,7 @@ export async function checkRaffleProgressJob(job) {
           scheduled: true,
         },
       });
+
       return {
         status: "READY_TO_DRAW",
         totalParticipants: total,
@@ -69,8 +74,10 @@ export async function checkRaffleProgressJob(job) {
 
     // Hitos (25/50/75/90) basados en participantes
     if (target && percent != null && deltaParticipants != null) {
-      const prevPercent = ((total - Number(deltaParticipants || 0)) / target) * 100;
+      const prevTotal = total - Number(deltaParticipants || 0);
+      const prevPercent = (prevTotal / target) * 100;
       const milestones = [25, 50, 75, 90];
+
       for (const m of milestones) {
         if (prevPercent < m && percent >= m) {
           await logAuditEvent({
@@ -108,16 +115,20 @@ export async function checkRaffleProgressJob(job) {
   } catch (error) {
     console.error(`❌ Error verificando progreso de la rifa ${raffleId}:`, error);
 
-    await logAuditEvent({
-      action: "RAFFLE_PROGRESS_CHECK_FAILED",
-      entityType: "RAFFLE",
-      entityId: raffleId,
-      metadata: {
-        error: String(error?.message || error),
-        deltaParticipants,
-        ts: new Date().toISOString(),
-      },
-    });
+    try {
+      await logAuditEvent({
+        action: "RAFFLE_PROGRESS_CHECK_FAILED",
+        entityType: "RAFFLE",
+        entityId: raffleId,
+        metadata: {
+          error: String(error?.message || error),
+          deltaParticipants,
+          ts: new Date().toISOString(),
+        },
+      });
+    } catch (e) {
+      console.warn("Audit log failed (non-critical):", e?.message || e);
+    }
 
     throw error;
   }
@@ -126,15 +137,18 @@ export async function checkRaffleProgressJob(job) {
 /**
  * 🎲 Ejecutar sorteo automáticamente (cuando drawAt llega o si se fuerza).
  * - Requiere status READY_TO_DRAW (o ACTIVE con drawAt vencido y condiciones).
- * - Usa drawRaffle() del service (marca ganador y FINISHED).
+ * - Usa drawRaffle() del service (marca ganador y FINISHED/COMPLETED según tu service).
  */
 export async function executeRaffleJob(job) {
   const { raffleId, force = false, scheduledBy = "system", reason = "scheduled" } = job?.data || {};
+  if (!raffleId) {
+    throw new Error("[executeRaffleJob] Falta raffleId en job.data");
+  }
 
   try {
     console.log(`🎲 Ejecutando sorteo ${raffleId}...`);
 
-    // Cargar rifa + participaciones mínimas
+    // Cargar rifa + conteos
     const raffle = await prisma.raffle.findUnique({
       where: { id: raffleId },
       select: {
@@ -149,9 +163,7 @@ export async function executeRaffleJob(job) {
       },
     });
 
-    if (!raffle) {
-      throw new Error(`Rifa ${raffleId} no encontrada`);
-    }
+    if (!raffle) throw new Error(`Rifa ${raffleId} no encontrada`);
     if (raffle.drawnAt || raffle.winnerParticipationId) {
       throw new Error(`Rifa ${raffleId} ya fue sorteada`);
     }
@@ -169,8 +181,8 @@ export async function executeRaffleJob(job) {
       }
     }
 
-    // Validar cupo (si aplica)
-    const total = raffle._count.participations ?? 0;
+    // Validar cupo mínimo
+    const total = raffle._count?.participations ?? 0;
     if (raffle.maxParticipants && total < raffle.maxParticipants) {
       throw new Error(`La rifa no alcanzó el cupo (${total}/${raffle.maxParticipants})`);
     }
@@ -178,7 +190,7 @@ export async function executeRaffleJob(job) {
       throw new Error("Se requieren al menos 2 participaciones para sortear");
     }
 
-    // Ejecutar draw (marca FINISHED, drawnAt y winnerParticipationId)
+    // Ejecutar draw (marca ganador, drawnAt y estado final en el service)
     await drawRaffle(raffleId);
 
     // Cargar datos para notificación
@@ -207,7 +219,9 @@ export async function executeRaffleJob(job) {
       },
     });
 
-    const winnerPart = updated?.participations?.find((p) => p.id === updated?.winnerParticipationId);
+    const winnerPart = updated?.participations?.find(
+      (p) => p.id === updated?.winnerParticipationId
+    );
     const winnerUser = winnerPart?.ticket?.user || null;
 
     // Auditoría
@@ -227,15 +241,19 @@ export async function executeRaffleJob(job) {
       },
     });
 
-    // Notificar ganador (si existe JobTypes)
+    // Notificar ganador (best-effort)
     try {
       if (winnerUser?.id) {
-        await enqueueJob(JobTypes.SEND_WINNER_NOTIFICATION, {
-          winnerId: winnerUser.id,
-          raffleId,
-          raffleTitle: updated?.title,
-          ticketCode: winnerPart?.ticket?.code,
-        }, { priority: 100 });
+        await enqueueJob(
+          JobTypes?.SEND_WINNER_NOTIFICATION ?? "SEND_WINNER_NOTIFICATION",
+          {
+            winnerId: winnerUser.id,
+            raffleId,
+            raffleTitle: updated?.title,
+            ticketCode: winnerPart?.ticket?.code,
+          },
+          { priority: 100 }
+        );
       }
     } catch (e) {
       console.warn("Winner notification enqueue failed (non-critical):", e?.message || e);
@@ -253,17 +271,21 @@ export async function executeRaffleJob(job) {
   } catch (error) {
     console.error(`❌ Error ejecutando sorteo ${raffleId}:`, error);
 
-    await logAuditEvent({
-      action: "RAFFLE_EXECUTION_FAILED",
-      entityType: "RAFFLE",
-      entityId: raffleId,
-      metadata: {
-        error: String(error?.message || error),
-        scheduledBy,
-        reason,
-        ts: new Date().toISOString(),
-      },
-    });
+    try {
+      await logAuditEvent({
+        action: "RAFFLE_EXECUTION_FAILED",
+        entityType: "RAFFLE",
+        entityId: raffleId,
+        metadata: {
+          error: String(error?.message || error),
+          scheduledBy,
+          reason,
+          ts: new Date().toISOString(),
+        },
+      });
+    } catch (e) {
+      console.warn("Audit log failed (non-critical):", e?.message || e);
+    }
 
     // Notificar admins (best-effort)
     try {
@@ -283,7 +305,6 @@ export async function executeRaffleJob(job) {
 /**
  * 🧹 Limpieza: cancelar rifas vencidas sin ganador.
  * - Cancela rifas con endsAt pasado y sin winner, en estados activos.
- * - No toca tickets (no hay estado CANCELLED en TicketStatus).
  */
 export async function cleanupExpiredRafflesJob(_job) {
   try {

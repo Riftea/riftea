@@ -30,7 +30,6 @@ function uniq(arr) {
 }
 
 async function getParams(ctx) {
-  // 👇 Next.js 15 requiere await en params de rutas dinámicas
   const p = (ctx && (await ctx.params)) || {};
   return p || {};
 }
@@ -43,19 +42,12 @@ function parseMinFromDescription(desc = "") {
 
 // Normaliza política/flags de mínimo obligatorio
 function isMinMandatory(raffle) {
-  const policy = (raffle?.minTicketsPolicy || "").toString().toLowerCase();
-  if (policy === "mandatory") return true;
+  // Ya no usamos minTicketsPolicy porque no existe en el schema
   if (typeof raffle?.minTicketsIsMandatory === "boolean") return raffle.minTicketsIsMandatory;
   return false;
 }
 
-// ---------------- GET: lista de participantes (CORREGIDO + metadatos mínimo) ----------------
-/**
- * Devuelve participantes del sorteo compatible con extractProgressPayload y
- * agrega:
- *   - minTicketsPerParticipant
- *   - minTicketsIsMandatory (o policy)
- */
+// ---------------- GET: lista de participantes (CORREGIDO) ----------------
 export async function GET(req, ctx) {
   const { id: raffleId } = await getParams(ctx);
   if (!isNonEmptyString(raffleId)) {
@@ -63,16 +55,15 @@ export async function GET(req, ctx) {
   }
 
   try {
-    // Traemos también descripción y campos de mínimo (si existen en tu schema)
     const raffle = await prisma.raffle.findUnique({
       where: { id: raffleId },
       select: {
         id: true,
         description: true,
         maxParticipants: true,
-        minTicketsPerParticipant: true,             // <- si no existe, queda undefined
-        minTicketsIsMandatory: true,                // <- si no existe, queda undefined
-        minTicketsPolicy: true,                     // <- si no existe, queda undefined
+        minTicketsPerParticipant: true,
+        minTicketsIsMandatory: true,
+        // ❌ REMOVIDO: minTicketsPolicy (no existe en schema)
         _count: { select: { participations: true } },
       },
     });
@@ -81,7 +72,6 @@ export async function GET(req, ctx) {
       return json({ error: "RAFFLE_NOT_FOUND" }, { status: 404 });
     }
 
-    // Trae participaciones + ticket + usuario
     const participations = await prisma.participation.findMany({
       where: { raffleId, isActive: true },
       orderBy: { createdAt: "asc" },
@@ -113,7 +103,6 @@ export async function GET(req, ctx) {
 
     const totalParticipants = participants.length;
 
-    // Derivar valores de mínimo (con fallback a descripción si no hay campos)
     const minFromField =
       typeof raffle.minTicketsPerParticipant === "number" && raffle.minTicketsPerParticipant >= 1
         ? raffle.minTicketsPerParticipant
@@ -143,10 +132,9 @@ export async function GET(req, ctx) {
         capacity: raffle.maxParticipants,
       },
 
-      // Metadatos de mínimo para el front (por si los querés usar)
       minTicketsPerParticipant,
       minTicketsIsMandatory: minMandatory,
-      minTicketsPolicy: minMandatory ? "mandatory" : "suggested",
+      minTicketsPolicy: minMandatory ? "mandatory" : "suggested", // Calculado, no del DB
     });
   } catch (error) {
     console.error("❌ Error en GET /api/raffles/[id]/participate:", error);
@@ -162,59 +150,27 @@ export async function GET(req, ctx) {
   }
 }
 
-// ---------------- POST: participar con tickets (con enforcement del mínimo obligatorio) ----------------
-/**
- * Body esperado:
- * { ticketIds: string[] }
- *
- * Respuesta:
- * {
- *   ok: boolean,
- *   results: [{ ok, ticketId, participation?, error? }],
- *   successes: [{ ticketId, data: { ticketCode, raffleId } }]
- * }
- */
+// ---------------- POST: VERSIÓN CON DEBUGGING INTENSIVO ----------------
 export async function POST(req, ctx) {
+  console.log("🔍 POST /participate - INICIO");
+  
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) {
+    console.log("❌ No hay sesión");
     return json({ ok: false, error: "UNAUTHORIZED" }, { status: 401 });
   }
+  console.log("✅ Usuario autenticado:", session.user.id);
 
   const { id: raffleId } = await getParams(ctx);
-  if (!isNonEmptyString(raffleId)) {
-    return json({ ok: false, error: "MISSING_RAFFLE_ID" }, { status: 400 });
-  }
-
-  // Verifica sorteo
-  const raffle = await prisma.raffle.findUnique({
-    where: { id: raffleId },
-    select: {
-      id: true,
-      status: true,
-      isLocked: true,
-      maxParticipants: true,
-      description: true,
-      minTicketsPerParticipant: true,   // <- si no existe en tu schema, queda undefined
-      minTicketsIsMandatory: true,      // <- idem
-      minTicketsPolicy: true,           // <- idem
-      _count: { select: { participations: true } },
-    },
-  });
-  if (!raffle) {
-    return json({ ok: false, error: "RAFFLE_NOT_FOUND" }, { status: 404 });
-  }
-  if (raffle.isLocked) {
-    return json({ ok: false, error: "RAFFLE_LOCKED" }, { status: 423 });
-  }
-  const blockedStatuses = ["READY_TO_DRAW", "FINISHED", "CANCELLED", "COMPLETED"];
-  if (blockedStatuses.includes(String(raffle.status))) {
-    return json({ ok: false, error: `RAFFLE_STATUS_${raffle.status}` }, { status: 409 });
-  }
+  console.log("🎯 Raffle ID:", raffleId);
 
   // Lee body
   const ct = req.headers.get("content-type") || "";
   const body = ct.toLowerCase().includes("application/json") ? await readJson(req) : {};
+  console.log("📦 Body recibido:", JSON.stringify(body, null, 2));
+
   const ticketIds = Array.isArray(body?.ticketIds) ? body.ticketIds : [];
+  console.log("🎫 Ticket IDs extraídos:", ticketIds);
 
   const cleaned = uniq(
     ticketIds
@@ -222,179 +178,331 @@ export async function POST(req, ctx) {
       .map((t) => t.trim())
       .filter((t) => t.length > 0)
   );
+  console.log("🧹 Ticket IDs limpiados:", cleaned);
 
   if (cleaned.length === 0) {
+    console.log("❌ No hay ticket IDs válidos");
     return json(
       { ok: false, error: "INVALID_TICKET_IDS", details: "ticketIds debe ser un array de strings no vacíos" },
       { status: 422 }
     );
   }
 
-  // -------- Enforcement del mínimo obligatorio (pre-chequeo) --------
-  // Deriva mínimo y si es obligatorio (con fallback a descripción)
-  const minFromField =
-    typeof raffle.minTicketsPerParticipant === "number" && raffle.minTicketsPerParticipant >= 1
-      ? raffle.minTicketsPerParticipant
-      : null;
-  const minFromDesc = parseMinFromDescription(raffle.description);
-  const minRequired = minFromField ?? minFromDesc ?? 1;
-  const mandatory = isMinMandatory(raffle);
-
-  if (mandatory && minRequired > 1) {
-    // ¿Cuántas participaciones activas ya tiene este usuario en el sorteo?
-    const already = await prisma.participation.count({
-      where: {
-        raffleId,
-        isActive: true,
-        ticket: { userId: session.user.id },
-      },
-    });
-
-    const selected = cleaned.length;
-    const totalIfAccepted = already + selected;
-
-    if (totalIfAccepted < minRequired) {
-      const needed = Math.max(0, minRequired - already);
-      return json(
-        {
-          ok: false,
-          error: "MIN_TICKETS_REQUIRED",
-          message: `Este sorteo requiere un mínimo de ${minRequired} ticket(s) por participante.`,
-          required: minRequired,
-          selected,
-          already,
-          needed, // tickets que faltan en esta llamada para cumplir el mínimo
+  try {
+    console.log("🔄 Iniciando transacción...");
+    
+    const result = await prisma.$transaction(async (tx) => {
+      console.log("1️⃣ Validando sorteo...");
+      
+      // 1. Validar sorteo - SCHEMA CORREGIDO
+      const raffle = await tx.raffle.findUnique({
+        where: { id: raffleId },
+        select: {
+          id: true,
+          title: true, // Para debugging
+          status: true,
+          isLocked: true,
+          maxParticipants: true,
+          description: true,
+          minTicketsPerParticipant: true,
+          minTicketsIsMandatory: true,
+          // ❌ REMOVIDO: minTicketsPolicy (no existe en tu schema)
+          _count: { select: { participations: true } },
         },
-        { status: 422 }
-      );
-    }
-  }
+      });
 
-  // Límite defensivo
-  const MAX_TICKETS_PER_CALL = 100;
-  if (cleaned.length > MAX_TICKETS_PER_CALL) {
-    return json(
-      { ok: false, error: "TOO_MANY_TICKETS", details: `Máximo ${MAX_TICKETS_PER_CALL} por solicitud` },
-      { status: 422 }
-    );
-  }
+      console.log("🎰 Sorteo encontrado:", {
+        id: raffle?.id,
+        title: raffle?.title,
+        status: raffle?.status,
+        participations: raffle?._count?.participations,
+        maxParticipants: raffle?.maxParticipants
+      });
 
-  const results = [];
-  const successes = [];
+      if (!raffle) {
+        throw new Error("RAFFLE_NOT_FOUND");
+      }
+      if (raffle.isLocked) {
+        console.log("🔒 Sorteo bloqueado");
+        throw new Error("RAFFLE_LOCKED");
+      }
 
-  // Procesa UNO POR UNO, con transacción por ticket
-  for (const ticketId of cleaned) {
-    try {
-      const res = await prisma.$transaction(async (tx) => {
-        // Valida ticket
-        const t = await tx.ticket.findUnique({
-          where: { id: ticketId },
-          select: {
-            id: true,
-            userId: true,
-            raffleId: true,
-            status: true,
-            isUsed: true,
-            code: true,
-          },
+      const blockedStatuses = ["READY_TO_DRAW", "FINISHED", "CANCELLED", "COMPLETED"];
+      if (blockedStatuses.includes(String(raffle.status))) {
+        console.log("⛔ Estado bloqueado:", raffle.status);
+        throw new Error(`RAFFLE_STATUS_${raffle.status}`);
+      }
+
+      console.log("2️⃣ Buscando tickets del usuario...");
+      
+      // 2. Validar TODOS los tickets de una vez
+      const tickets = await tx.ticket.findMany({
+        where: {
+          id: { in: cleaned },
+          userId: session.user.id,
+        },
+        select: {
+          id: true,
+          code: true, // Para debugging
+          userId: true,
+          raffleId: true,
+          status: true,
+          isUsed: true,
+        },
+      });
+
+      console.log("🎫 Tickets encontrados:", tickets.map(t => ({
+        id: t.id,
+        code: t.code,
+        status: t.status,
+        isUsed: t.isUsed,
+        raffleId: t.raffleId
+      })));
+
+      // Verificar que encontramos todos los tickets solicitados
+      if (tickets.length !== cleaned.length) {
+        const found = tickets.map(t => t.id);
+        const missing = cleaned.filter(id => !found.includes(id));
+        console.log("❌ Tickets faltantes:", missing);
+        throw new Error(`TICKETS_NOT_FOUND: ${missing.join(', ')}`);
+      }
+
+      console.log("3️⃣ Validando tickets...");
+
+      // 3. Validar cada ticket
+      const validTickets = [];
+      const errors = [];
+
+      for (const ticket of tickets) {
+        console.log(`🔍 Validando ticket ${ticket.code}:`, {
+          isUsed: ticket.isUsed,
+          raffleId: ticket.raffleId,
+          status: ticket.status
         });
 
-        if (!t) {
-          return { ok: false, ticketId, error: "TICKET_NOT_FOUND" };
+        if (ticket.isUsed) {
+          console.log(`❌ Ticket ${ticket.code} ya usado`);
+          errors.push({ ticketId: ticket.id, error: "TICKET_ALREADY_USED" });
+          continue;
         }
-        if (t.userId !== session.user.id) {
-          return { ok: false, ticketId, error: "TICKET_NOT_OWNED_BY_USER" };
+        
+        if (ticket.raffleId && ticket.raffleId !== raffleId) {
+          console.log(`❌ Ticket ${ticket.code} en otro sorteo:`, ticket.raffleId);
+          errors.push({ ticketId: ticket.id, error: "TICKET_ALREADY_IN_OTHER_RAFFLE" });
+          continue;
         }
-        if (t.isUsed) {
-          return { ok: false, ticketId, error: "TICKET_ALREADY_USED" };
-        }
-        if (t.raffleId && t.raffleId !== raffleId) {
-          return { ok: false, ticketId, error: "TICKET_ALREADY_IN_OTHER_RAFFLE" };
-        }
-        // Permitimos reintento idempotente si ya estaba en este sorteo:
-        if (t.raffleId === raffleId) {
+
+        // Permitir reintento idempotente
+        if (ticket.raffleId === raffleId) {
+          console.log(`🔄 Ticket ${ticket.code} ya en este sorteo, verificando participación...`);
           const existing = await tx.participation.findUnique({
-            where: { ticketId: t.id },
+            where: { ticketId: ticket.id },
             select: { id: true },
           });
-          return existing
-            ? { ok: true, ticketId, participation: { id: existing.id, ticketCode: t.code, raffleId } }
-            : { ok: false, ticketId, error: "PARTICIPATION_MISSING_FOR_EXISTING_TICKET" };
+          if (existing) {
+            console.log(`✅ Participación existente para ticket ${ticket.code}`);
+            validTickets.push({ 
+              ticket, 
+              isExisting: true, 
+              participationId: existing.id 
+            });
+            continue;
+          }
         }
 
-        // Reglas de disponibilidad
-        if (!["AVAILABLE", "ACTIVE", "PENDING"].includes(String(t.status))) {
-          return { ok: false, ticketId, error: `TICKET_STATUS_${t.status}` };
+        if (!["AVAILABLE", "ACTIVE", "PENDING"].includes(String(ticket.status))) {
+          console.log(`❌ Estado inválido para ticket ${ticket.code}:`, ticket.status);
+          errors.push({ ticketId: ticket.id, error: `TICKET_STATUS_${ticket.status}` });
+          continue;
         }
 
-        // Chequeo de cupo (si tenés maxParticipants)
-        if (raffle.maxParticipants && raffle._count.participations >= raffle.maxParticipants) {
-          return { ok: false, ticketId, error: "RAFFLE_FULL" };
-        }
+        console.log(`✅ Ticket ${ticket.code} válido`);
+        validTickets.push({ ticket, isExisting: false });
+      }
 
-        // Vincula ticket al sorteo
-        await tx.ticket.update({
-          where: { id: t.id },
+      console.log("📊 Resumen validación:", {
+        validTickets: validTickets.length,
+        errors: errors.length,
+        newTickets: validTickets.filter(vt => !vt.isExisting).length
+      });
+
+      if (errors.length > 0) {
+        console.log("❌ Errores de validación:", errors);
+        throw new Error(`TICKET_VALIDATION_FAILED: ${JSON.stringify(errors)}`);
+      }
+
+      const newTickets = validTickets.filter(vt => !vt.isExisting);
+      console.log("🆕 Tickets nuevos a procesar:", newTickets.length);
+
+      // 4. Verificar capacidad
+      const currentParticipations = raffle._count.participations;
+      const newParticipationsCount = newTickets.length;
+      const totalAfterAdd = currentParticipations + newParticipationsCount;
+
+      console.log("📈 Verificación de capacidad:", {
+        current: currentParticipations,
+        adding: newParticipationsCount,
+        total: totalAfterAdd,
+        max: raffle.maxParticipants
+      });
+
+      if (raffle.maxParticipants && totalAfterAdd > raffle.maxParticipants) {
+        console.log("❌ Excede capacidad máxima");
+        throw new Error("RAFFLE_FULL");
+      }
+
+      // 5. Procesar tickets nuevos
+      if (newTickets.length > 0) {
+        console.log("4️⃣ Actualizando tickets...");
+        
+        const ticketIdsToUpdate = newTickets.map(vt => vt.ticket.id);
+        console.log("🔄 Actualizando tickets:", ticketIdsToUpdate);
+
+        const updateResult = await tx.ticket.updateMany({
+          where: { 
+            id: { in: ticketIdsToUpdate } 
+          },
           data: {
             raffleId,
             status: "IN_RAFFLE",
           },
         });
+        
+        console.log("✅ Tickets actualizados:", updateResult.count);
 
-        // Crea Participation (único por ticketId)
-        const part = await tx.participation.create({
-          data: {
-            raffleId,
-            ticketId: t.id,
-            isActive: true,
-          },
-          select: { id: true },
+        console.log("5️⃣ Creando participaciones...");
+
+        const participationData = newTickets.map(vt => ({
+          raffleId,
+          ticketId: vt.ticket.id,
+          isActive: true,
+        }));
+
+        console.log("📝 Datos de participaciones:", participationData);
+
+        const createResult = await tx.participation.createMany({
+          data: participationData,
+          skipDuplicates: true,
         });
 
-        // Aumenta contador local en memoria para siguientes iteraciones
-        raffle._count.participations += 1;
+        console.log("✅ Participaciones creadas:", createResult.count);
+      }
 
-        return {
-          ok: true,
-          ticketId,
-          participation: { id: part.id, ticketCode: t.code, raffleId },
-        };
+      // 6. Preparar respuesta
+      const allResults = validTickets.map(vt => ({
+        ok: true,
+        ticketId: vt.ticket.id,
+        participation: { 
+          id: vt.participationId || "new", 
+          ticketCode: vt.ticket.code, 
+          raffleId 
+        },
+        isExisting: vt.isExisting
+      }));
+
+      const allSuccesses = validTickets.map(vt => ({
+        ticketId: vt.ticket.id,
+        data: {
+          ticketCode: vt.ticket.code,
+          raffleId,
+        },
+      }));
+
+      console.log("📤 Preparando respuesta:", {
+        results: allResults.length,
+        successes: allSuccesses.length,
+        newParticipations: newTickets.length,
+        totalAfter: totalAfterAdd
       });
 
-      results.push(res);
-
-      // Agregar a successes si fue exitoso
-      if (res.ok && res.participation) {
-        successes.push({
-          ticketId: res.ticketId,
-          data: {
-            ticketCode: res.participation.ticketCode,
-            raffleId: res.participation.raffleId,
-          },
-        });
-      }
-    } catch (e) {
-      const errorResult = {
-        ok: false,
-        ticketId,
-        error: e?.code === "P2002" ? "ALREADY_PARTICIPATING" : "DB_ERROR",
+      return {
+        results: allResults,
+        successes: allSuccesses,
+        newParticipations: newTickets.length,
+        totalParticipationsAfter: totalAfterAdd,
+        maxParticipants: raffle.maxParticipants
       };
-      results.push(errorResult);
+
+    }, {
+      timeout: 15000,
+      isolationLevel: 'Serializable'
+    });
+
+    console.log("✅ Transacción completada exitosamente");
+
+    // 7. Auto-draw check
+    if (result.maxParticipants && 
+        result.totalParticipationsAfter >= result.maxParticipants) {
+      console.log("🎯 Verificando auto-draw...");
+      try {
+        await maybeTriggerAutoDraw(raffleId);
+        console.log("✅ Auto-draw verificado");
+      } catch (autoDrawError) {
+        console.error("❌ Error en auto-draw:", autoDrawError);
+      }
     }
+
+    const response = {
+      ok: true,
+      results: result.results,
+      successes: result.successes,
+      message: `${result.newParticipations} nuevas participaciones agregadas`,
+      debug: {
+        totalParticipationsAfter: result.totalParticipationsAfter,
+        maxParticipants: result.maxParticipants
+      }
+    };
+
+    console.log("📤 Enviando respuesta:", response);
+    return json(response);
+
+  } catch (error) {
+    console.error("❌ ERROR en POST /participate:", error.message);
+    console.error("📚 Stack trace:", error.stack);
+    
+    // Parsear errores específicos
+    const errorMessage = error.message || "INTERNAL_ERROR";
+    
+    if (errorMessage.includes("MIN_TICKETS_REQUIRED")) {
+      const match = errorMessage.match(/MIN_TICKETS_REQUIRED: (\d+)/);
+      const required = match ? parseInt(match[1]) : 1;
+      return json({
+        ok: false,
+        error: "MIN_TICKETS_REQUIRED",
+        message: `Este sorteo requiere un mínimo de ${required} ticket(s) por participante.`,
+        required
+      }, { status: 422 });
+    }
+
+    if (errorMessage === "RAFFLE_FULL") {
+      return json({
+        ok: false,
+        error: "RAFFLE_FULL",
+        message: "El sorteo ha alcanzado su capacidad máxima."
+      }, { status: 409 });
+    }
+
+    if (errorMessage.includes("TICKETS_NOT_FOUND")) {
+      return json({
+        ok: false,
+        error: "TICKETS_NOT_FOUND",
+        message: "Algunos tickets no existen o no te pertenecen."
+      }, { status: 404 });
+    }
+
+    if (errorMessage.includes("TICKET_VALIDATION_FAILED")) {
+      return json({
+        ok: false,
+        error: "TICKET_VALIDATION_FAILED",
+        message: "Algunos tickets no son válidos para este sorteo."
+      }, { status: 422 });
+    }
+
+    return json({
+      ok: false,
+      error: errorMessage,
+      message: "Error interno al procesar la participación.",
+      debug: { originalError: error.message }
+    }, { status: 500 });
   }
-
-  // Intentá programar autodraw si se llenó el cupo
-  try {
-    await maybeTriggerAutoDraw(raffleId);
-  } catch {
-    // no bloquear respuesta por esto
-  }
-
-  const hasSuccesses = successes.length > 0;
-
-  return json({
-    ok: hasSuccesses,
-    results,
-    successes, // Formato esperado por handleParticipationSuccess en el frontend
-  });
 }

@@ -144,19 +144,20 @@ export async function POST(req) {
       }
     }
 
-    // Notificaciones (best-effort)
+    // ✅ NOTIFICACIONES MEJORADAS - Mensaje de obsequio amigable
     try {
       const okUsers = results.filter((r) => r.ok && r.count > 0).map((r) => r.userId);
       if (okUsers.length > 0) {
         await prisma.notification.createMany({
           data: okUsers.map((uid) => ({
             userId: uid,
-            title: `Se te asignaron ${cantidad} ticket(s)`,
-            message: `El superadmin emitió ${cantidad} ticket(s) a tu favor.`,
+            title: "¡Felicitaciones!",
+            message: `¡Recibiste ${cantidad} ticket${cantidad > 1 ? 's' : ''} de obsequio! Ya puedes participar en cualquier sorteo.`,
             type: "SYSTEM_ALERT",
             ticketId: null,
           })),
         });
+        console.log(`[ISSUE] ${okUsers.length} notificaciones de obsequio enviadas`);
       }
     } catch (e) {
       console.warn("[ISSUE] notificaciones fallidas:", e?.message || e);

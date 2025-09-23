@@ -207,7 +207,7 @@ function NotificationItem({ notification, onMarkRead, onDelete, onUndo, onNotifi
           >
             <div 
               className="p-3 hover:bg-gray-50 text-sm flex justify-between items-start gap-3 cursor-pointer"
-              onClick={() => onNotificationClick && onNotificationClick()}
+              onClick={() => onNotificationClick && onNotificationClick(notification)}
             >
               <div className="flex-1 min-w-0">
                 <div className={`${!notification.read ? 'font-medium' : ''} break-words`}>
@@ -333,9 +333,59 @@ export default function Header() {
   };
 
   // Función para cerrar dropdown cuando se hace clic en una notificación
-  const handleNotificationClick = () => {
+  const handleNotificationClick = (notification) => {
     setNotifOpen(false);
+
+    if (notification && !notification.read) {
+      markRead(notification.id);
+    }
+
+    // Roles
+    const role = (session?.user?.role || "user").toString().toLowerCase();
+    const isAdmin = role === "admin";
+    const isSuper = role === "superadmin";
+
+    // Deep-link directo si viene desde el backend
+    if (notification?.actionUrl) {
+      router.push(notification.actionUrl);
+      return;
+    }
+
+    // Heurística de "publicación pendiente"
+    const title = notification?.title ? String(notification.title).toLowerCase() : "";
+    const msg = notification?.message ? String(notification.message).toLowerCase() : "";
+    const isPublishRequest =
+      title.includes("publicación") ||
+      title.includes("pendiente") ||
+      title.includes("aprobar") ||
+      msg.includes("publicación") ||
+      msg.includes("pendiente") ||
+      msg.includes("aprobar") ||
+      msg.includes("activar");
+
+    if ((isAdmin || isSuper) && isPublishRequest) {
+      const base = "/admin/publicaciones-pendientes";
+      const url = notification?.raffleId ? `${base}?raffleId=${notification.raffleId}` : base;
+      router.push(url);
+      return;
+    }
+
+    // Fallbacks
+    if (notification?.raffleId) {
+      router.push(`/raffles/${notification.raffleId}`);
+      return;
+    }
+
+    router.push("/notificaciones");
   };
+
+  // Contar notificaciones no leídas
+  const unreadCount = notifications.filter(n => !n.read).length;
+
+  // Determinar roles
+  const role = (session?.user?.role || "user").toString().toLowerCase();
+  const isAdmin = role === "admin";
+  const isSuper = role === "superadmin";
 
   // Función para manejar el cierre de sesión con redirect forzado
   const handleSignOut = async () => {
@@ -346,14 +396,6 @@ export default function Header() {
       router.push("/");
     }
   };
-
-  // Contar notificaciones no leídas
-  const unreadCount = notifications.filter(n => !n.read).length;
-
-  // Determinar roles
-  const role = (session?.user?.role || "user").toString().toLowerCase();
-  const isAdmin = role === "admin";
-  const isSuper = role === "superadmin";
 
   return (
     <header className="fixed top-0 left-0 w-full bg-orange-500 text-white shadow-md z-50">
@@ -548,13 +590,22 @@ export default function Header() {
                     
                     {/* Mostrar Panel Admin a admin y superadmin */}
                     {(isAdmin || isSuper) && (
-                      <Link 
-                        href="/admin" 
-                        className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
-                        onClick={() => setMenuOpen(false)}
-                      >
-                        Panel Admin
-                      </Link>
+                      <>
+                        <Link 
+                          href="/admin" 
+                          className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                          onClick={() => setMenuOpen(false)}
+                        >
+                          Panel Admin
+                        </Link>
+                        <Link 
+                          href="/admin/publicaciones-pendientes" 
+                          className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
+                          onClick={() => setMenuOpen(false)}
+                        >
+                          Publicaciones pendientes
+                        </Link>
+                      </>
                     )}
                     
                     <Link 

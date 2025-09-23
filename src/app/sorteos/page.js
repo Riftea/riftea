@@ -47,18 +47,30 @@ function SafeImage({
   // Loader passthrough para evitar domains y usar la URL tal cual
   const passthroughLoader = ({ src }) => src;
 
-  const common = {
-    alt: alt || "Imagen",
-    className,
-    src: finalSrc,
-    loader: passthroughLoader,
-    unoptimized: true,
-  };
+  if (fill) {
+    return (
+      <Image
+        alt={alt || "Imagen"}
+        className={className}
+        src={finalSrc}
+        loader={passthroughLoader}
+        unoptimized
+        fill
+        sizes={sizes}
+      />
+    );
+  }
 
-  return fill ? (
-    <Image {...common} fill sizes={sizes} />
-  ) : (
-    <Image {...common} width={width ?? 400} height={height ?? 300} />
+  return (
+    <Image
+      alt={alt || "Imagen"}
+      className={className}
+      src={finalSrc}
+      loader={passthroughLoader}
+      unoptimized
+      width={width ?? 400}
+      height={height ?? 300}
+    />
   );
 }
 

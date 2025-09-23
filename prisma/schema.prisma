@@ -49,6 +49,16 @@ enum TicketStatus {
 }
 
 /**
+ * Visibilidad pública (listado) — moderación mínima
+ * Reutilizamos isPrivate y agregamos solo el estado de publicación.
+ */
+enum ListingStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/**
  * =========================
  * Models
  * =========================
@@ -63,6 +73,8 @@ model User {
   isActive   Boolean @default(true) @map("is_active")
   // ✅ Nuevo: verificación de usuario
   isVerified Boolean @default(false) @map("is_verified")
+  // ⭐ NUEVO: Campo para controlar primer login
+  firstLogin Boolean @default(true) @map("first_login")
   
   // ✅ Nuevos campos para el perfil
   whatsapp       String?    // Número de WhatsApp
@@ -131,9 +143,15 @@ model Raffle {
 
   // Participación
   maxParticipants Int     @map("max_participants")
-  isPrivate       Boolean @default(false) @map("is_private")
+  isPrivate       Boolean @default(false) @map("is_private") // Reusado: true = UNLISTED, false = LISTED
 
-  // ✅ NUEVOS CAMPOS: mínimo por participante + obligatoriedad
+  // ✅ Moderación de visibilidad pública (mínimos agregados)
+  listingStatus     ListingStatus @default(APPROVED) @map("listing_status")
+  listingReviewedBy String?       @map("listing_reviewed_by")
+  listingReviewedAt DateTime?     @map("listing_reviewed_at")
+  listingReason     String?       @map("listing_reason")
+
+  // ✅ NUEVOS CAMPOS: mínimo por participación + obligatoriedad
   minTicketsPerParticipant Int?    @map("min_tickets_per_participant")
   minTicketsIsMandatory    Boolean @default(false) @map("min_tickets_is_mandatory")
 
@@ -149,6 +167,7 @@ model Raffle {
   @@index([winnerId])
   @@index([status])
   @@index([isPrivate])
+  @@index([listingStatus])
   @@index([winnerParticipationId])
   @@index([isLocked])
   @@map("raffles")

@@ -1,9 +1,9 @@
 // src/app/sorteo/[id]/page.js
 "use client";
 
-import { use, useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import ProgressBar from "@/components/raffle/ProgressBar";
@@ -79,6 +79,19 @@ function extractProgressPayload(raw) {
   return { list: Array.isArray(list) ? list : [], applied, max };
 }
 
+/* ========= Helper: debounce ========= */
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
 /* ======================= Storage Helpers ======================= */
 
 function getStorageKey(id, suffix) {
@@ -86,23 +99,23 @@ function getStorageKey(id, suffix) {
 }
 
 function saveGoalData(id, timestamp, drawTime) {
-  if (typeof window === 'undefined') return;
+  if (typeof window === "undefined") return;
   try {
-    localStorage.setItem(getStorageKey(id, 'goal_timestamp'), timestamp);
-    localStorage.setItem(getStorageKey(id, 'draw_time'), drawTime);
+    localStorage.setItem(getStorageKey(id, "goal_timestamp"), timestamp);
+    localStorage.setItem(getStorageKey(id, "draw_time"), drawTime);
   } catch (e) {
-    console.warn('No se pudo guardar en localStorage:', e);
+    console.warn("No se pudo guardar en localStorage:", e);
   }
 }
 
 function getGoalData(id) {
-  if (typeof window === 'undefined') return { timestamp: null, drawTime: null };
+  if (typeof window === "undefined") return { timestamp: null, drawTime: null };
   try {
-    const timestamp = localStorage.getItem(getStorageKey(id, 'goal_timestamp'));
-    const drawTime = localStorage.getItem(getStorageKey(id, 'draw_time'));
-    return { 
+    const timestamp = localStorage.getItem(getStorageKey(id, "goal_timestamp"));
+    const drawTime = localStorage.getItem(getStorageKey(id, "draw_time"));
+    return {
       timestamp: timestamp ? new Date(timestamp) : null,
-      drawTime: drawTime ? new Date(drawTime) : null
+      drawTime: drawTime ? new Date(drawTime) : null,
     };
   } catch (e) {
     return { timestamp: null, drawTime: null };
@@ -110,19 +123,20 @@ function getGoalData(id) {
 }
 
 function clearGoalData(id) {
-  if (typeof window === 'undefined') return;
+  if (typeof window === "undefined") return;
   try {
-    localStorage.removeItem(getStorageKey(id, 'goal_timestamp'));
-    localStorage.removeItem(getStorageKey(id, 'draw_time'));
+    localStorage.removeItem(getStorageKey(id, "goal_timestamp"));
+    localStorage.removeItem(getStorageKey(id, "draw_time"));
   } catch (e) {
-    console.warn('No se pudo limpiar localStorage:', e);
+    console.warn("No se pudo limpiar localStorage:", e);
   }
 }
 
 /* ======================= Page ======================= */
 
-export default function SorteoPage({ params }) {
-  const { id } = use(params);
+export default function SorteoPage() {
+  const params = useParams();
+  const id = params?.id;
   const { data: session } = useSession();
   const router = useRouter();
 
@@ -158,10 +172,10 @@ export default function SorteoPage({ params }) {
   useEffect(() => {
     if (!id) return;
     const { timestamp, drawTime } = getGoalData(id);
-    
+
     if (timestamp && drawTime) {
       setGoalReachedTimestamp(timestamp);
-      
+
       // Solo configurar countdown si aún no ha expirado
       if (drawTime.getTime() > Date.now()) {
         setDrawCountdownTarget(drawTime);
@@ -172,8 +186,29 @@ export default function SorteoPage({ params }) {
     }
   }, [id]);
 
+  /* ========= Guardado optimizado (evita writes innecesarios) ========= */
+  const optimizedSaveGoalData = useCallback((raffleId, timestamp, drawTime) => {
+    if (typeof window === "undefined") return;
+    const existing = getGoalData(raffleId);
+    if (
+      existing.timestamp &&
+      existing.drawTime &&
+      existing.timestamp.getTime() === new Date(timestamp).getTime()
+    ) {
+      return; // Ya está guardado
+    }
+    try {
+      localStorage.setItem(getStorageKey(raffleId, "goal_timestamp"), timestamp);
+      localStorage.setItem(getStorageKey(raffleId, "draw_time"), drawTime);
+    } catch (e) {
+      console.warn("No se pudo guardar en localStorage:", e);
+    }
+  }, []); // <- sin getGoalData en deps
+
+  /* =================== Carga de participantes =================== */
   const loadParticipants = useCallback(
     async (raffleId = id) => {
+      if (!raffleId) return;
       try {
         setParticipantsLoading(true);
         const res = await fetch(`/api/raffles/${raffleId}/progress`, {
@@ -194,41 +229,112 @@ export default function SorteoPage({ params }) {
         if (max && applied >= max && previousParticipantsCount < max && !goalReachedTimestamp) {
           const now = new Date();
           const drawTime = new Date(Date.now() + 1 * 60 * 1000); // 1 minuto
-          
-          // Guardar en localStorage
-          saveGoalData(id, now.toISOString(), drawTime.toISOString());
-          
+
+          // Guardar en localStorage (optimizado)
+          optimizedSaveGoalData(id, now.toISOString(), drawTime.toISOString());
+
           // Actualizar estados
           setGoalReachedTimestamp(now);
           setDrawCountdownTarget(drawTime);
           setShowGoalReached(true);
-          
+
           // Enviar notificaciones (solo si es el owner)
           if (session?.user?.id === raffle?.ownerId && !notificationsSent) {
             try {
               await fetch(`/api/raffles/${raffleId}/notify-participants`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
               });
               setNotificationsSent(true);
             } catch (error) {
-              console.error('Error enviando notificaciones:', error);
+              console.error("Error enviando notificaciones:", error);
             }
           }
-          
+
           // Auto-ocultar la notificación después de 8 segundos
           setTimeout(() => setShowGoalReached(false), 8000);
         }
-        
-        setPreviousParticipantsCount(applied);
 
+        setPreviousParticipantsCount(applied);
       } catch {
         setParticipants([]);
       } finally {
         setParticipantsLoading(false);
       }
     },
-    [id, previousParticipantsCount, session?.user?.id, raffle?.ownerId, notificationsSent, goalReachedTimestamp]
+    [
+      id,
+      previousParticipantsCount,
+      session?.user?.id,
+      raffle?.ownerId,
+      notificationsSent,
+      goalReachedTimestamp,
+      optimizedSaveGoalData,
+    ]
+  );
+
+  /* ========== DEBOUNCED loadParticipants sin warning de deps ========== */
+  const debouncedLoadParticipants = useMemo(
+    () =>
+      debounce(async (raffleId) => {
+        if (participantsLoading) return; // Evita solapamiento
+        try {
+          setParticipantsLoading(true);
+          const res = await fetch(`/api/raffles/${raffleId}/progress`, {
+            cache: "no-store",
+            credentials: "include",
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            setParticipants([]);
+            return;
+          }
+
+          const { list, applied, max } = extractProgressPayload(data);
+          setParticipants(list);
+
+          if (max && applied >= max && previousParticipantsCount < max && !goalReachedTimestamp) {
+            const now = new Date();
+            const drawTime = new Date(Date.now() + 1 * 60 * 1000); // 1 minuto
+
+            optimizedSaveGoalData(id, now.toISOString(), drawTime.toISOString());
+            setGoalReachedTimestamp(now);
+            setDrawCountdownTarget(drawTime);
+            setShowGoalReached(true);
+
+            if (session?.user?.id === raffle?.ownerId && !notificationsSent) {
+              try {
+                await fetch(`/api/raffles/${raffleId}/notify-participants`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                });
+                setNotificationsSent(true);
+              } catch (error) {
+                console.error("Error enviando notificaciones:", error);
+              }
+            }
+
+            setTimeout(() => setShowGoalReached(false), 8000);
+          }
+
+          setPreviousParticipantsCount(applied);
+        } catch (error) {
+          console.error("Error loading participants (debounced):", error);
+          setParticipants([]);
+        } finally {
+          setParticipantsLoading(false);
+        }
+      }, 1000), // 1s de debounce
+    [
+      id,
+      previousParticipantsCount,
+      session?.user?.id,
+      raffle?.ownerId,
+      notificationsSent,
+      goalReachedTimestamp,
+      participantsLoading,
+      optimizedSaveGoalData,
+    ]
   );
 
   const checkUserParticipation = useCallback(
@@ -258,6 +364,7 @@ export default function SorteoPage({ params }) {
   useEffect(() => {
     let mounted = true;
     (async () => {
+      if (!id) return;
       setLoading(true);
       setError(null);
       try {
@@ -267,7 +374,6 @@ export default function SorteoPage({ params }) {
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) {
-          // Solo mostrar error si es un problema real, no de estado
           if (res.status === 404) {
             throw new Error("Sorteo no encontrado");
           } else if (res.status >= 500) {
@@ -275,13 +381,13 @@ export default function SorteoPage({ params }) {
           }
           // Para otros códigos, intentar usar la data existente
         }
-        
+
         const raffleObj = json?.raffle ?? json;
         const merged = {
           ...raffleObj,
           unitPrice: raffleObj?.unitPrice ?? json?.meta?.ticketPrice ?? 0,
         };
-        
+
         if (!mounted) return;
         setRaffle(merged);
 
@@ -298,28 +404,79 @@ export default function SorteoPage({ params }) {
     };
   }, [id, session, loadParticipants, checkUserParticipation]);
 
-  // Polling más frecuente cuando está cerca de la meta
+  /* =================== POLLING INTELIGENTE =================== */
   useEffect(() => {
     if (!raffle?.id) return;
-    if (!["ACTIVE", "PUBLISHED"].includes(raffle.status)) return;
-    
-    // Calcular frecuencia de polling basada en proximidad a la meta
-    const currentCount = participants.length;
-    const maxCount = raffle.maxParticipants;
-    
-    let pollInterval = 10000; // 10s por defecto
-    
-    if (maxCount) {
-      const remainingSlots = maxCount - currentCount;
-      if (remainingSlots <= 5) {
-        pollInterval = 2000; // 2s cuando quedan 5 o menos
-      } else if (remainingSlots <= 10) {
-        pollInterval = 5000; // 5s cuando quedan 10 o menos
+    if (!["ACTIVE", "PUBLISHED", "READY_TO_DRAW"].includes(raffle.status)) return;
+
+    let pollInterval = 30000; // 30s por defecto
+
+    if (raffle.maxParticipants) {
+      const currentCount = participants.length;
+      const remainingSlots = raffle.maxParticipants - currentCount;
+
+      // Acelerar solo cuando quedan 2 o menos
+      if (remainingSlots <= 2 && remainingSlots > 0) {
+        pollInterval = 5000; // 5s
       }
     }
-    
-    const t = setInterval(() => loadParticipants(raffle.id), pollInterval);
-    return () => clearInterval(t);
+
+    // Si ya está listo para sorteo, no hay prisa
+    if (raffle.status === "READY_TO_DRAW") {
+      pollInterval = 60000; // 1 minuto
+    }
+
+    const intervalId = setInterval(() => {
+      // Usar la versión debounced ya memorizada
+      debouncedLoadParticipants(raffle.id);
+    }, pollInterval);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [
+    raffle?.id,
+    raffle?.status,
+    raffle?.maxParticipants,
+    participants.length,
+    debouncedLoadParticipants,
+  ]);
+
+  // Polling crítico solo cuando queda 1 slot
+  useEffect(() => {
+    if (!raffle?.id) return;
+    if (raffle.status !== "ACTIVE") return;
+    if (!raffle.maxParticipants) return;
+
+    const currentCount = participants.length;
+    const remainingSlots = raffle.maxParticipants - currentCount;
+
+    if (remainingSlots === 1) {
+      const criticalInterval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/raffles/${raffle.id}/progress`, {
+            cache: "no-store",
+            credentials: "include",
+          });
+
+          if (res.ok) {
+            const data = await res.json().catch(() => ({}));
+            const { applied } = extractProgressPayload(data);
+
+            // Si se llenó, detener inmediatamente
+            if (applied >= raffle.maxParticipants) {
+              clearInterval(criticalInterval);
+              // Una última carga completa (no debounced)
+              loadParticipants(raffle.id);
+            }
+          }
+        } catch (error) {
+          console.error("Error en polling crítico:", error);
+        }
+      }, 3000); // 3s solo cuando queda 1
+
+      return () => clearInterval(criticalInterval);
+    }
   }, [raffle?.id, raffle?.status, raffle?.maxParticipants, participants.length, loadParticipants]);
 
   const isOwner = session?.user?.id === raffle?.ownerId;
@@ -334,20 +491,24 @@ export default function SorteoPage({ params }) {
 
   const participantsCount = useMemo(() => {
     if (participants.length) return participants.length;
-    return pickNumber(
-      raffle?.stats?.participationsCount,
-      raffle?.stats?.totalParticipations,
-      raffle?._count?.participations
-    ) ?? 0;
+    return (
+      pickNumber(
+        raffle?.stats?.participationsCount,
+        raffle?.stats?.totalParticipations,
+        raffle?._count?.participations
+      ) ?? 0
+    );
   }, [participants.length, raffle?.stats, raffle?._count]);
 
   const maxParticipants = useMemo(() => {
-    return pickNumber(
-      raffle?.stats?.maxParticipants,
-      raffle?.maxParticipants,
-      raffle?.stats?.capacity,
-      raffle?.capacity
-    ) ?? null;
+    return (
+      pickNumber(
+        raffle?.stats?.maxParticipants,
+        raffle?.maxParticipants,
+        raffle?.stats?.capacity,
+        raffle?.capacity
+      ) ?? null
+    );
   }, [raffle?.stats, raffle?.maxParticipants, raffle?.capacity]);
 
   // Verificar si está lleno
@@ -375,7 +536,7 @@ export default function SorteoPage({ params }) {
     return "/favicon.ico";
   };
 
-  // --------- NUEVO: mínimo por usuario (campo > descripción) ----------
+  // --------- mínimo por usuario (campo > descripción) ----------
   const { minTicketsRequired, minTicketsIsMandatory } = useMemo(() => {
     const fieldMin = Number(raffle?.minTicketsPerParticipant);
     const fieldMandatory = Boolean(raffle?.minTicketsIsMandatory);
@@ -435,6 +596,71 @@ export default function SorteoPage({ params }) {
     } catch {}
   };
 
+  /* ==================== ADMIN: verificación de rol ==================== */
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [executingDraw, setExecutingDraw] = useState(false);
+
+  useEffect(() => {
+    const checkAdminRole = async () => {
+      if (!session?.user?.id) {
+        setIsAdmin(false);
+        return;
+      }
+      try {
+        const res = await fetch("/api/users/me", { credentials: "include" });
+        if (res.ok) {
+          const userData = await res.json();
+          const role = String(userData?.role || "").toUpperCase();
+          setIsAdmin(role === "ADMIN" || role === "SUPER_ADMIN" || role === "SUPERADMIN");
+        } else {
+          setIsAdmin(false);
+        }
+      } catch (error) {
+        console.error("Error verificando rol de admin:", error);
+        setIsAdmin(false);
+      }
+    };
+    checkAdminRole();
+  }, [session?.user?.id]);
+
+  /* ==================== ADMIN: ejecutar sorteo manual ==================== */
+  const executeManualDraw = async () => {
+    if (!confirm("¿Estás seguro de que quieres ejecutar este sorteo manualmente?")) {
+      return;
+    }
+
+    setExecutingDraw(true);
+    try {
+      const res = await fetch(`/api/raffles/${id}/manual-draw`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const result = await res.json().catch(() => ({}));
+
+      if (res.ok && result?.success) {
+        alert(
+          `¡Sorteo ejecutado exitosamente!\nGanador: ${
+            result?.result?.winnerUserId || "Ver detalles"
+          }`
+        );
+        // Podrías redirigir directo al vivo:
+        // router.push(`/sorteo/${id}/en-vivo`);
+        setTimeout(() => {
+          window.location.reload();
+        }, 1000);
+      } else {
+        alert(`Error ejecutando sorteo: ${result?.error || result?.message || "Desconocido"}`);
+      }
+    } catch (error) {
+      console.error("Error ejecutando sorteo manual:", error);
+      alert("Error de conexión al ejecutar sorteo");
+    } finally {
+      setExecutingDraw(false);
+    }
+  };
+
   /* ======================= UI ======================= */
 
   if (loading) {
@@ -464,9 +690,7 @@ export default function SorteoPage({ params }) {
         <div className="container mx-auto px-4 py-8">
           <div className="border rounded-3xl p-8 text-center bg-red-500/20 border-red-500/50">
             <div className="text-6xl mb-4">❌</div>
-            <h1 className="text-2xl font-bold text-white mb-4">
-              Sorteo no encontrado
-            </h1>
+            <h1 className="text-2xl font-bold text-white mb-4">Sorteo no encontrado</h1>
             <p className="text-white/70 mb-6">
               {error || "No se pudo cargar la información del sorteo"}
             </p>
@@ -494,6 +718,14 @@ export default function SorteoPage({ params }) {
     ? drawAtDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : null;
 
+  // Determinar si mostrar botón de admin (se calcula acá para tener participantsCount definido)
+  const showAdminDrawButton =
+    isAdmin &&
+    raffle?.status === "READY_TO_DRAW" &&
+    !raffle?.drawnAt &&
+    !raffle?.winnerParticipationId &&
+    (participantsCount ?? 0) >= 2;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 pt-20">
       <div className="container mx-auto px-4 py-8">
@@ -510,13 +742,13 @@ export default function SorteoPage({ params }) {
                   </div>
                   {drawCountdownTarget && (
                     <div className="mt-1 bg-white/20 px-2 py-1 rounded text-xs font-mono">
-                      <CountdownTimer 
+                      <CountdownTimer
                         endsAt={drawCountdownTarget}
                         mode="draw"
                         compact={true}
                         onExpire={() => {
                           clearGoalData(id);
-                          router.push(`/sorteo/${id}/en-vivo`)
+                          router.push(`/sorteo/${id}/en-vivo`);
                         }}
                       />
                     </div>
@@ -574,16 +806,14 @@ export default function SorteoPage({ params }) {
           <div className="flex flex-wrap items-center gap-3 text-white/70">
             <span
               className={`px-3 py-1 rounded-full text-sm font-medium ${
-                raffle?.status === "ACTIVE" || (raffle?.status === "ACTIVE" && isFull)
-                  ? isFull 
-                    ? "bg-green-500/20 text-green-300"
-                    : "bg-green-500/20 text-green-300"
+                raffle?.status === "ACTIVE"
+                  ? "bg-green-500/20 text-green-300"
                   : raffle?.status === "PUBLISHED"
                   ? "bg-blue-500/20 text-blue-300"
-                  : raffle?.status === "FINISHED"
-                  ? "bg-purple-500/20 text-purple-300"
                   : raffle?.status === "READY_TO_DRAW"
                   ? "bg-yellow-500/20 text-yellow-300"
+                  : raffle?.status === "FINISHED"
+                  ? "bg-purple-500/20 text-purple-300"
                   : "bg-gray-500/20 text-gray-300"
               }`}
             >
@@ -600,7 +830,7 @@ export default function SorteoPage({ params }) {
                 : raffle?.status}
             </span>
             <span>Por: {raffle?.owner?.name || "Anónimo"}</span>
-            <span>Creado: {new Date(raffle?.createdAt).toLocaleDateString()}</span>
+            <span>Creado: {raffle?.createdAt ? new Date(raffle.createdAt).toLocaleDateString() : "-"}</span>
             {goalReachedTimestamp && (
               <span className="bg-green-500/20 px-2 py-1 rounded text-xs">
                 Meta alcanzada: {goalReachedTimestamp.toLocaleString()}
@@ -622,7 +852,9 @@ export default function SorteoPage({ params }) {
                       El sorteo se realizará a las <b>{drawTimeHHMM}</b>{" "}
                       ({minutesUntilDraw > 0 ? `en ${minutesUntilDraw} min.` : "en instantes"}).
                     </p>
-                    <p className="text-sm opacity-80">Programado para: {drawAtDate.toLocaleString()}</p>
+                    <p className="text-sm opacity-80">
+                      Programado para: {drawAtDate ? drawAtDate.toLocaleString() : "-"}
+                    </p>
                   </div>
                   <button
                     onClick={goLive}
@@ -634,6 +866,34 @@ export default function SorteoPage({ params }) {
                     }`}
                   >
                     Ir al sorteo →
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Botón Admin para ejecutar sorteo manual */}
+            {showAdminDrawButton && (
+              <div className="bg-red-500/15 border border-red-500/40 rounded-2xl p-5 mb-6">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-red-300 font-semibold">Listo para ejecutar sorteo</p>
+                    <p className="text-sm opacity-80">
+                      Solo administradores pueden ejecutar el sorteo manual cuando está <b>READY_TO_DRAW</b>.
+                    </p>
+                  </div>
+                  <button
+                    onClick={executeManualDraw}
+                    disabled={executingDraw}
+                    className="px-4 py-2 rounded-xl border border-red-600 bg-red-600/90 text-white font-medium hover:bg-red-600 disabled:opacity-60"
+                  >
+                    {executingDraw ? (
+                      <span className="flex items-center gap-2">
+                        <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></span>
+                        Ejecutando…
+                      </span>
+                    ) : (
+                      "🎲 Ejecutar sorteo ahora"
+                    )}
                   </button>
                 </div>
               </div>
@@ -658,7 +918,7 @@ export default function SorteoPage({ params }) {
                       <div className="mt-2 flex items-center gap-2">
                         <span className="text-xs">Sorteo en:</span>
                         <div className="bg-white/10 px-2 py-1 rounded font-mono text-sm">
-                          <CountdownTimer 
+                          <CountdownTimer
                             endsAt={drawCountdownTarget}
                             mode="draw"
                             compact={true}
@@ -686,8 +946,8 @@ export default function SorteoPage({ params }) {
                       alt={raffle.title || "Sorteo"}
                       fill
                       className="object-cover rounded-2xl"
-                      loader={({ src }) => src}   // passthrough para dominos no configurados
-                      unoptimized                 // evita restricción de dominios
+                      loader={({ src }) => src} // passthrough para dominios no configurados
+                      unoptimized // evita restricción de dominios
                       priority
                     />
                   </div>
@@ -700,7 +960,7 @@ export default function SorteoPage({ params }) {
               </div>
             </div>
 
-            {/* Barra de progreso mejorada */}
+            {/* Barra de progreso */}
             <div className="mb-8">
               <div className="flex justify-between text-xs text-slate-400 mb-2">
                 <span>Participantes</span>
@@ -714,7 +974,6 @@ export default function SorteoPage({ params }) {
                 target={maxParticipants || Math.max(1, participantsCount)}
                 animated
               />
-              {/* Indicador visual cuando está lleno */}
               {isFull && (
                 <div className="mt-2 text-center">
                   <span className="inline-flex items-center px-3 py-1 rounded-full bg-green-500/20 text-green-300 text-sm font-medium">
@@ -761,23 +1020,27 @@ export default function SorteoPage({ params }) {
                   {participantsLoading ? "🔄" : "🔄 Actualizar"}
                 </button>
               </div>
-              
+
               {participants.length > 0 ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 max-h-80 overflow-y-auto">
                   {participants.map((p, i) => (
                     <div
                       key={p.id || i}
                       className={`group rounded-xl border overflow-hidden transition ${
-                        p.isWinner 
-                          ? "bg-amber-500/20 border-amber-500/50" 
+                        p.isWinner
+                          ? "bg-amber-500/20 border-amber-500/50"
                           : "bg-slate-900/50 border-slate-800 hover:border-slate-700/60"
                       }`}
                     >
                       <div className="p-4">
                         <div className="flex items-center gap-3 mb-2">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-bold ${
-                            p.isWinner ? "bg-amber-500" : "bg-gradient-to-r from-purple-500 to-pink-500"
-                          }`}>
+                          <div
+                            className={`w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-bold ${
+                              p.isWinner
+                                ? "bg-amber-500"
+                                : "bg-gradient-to-r from-purple-500 to-pink-500"
+                            }`}
+                          >
                             {p.isWinner ? "👑" : i + 1}
                           </div>
                           <div className="flex-1 min-w-0">
@@ -799,8 +1062,18 @@ export default function SorteoPage({ params }) {
               ) : (
                 <div className="text-center py-12">
                   <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-white/5 flex items-center justify-center">
-                    <svg className="w-8 h-8 text-white/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                    <svg
+                      className="w-8 h-8 text-white/40"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 0 014 0zM7 10a2 2 0 11-4 0 2 0 4 0z"
+                      />
                     </svg>
                   </div>
                   <h4 className="text-white font-medium mb-2">Aún no hay participantes</h4>
@@ -847,7 +1120,9 @@ export default function SorteoPage({ params }) {
             <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20 sticky top-24">
               {unitPrice > 0 && (
                 <div className="text-center mb-6">
-                  <div className="text-lg text-white/70 mb-1">Tickets recomendados para participar</div>
+                  <div className="text-lg text-white/70 mb-1">
+                    Tickets recomendados para participar
+                  </div>
                   <div className="text-4xl font-bold text-white mb-2">{unitPrice}</div>
                   <div className="text-white/70">por ticket</div>
                 </div>
@@ -913,19 +1188,23 @@ export default function SorteoPage({ params }) {
                 </div>
               )}
 
-              {session && canParticipate && !showDrawCallout && raffle?.status !== "FINISHED" && !isFull && (
-                <div className="mb-4">
-                  <button
-                    onClick={() => setShowParticipateModal(true)}
-                    className="w-full py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
-                  >
-                    🎯 Participar
-                  </button>
-                  <p className="text-white/60 text-xs text-center mt-2">
-                    Elegí tus tickets disponibles para participar
-                  </p>
-                </div>
-              )}
+              {session &&
+                canParticipate &&
+                !showDrawCallout &&
+                raffle?.status !== "FINISHED" &&
+                !isFull && (
+                  <div className="mb-4">
+                    <button
+                      onClick={() => setShowParticipateModal(true)}
+                      className="w-full py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                    >
+                      🎯 Participar
+                    </button>
+                    <p className="text-white/60 text-xs text-center mt-2">
+                      Elegí tus tickets disponibles para participar
+                    </p>
+                  </div>
+                )}
 
               {/* Mensaje cuando está lleno */}
               {isFull && !isOwner && (
@@ -938,7 +1217,7 @@ export default function SorteoPage({ params }) {
                     <div className="mt-2">
                       <div className="text-xs text-yellow-200/80 mb-1">Sorteo en:</div>
                       <div className="bg-white/10 px-2 py-1 rounded font-mono text-sm">
-                        <CountdownTimer 
+                        <CountdownTimer
                           endsAt={drawCountdownTarget}
                           mode="draw"
                           compact={true}

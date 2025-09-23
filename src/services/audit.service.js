@@ -14,7 +14,7 @@ export async function logAuditEvent({
   userAgent = null,
   tx = null // transacción de Prisma opcional
 }) {
-  const prismaClient = tx || (await import("@/src/lib/prisma")).default;
+  const prismaClient = tx || (await import("@/lib/prisma")).default;
   
   // 🔐 Crear hash de integridad para prevenir manipulación
   const timestamp = new Date();
@@ -43,7 +43,7 @@ export async function logAuditEvent({
  * 📊 Obtener historial de auditoría para una entidad específica
  */
 export async function getEntityAuditHistory(entityType, entityId, limit = 50) {
-  const prisma = (await import("@/src/lib/prisma")).default;
+  const prisma = (await import("@/lib/prisma")).default;
   
   return await prisma.auditLog.findMany({
     where: {
@@ -68,7 +68,7 @@ export async function getEntityAuditHistory(entityType, entityId, limit = 50) {
  * 🔍 Verificar integridad de logs de auditoría
  */
 export async function verifyAuditIntegrity(auditLogId) {
-  const prisma = (await import("@/src/lib/prisma")).default;
+  const prisma = (await import("@/lib/prisma")).default;
   
   const log = await prisma.auditLog.findUnique({
     where: { id: auditLogId }
@@ -100,7 +100,7 @@ export async function verifyAuditIntegrity(auditLogId) {
  * 📈 Generar reporte de actividad por usuario
  */
 export async function generateUserActivityReport(userId, startDate, endDate) {
-  const prisma = (await import("@/src/lib/prisma")).default;
+  const prisma = (await import("@/lib/prisma")).default;
   
   const activities = await prisma.auditLog.findMany({
     where: {
@@ -138,7 +138,7 @@ export async function generateUserActivityReport(userId, startDate, endDate) {
  * 🚨 Detectar actividad sospechosa
  */
 export async function detectSuspiciousActivity(userId, timeWindowMinutes = 60) {
-  const prisma = (await import("@/src/lib/prisma")).default;
+  const prisma = (await import("@/lib/prisma")).default;
   
   const since = new Date(Date.now() - timeWindowMinutes * 60 * 1000);
   

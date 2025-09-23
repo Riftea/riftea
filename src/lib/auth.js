@@ -120,41 +120,108 @@ export const authOptions = {
   events: {
     async signIn({ user }) {
       if (!user?.email) return;
+      
       try {
-        // Usamos upsert para evitar duplicados
-        const up = await prisma.user.upsert({
+        // ✅ SOLUCIÓN OPTIMIZADA: Verificar existencia primero con una sola consulta
+        const existingUser = await prisma.user.findUnique({
           where: { email: user.email },
-          update: {
-            name: user.name ?? undefined,
-            image: user.image ?? undefined,
-          },
-          create: {
-            name: user.name ?? null,
-            email: user.email,
-            image: user.image ?? null,
-            // quitá el campo password si tu modelo ya no lo necesita
-            password: "NEXTAUTH_USER",
-          },
+          select: { id: true, name: true, firstLogin: true }
         });
-        console.log("[EVENT signIn] upsert OK:", up.email);
 
-        // Notificación de bienvenida (best-effort)
+        // 🔍 DEBUG LOGS - AGREGAR TEMPORALMENTE
+        console.log("🔍 DEBUG - Usuario:", user.email);
+        console.log("🔍 DEBUG - existingUser:", existingUser ? "SÍ EXISTE" : "NO EXISTE");
+        console.log("🔍 DEBUG - existingUser data:", existingUser);
+
+        const isNewUser = !existingUser;
+        console.log("🔍 DEBUG - isNewUser:", isNewUser);
+
+        let userId;
+        let userName;
+
+        if (isNewUser) {
+          // Usuario NUEVO - Crear en DB
+          const newUser = await prisma.user.create({
+            data: {
+              name: user.name ?? null,
+              email: user.email,
+              image: user.image ?? null,
+              password: "NEXTAUTH_USER",
+              firstLogin: true, // Marcar como primer login
+            },
+            select: { id: true, name: true }
+          });
+          
+          userId = newUser.id;
+          userName = newUser.name;
+          console.log("[EVENT signIn] NUEVO usuario creado:", user.email);
+          
+        } else {
+          // Usuario EXISTENTE - Solo actualizar datos
+          const updatedUser = await prisma.user.update({
+            where: { email: user.email },
+            data: {
+              name: user.name ?? undefined,
+              image: user.image ?? undefined,
+            },
+            select: { id: true, name: true }
+          });
+          
+          userId = updatedUser.id;
+          userName = updatedUser.name;
+          console.log("[EVENT signIn] Usuario existente actualizado:", user.email);
+        }
+
+        // ⭐ CREAR NOTIFICACIÓN BASADA EN SI ES NUEVO O EXISTENTE
         try {
+          let notificationTitle;
+          let notificationMessage;
+
+          if (isNewUser) {
+            // PRIMERA VEZ - Mensaje de registro
+            notificationTitle = "¡Bienvenido a Riftea!";
+            notificationMessage = `¡Hola ${userName ?? ""}! Gracias por registrarte. ¡Esperamos que disfrutes de los sorteos!`;
+            
+            // Marcar como ya no es primer login para próximas sesiones
+            await prisma.user.update({
+              where: { id: userId },
+              data: { firstLogin: false }
+            });
+            
+          } else {
+            // LOGIN POSTERIOR - Mensaje de bienvenida de vuelta
+            notificationTitle = "¡Hola de nuevo!";
+            notificationMessage = `¡Bienvenido de vuelta, ${userName ?? ""}! ¡Que tengas suerte en los sorteos!`;
+          }
+
+          // 🔍 DEBUG LOGS - VER QUÉ MENSAJE SE ESTÁ ENVIANDO
+          console.log("🔍 DEBUG - Tipo de mensaje:", isNewUser ? "REGISTRO (NUEVO)" : "LOGIN (EXISTENTE)");
+          console.log("🔍 DEBUG - Título:", notificationTitle);
+          console.log("🔍 DEBUG - Mensaje:", notificationMessage);
+
+          // Crear la notificación correspondiente
           await prisma.notification.create({
             data: {
-              userId: up.id,
-              title: "¡Bienvenido a Riftea!",
-              message: `¡Bienvenido ${up.name ?? "a Riftea"}! Gracias por registrarte.`,
+              userId: userId,
+              title: notificationTitle,
+              message: notificationMessage,
               type: "SYSTEM_ALERT",
             },
           });
-        } catch (e) {
-          // no bloquear
+
+          console.log(`[NOTIFICATION] ${isNewUser ? 'REGISTRO' : 'LOGIN'} notification created for:`, user.email);
+          
+        } catch (notificationError) {
+          console.error("[NOTIFICATION] Error creating notification (ignored):", notificationError?.message);
+          // No bloquear el login por errores de notificación
         }
-      } catch (e) {
-        console.error("[EVENT signIn] fallo upsert (ignorado):", e?.message);
+
+      } catch (mainError) {
+        console.error("[EVENT signIn] Error principal (ignorado):", mainError?.message);
+        // No bloquear el login por errores de DB
       }
     },
+    
     async signOut() {
       console.log("[EVENT] signOut");
     },

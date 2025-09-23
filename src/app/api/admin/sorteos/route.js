@@ -1,82 +1,70 @@
-// src/app/api/admin/sorteos/route.js - CORREGIDO
+// src/app/api/admin/sorteos/route.js
+
+import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
-import { authOptions } from '@/lib/auth';
+import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
-import { NextResponse } from 'next/server';
+
+// Evita cache en esta ruta y fuerza ejecución en servidor Node
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function GET() {
   try {
     const session = await getServerSession(authOptions);
-    
-    // Verificar que el usuario esté autenticado y sea ADMIN o SUPERADMIN
-    if (!session || !['ADMIN', 'SUPERADMIN'].includes(session.user.role?.toUpperCase())) {
-      return NextResponse.json(
-        { error: "No autorizado" },
-        { status: 403 }
-      );
+    const role = session?.user?.role ? String(session.user.role).toUpperCase() : "";
+
+    // Autorización básica: requiere sesión y ser ADMIN o SUPERADMIN
+    if (!session || !["ADMIN", "SUPERADMIN"].includes(role)) {
+      return NextResponse.json({ error: "No autorizado" }, { status: 403 });
     }
 
+    const baseSelect = {
+      id: true,
+      title: true,
+      description: true,
+      status: true,
+      endsAt: true,
+      createdAt: true,
+      ownerId: true,
+      _count: {
+        select: {
+          tickets: true,
+        },
+      },
+    };
+
     let raffles;
-    
-    if (session.user.role?.toUpperCase() === "SUPERADMIN") {
+
+    if (role === "SUPERADMIN") {
       // SUPERADMIN ve todos los sorteos
       raffles = await prisma.raffle.findMany({
         select: {
-          id: true,
-          title: true,
-          description: true,
-          status: true,
-          endsAt: true,
-          createdAt: true,
-          ownerId: true,
+          ...baseSelect,
           owner: {
             select: {
               name: true,
-              email: true
-            }
+              email: true,
+            },
           },
-          _count: {
-            select: {
-              tickets: true
-            }
-          }
         },
-        orderBy: { createdAt: 'desc' }
+        orderBy: { createdAt: "desc" },
       });
     } else {
-      // ADMIN solo ve sus propios sorteos
+      // ADMIN ve solo sus propios sorteos
       raffles = await prisma.raffle.findMany({
         where: {
-          ownerId: session.user.id
+          ownerId: session.user.id,
         },
-        select: {
-          id: true,
-          title: true,
-          description: true,
-          status: true,
-          endsAt: true,
-          createdAt: true,
-          ownerId: true,
-          _count: {
-            select: {
-              tickets: true
-            }
-          }
-        },
-        orderBy: { createdAt: 'desc' }
+        select: baseSelect,
+        orderBy: { createdAt: "desc" },
       });
     }
 
-    return NextResponse.json({
-      success: true,
-      raffles
-    });
-    
+    return NextResponse.json({ success: true, raffles });
   } catch (error) {
     console.error("Error obteniendo sorteos:", error);
-    return NextResponse.json(
-      { error: "Error interno del servidor" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 }

@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
+import Image from "next/image";
 
 /* =======================
    Helpers
@@ -648,10 +649,14 @@ export default function AdminRaffleEditPage() {
                 <div>
                   <label className="block text-sm font-medium text-gray-200 mb-2">Imagen actual</label>
                   <div className="relative w-full h-56 overflow-hidden rounded-lg border border-gray-700 bg-gray-800">
-                    <img
+                    <Image
                       src={preview || currentImageUrl || "/avatar-default.png"}
                       alt="Imagen del sorteo"
-                      className="w-full h-full object-cover"
+                      fill
+                      className="object-cover"
+                      sizes="(max-width: 768px) 100vw, 700px"
+                      // Para previews blob: evita optimización obligatoria
+                      unoptimized={Boolean(preview)}
                     />
                   </div>
                   {currentImageUrl && !preview && (
