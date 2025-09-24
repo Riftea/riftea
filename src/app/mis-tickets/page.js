@@ -130,6 +130,9 @@ function MisTicketsContent() {
   // tabs: activos | disponibles | participando | usados | resultados | todos
   const [tab, setTab] = useState("activos");
 
+  // manejo de borrado
+  const [deletingId, setDeletingId] = useState(null);
+
   // toast por query (?new=N)
   const newCount = searchParams.get("new");
 
@@ -168,6 +171,46 @@ function MisTicketsContent() {
       setMsg(`❌ ${e.message || e}`);
     } finally {
       setLoading(false);
+    }
+  }
+
+  /* === (C) borrar ticket (solo superadmin). Respeta impersonación via ?asUser= === */
+  async function handleDeleteTicket(t) {
+    if (!isSuperAdmin) return;
+    const id = t?.id || t?.uuid;
+    if (!id) {
+      setMsg("❌ No se pudo identificar el ticket a eliminar.");
+      return;
+    }
+    const code = t?.displayCode || t?.code || (t?.uuid ? t.uuid.slice(-8) : id);
+    const confirmMsg = asUser
+      ? `¿Eliminar el ticket ${code} como ${asUser}?\nEsta acción no se puede deshacer.`
+      : `¿Eliminar el ticket ${code}?\nEsta acción no se puede deshacer.`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      setDeletingId(id);
+      setMsg("");
+
+      const q = new URLSearchParams();
+      if (isSuperAdmin && asUser) q.set("asUser", asUser);
+
+      const res = await fetch(`/api/tickets/${encodeURIComponent(id)}?${q.toString()}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || "No se pudo eliminar el ticket");
+
+      // éxito: sacar de la lista local
+      setTickets((prev) => prev.filter((x) => (x.id || x.uuid) !== id));
+      setMsg("✅ Ticket eliminado correctamente.");
+    } catch (e) {
+      setMsg(`❌ ${e.message || e}`);
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -366,7 +409,13 @@ function MisTicketsContent() {
             </Link>
           </div>
         ) : (
-          <TicketsGrid tickets={shown} />
+          <TicketsGrid
+            tickets={shown}
+            isSuperAdmin={isSuperAdmin}
+            asUser={asUser}
+            onDelete={handleDeleteTicket}
+            deletingId={deletingId}
+          />
         )}
       </div>
     </div>
@@ -374,7 +423,7 @@ function MisTicketsContent() {
 }
 
 /* ===================== grid ===================== */
-function TicketsGrid({ tickets }) {
+function TicketsGrid({ tickets, isSuperAdmin, asUser, onDelete, deletingId }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
       {tickets.map((t) => {
@@ -389,8 +438,30 @@ function TicketsGrid({ tickets }) {
         const raffleActive = inRaffle && raffle && isRaffleActive(raffle);
         const raffleFinished = inRaffle && raffle && isRaffleFinished(raffle);
 
+        const idKey = t.id || t.uuid;
+        const isDeletingThis = deletingId === idKey;
+
         return (
-          <div key={t.id || t.uuid} className="ticket-container relative group">
+          <div key={idKey} className="ticket-container relative group">
+            {/* Botón eliminar (solo superadmin) */}
+            {isSuperAdmin && (
+              <div className="absolute top-1 right-1 z-20">
+                <button
+                  type="button"
+                  onClick={() => onDelete(t)}
+                  disabled={isDeletingThis}
+                  className={`text-xs font-bold px-2 py-1 rounded-lg border transition-all ${
+                    isDeletingThis
+                      ? "border-white/20 text-white/60 bg-white/5 cursor-not-allowed"
+                      : "border-rose-500/40 text-rose-200 hover:bg-rose-500/10"
+                  }`}
+                  title={asUser ? `Eliminar ticket como ${asUser}` : "Eliminar ticket"}
+                >
+                  {isDeletingThis ? "Eliminando…" : "🗑️ Eliminar"}
+                </button>
+              </div>
+            )}
+
             {/* Ticket horizontal compacto (proporción 3:1) */}
             <div className="relative" style={{ paddingTop: "33.33%" }}>
               <div
@@ -494,7 +565,7 @@ function TicketsGrid({ tickets }) {
                       </div>
                     ) : (
                       <Link
-                        href={`/sorteos?selectTicket=${encodeURIComponent(t.id || t.uuid)}`}
+                        href={`/sorteos?selectTicket=${encodeURIComponent(idKey)}`}
                         className={`pl-2 rounded-l border-l border-white/10 h-full w-full flex items-center cursor-pointer hover:bg-white/5 transition-colors bg-gradient-to-br ${`from-${tone.grad}`.replace(
                           "from-",
                           "from-"

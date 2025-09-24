@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Image from "next/image";
+import SimpleCropper from "@/components/ui/SimpleCropper";
 
 /* =======================
    Helpers
@@ -21,7 +22,8 @@ function normalizeThousandRule(raw) {
 }
 
 const POT_CONTRIBUTION_CLIENT = 500; // aporte por ticket
-const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
+// Incluyo AVIF porque tu endpoint del server lo acepta
+const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/jpg", "image/avif"];
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 async function resizeImageFile(file, maxW = 1600, quality = 0.85) {
@@ -92,15 +94,16 @@ export default function CrearSorteoAdminPage() {
   const [startsAt, setStartsAt] = useState(""); // opcional
   const [endsAt, setEndsAt] = useState("");     // opcional
 
-  // Imagen: solo archivo a subir
+  // Imagen: archivo + preview + crop
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
+  const [croppedDataUrl, setCroppedDataUrl] = useState(""); // resultado del recorte
+  const [cropOpen, setCropOpen] = useState(false);
+
   const [imageError, setImageError] = useState("");
   const [uploading, setUploading] = useState(false);
 
-  // Visibilidad: usar el mismo flag pero con semántica de “listado/no listado”
-  // isPrivate = true  -> No listado (por link)  -> no requiere aprobación
-  // isPrivate = false -> Listado (público)      -> requiere aprobación
+  // Visibilidad
   const [isPrivate, setIsPrivate] = useState(false);
 
   // Términos
@@ -121,20 +124,20 @@ export default function CrearSorteoAdminPage() {
   // Valor del premio normalizado
   const prizeValueNormalized = useMemo(() => normalizeThousandRule(prizeValueInput), [prizeValueInput]);
 
-  // Tickets totales necesarios para cubrir el premio (independiente del mínimo por usuario)
+  // Tickets totales necesarios para cubrir el premio
   const totalTicketsNeeded = useMemo(() => {
     if (!prizeValueNormalized) return null;
     return Math.ceil(prizeValueNormalized / POT_CONTRIBUTION_CLIENT);
   }, [prizeValueNormalized]);
 
-  // Mínimo de participantes UX en función del toggle obligatorio y del mínimo por usuario
+  // Mínimo de participantes UX
   const minParticipantsUX = useMemo(() => {
     if (!totalTicketsNeeded) return null;
     const m = Math.max(1, Number(minTicketsPerParticipant || 1));
     return Math.ceil(totalTicketsNeeded / (minTicketsMandatory ? m : 1));
   }, [totalTicketsNeeded, minTicketsPerParticipant, minTicketsMandatory]);
 
-  // preview de imagen local (usa Image con blob: URL)
+  // preview del archivo (si hay recorte, se muestra el recorte)
   useEffect(() => {
     if (!file) { setPreview(""); return; }
     const url = URL.createObjectURL(file);
@@ -148,20 +151,17 @@ export default function CrearSorteoAdminPage() {
   }, [status, router]);
 
   // ======== Tope dinámico del stepper (garantiza ≥2 participantes) ========
-  // Total de participantes estimado: objetivo explícito o mínimo por premio (ajustado por obligatorio)
   const totalParticipantsEstimado = useMemo(() => {
     const explicit = parseIntOrNull(participantGoal);
     if (explicit && explicit > 0) return explicit;
     return minParticipantsUX || null;
   }, [participantGoal, minParticipantsUX]);
 
-  // Máximo permitido para "mínimo de tickets por participante" = floor(total/2), al menos 1
   const maxMinTickets = useMemo(() => {
     if (!totalParticipantsEstimado) return 1;
     return Math.max(1, Math.floor(totalParticipantsEstimado / 2));
   }, [totalParticipantsEstimado]);
 
-  // Si el tope baja (por cambio de premio/objetivo), clamp al nuevo máximo
   useEffect(() => {
     setMinTickets((v) => Math.min(Math.max(1, v), maxMinTickets));
   }, [maxMinTickets]);
@@ -177,12 +177,11 @@ export default function CrearSorteoAdminPage() {
       return "El valor del premio es obligatorio y debe ser un entero ≥ 1000";
     }
 
-    // Si el organizador ingresa objetivo, validar contra el mínimo requerido
     if (String(participantGoal).trim() !== "") {
       const goalInt = parseIntOrNull(participantGoal);
       if (!goalInt || goalInt <= 0) return "El objetivo de participantes debe ser un entero mayor a 0";
 
-      const baseNeeded = Math.ceil(prizeFinal / POT_CONTRIBUTION_CLIENT); // tickets necesarios
+      const baseNeeded = Math.ceil(prizeFinal / POT_CONTRIBUTION_CLIENT);
       const divisor = minTicketsMandatory ? Math.max(1, Number(minTicketsPerParticipant || 1)) : 1;
       const minParticipantsNeeded = Math.ceil(baseNeeded / divisor);
 
@@ -203,17 +202,11 @@ export default function CrearSorteoAdminPage() {
     if (startDate && endDate && startDate >= endDate)
       return "La fecha de inicio debe ser anterior a la fecha de finalización";
 
-    // Imagen: si hay archivo, validar tipo/tamaño
     if (file) {
-      if (!ALLOWED_TYPES.includes(file.type)) {
-        return "Formato de imagen no soportado (usa JPG/PNG/WebP)";
-      }
-      if (file.size > MAX_FILE_BYTES) {
-        return "La imagen supera el tamaño máximo (10MB)";
-      }
+      if (!ALLOWED_TYPES.includes(file.type)) return "Formato de imagen no soportado (usa JPG/PNG/WebP/AVIF)";
+      if (file.size > MAX_FILE_BYTES) return "La imagen supera el tamaño máximo (10MB)";
     }
 
-    // Mínimo tickets (≥1 y ≤ tope dinámico)
     if (minTicketsPerParticipant < 1) return "El mínimo de tickets por participante debe ser al menos 1";
     if (minTicketsPerParticipant > maxMinTickets) {
       return `El mínimo de tickets por participante no puede superar ${maxMinTickets} (asegura que haya al menos 2 participantes).`;
@@ -222,24 +215,30 @@ export default function CrearSorteoAdminPage() {
     return null;
   };
 
-  // Subida de imagen (con resize a WebP)
+  // Subida de imagen (prioriza dataUrl recortada; si no hay, sube archivo con resize)
   const maybeUploadImage = async () => {
-    if (!file) return null;
+    if (!file && !croppedDataUrl) return null;
     setImageError("");
     setUploading(true);
     try {
-      let toUpload = file;
-      try {
-        toUpload = await resizeImageFile(file, 1600, 0.85);
-      } catch (e) {
-        console.warn("Resize falló; subiendo original:", e);
-      }
       const fd = new FormData();
-      fd.append("file", toUpload);
+
+      if (croppedDataUrl) {
+        fd.append("dataUrl", croppedDataUrl);
+      } else if (file) {
+        let toUpload = file;
+        try {
+          toUpload = await resizeImageFile(file, 1600, 0.85);
+        } catch (e) {
+          console.warn("Resize falló; subiendo original:", e);
+        }
+        fd.append("file", toUpload);
+      }
+
       const res = await fetch("/api/uploads", { method: "POST", body: fd });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || "No se pudo subir la imagen");
-      return data?.url || null; // /uploads/*.webp
+      return data?.url || null;
     } catch (e) {
       setImageError(e.message || "Error subiendo imagen");
       return null;
@@ -264,7 +263,6 @@ export default function CrearSorteoAdminPage() {
 
     const prizeFinal = normalizeThousandRule(prizeValueInput);
 
-    // Si el creador NO puso objetivo, auto-aplicar el mínimo requerido (ya ajustado por obligatorio)
     const goalFromUx =
       String(participantGoal).trim() === "" && prizeFinal
         ? (minParticipantsUX ?? Math.ceil(prizeFinal / POT_CONTRIBUTION_CLIENT))
@@ -305,10 +303,8 @@ export default function CrearSorteoAdminPage() {
         ...(startsAt && { startsAt }),
         ...(endsAt && { endsAt }),
         ...(category && { prizeCategory: category }),
-        isPrivate, // true: no listado; false: listado (pendiente de aprobación)
+        isPrivate,
         termsAccepted: true,
-
-        // UX / reglas
         minTicketsPerParticipant: Math.max(1, Number(minTicketsPerParticipant)),
         minTicketsIsMandatory: Boolean(minTicketsMandatory),
       };
@@ -367,12 +363,10 @@ export default function CrearSorteoAdminPage() {
   const DESC_MAX = 600;
 
   const minTicketsProb = useMemo(() => {
-    // Probabilidad aproximada usando participantes estimados (no tickets totales)
     if (!minTicketsPerParticipant || !totalParticipantsEstimado) return null;
     return probabilityPct(minTicketsPerParticipant, totalParticipantsEstimado);
   }, [minTicketsPerParticipant, totalParticipantsEstimado]);
 
-  // Handlers stepper (respetan tope dinámico)
   const incMin = () => setMinTickets((v) => Math.min(maxMinTickets, v + 1));
   const decMin = () => setMinTickets((v) => Math.max(1, v - 1));
 
@@ -393,6 +387,17 @@ export default function CrearSorteoAdminPage() {
   ) : (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 to-gray-900 text-gray-100">
       <TermsModal open={termsOpen} onClose={() => setTermsOpen(false)} />
+
+      {/* Modal de recorte */}
+      <SimpleCropper
+        open={cropOpen}
+        onClose={() => setCropOpen(false)}
+        file={file ? file : (preview ? { src: preview } : null)}
+        onCropped={(dataUrl) => setCroppedDataUrl(dataUrl)}
+        outputWidth={1200}
+        rememberAspectKey="raffles.cropAspect" // guarda la última relación en localStorage
+        minOutputWidth={700}                    // si el recorte queda < 700px de ancho, se deshabilita "Aplicar"
+      />
 
       <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-2xl overflow-hidden shadow-2xl">
@@ -560,7 +565,7 @@ export default function CrearSorteoAdminPage() {
                 </div>
               </div>
 
-              {/* Categoría + mínimo de tickets (con stepper, tope dinámico y toggle obligatorio) */}
+              {/* Categoría + mínimo de tickets */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-200 mb-2">Categoría</label>
@@ -681,7 +686,7 @@ export default function CrearSorteoAdminPage() {
                 </div>
               </div>
 
-              {/* Imagen (solo archivo) */}
+              {/* Imagen (archivo + recorte) */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-200 mb-2">Subir / Sacar foto (opcional)</label>
@@ -689,7 +694,11 @@ export default function CrearSorteoAdminPage() {
                     type="file"
                     accept={ALLOWED_TYPES.join(",")}
                     capture="environment"
-                    onChange={(e) => setFile(e.target.files?.[0] || null)}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] || null;
+                      setFile(f);
+                      setCroppedDataUrl(""); // si el usuario sube otra imagen, reseteamos recorte previo
+                    }}
                     disabled={loading}
                     className="block w-full text-sm text-gray-300
                       file:mr-4 file:py-2.5 file:px-4
@@ -697,26 +706,49 @@ export default function CrearSorteoAdminPage() {
                       file:text-sm file:font-semibold
                       file:bg-orange-600 file:text-white
                       hover:file:bg-orange-700"
-                    title="Formatos permitidos: JPG, PNG, WebP (máx. 10MB)"
+                    title="Formatos permitidos: JPG, PNG, WebP, AVIF (máx. 10MB)"
                   />
                   {imageError && (
                     <p className="mt-2 text-sm text-red-300">{imageError}</p>
                   )}
                 </div>
 
-                {preview && (
+                {(preview || croppedDataUrl) && (
                   <div className="mt-6 md:mt-0">
                     <p className="block text-sm font-medium text-gray-200 mb-2">Previsualización</p>
                     <div className="relative w-full h-56 overflow-hidden rounded-lg border border-gray-700 bg-gray-800">
                       <Image
-                        src={preview}
+                        src={croppedDataUrl || preview}
                         alt="Preview"
                         fill
                         className="object-cover"
-                        loader={({ src }) => src} // passthrough: blob:/data:/http(s):
+                        loader={({ src }) => src}
                         unoptimized
                       />
                     </div>
+
+                    <div className="flex gap-2 mt-3">
+                      <button
+                        type="button"
+                        onClick={() => setCropOpen(true)}
+                        disabled={!file || loading}
+                        className="px-3 py-2 rounded-lg bg-gray-700 border border-gray-600 text-gray-100 hover:bg-gray-600 disabled:opacity-60"
+                        title={!file ? "Primero seleccioná una imagen" : "Abrir recorte"}
+                      >
+                        Recortar imagen
+                      </button>
+                      {croppedDataUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setCroppedDataUrl("")}
+                          className="px-3 py-2 rounded-lg border border-gray-600 text-gray-200 hover:bg-gray-700"
+                          title="Quitar recorte aplicado"
+                        >
+                          Quitar recorte
+                        </button>
+                      )}
+                    </div>
+
                     {uploading && (
                       <p className="mt-2 text-xs text-gray-400">Subiendo y optimizando imagen…</p>
                     )}
@@ -783,6 +815,7 @@ export default function CrearSorteoAdminPage() {
                     setEndsAt("");
                     setFile(null);
                     setPreview("");
+                    setCroppedDataUrl("");
                     setError("");
                     setIsPrivate(false);
                     setTermsAccepted(false);
@@ -818,7 +851,7 @@ export default function CrearSorteoAdminPage() {
                 <ul className="mt-1 text-sm text-gray-300 space-y-1">
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>Usá títulos claros y una buena imagen del premio.</span>
+                    <span>Usá títulos claros y una buena imagen del premio. Podés recortarla en 1:1, 4:3 o 16:9.</span>
                   </li>
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>

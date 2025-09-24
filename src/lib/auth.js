@@ -34,81 +34,119 @@ export const authOptions = {
       return true; // ✅ permitimos siempre; la persistencia va en events.signIn
     },
 
-    async jwt({ token, user }) {
-      // si se logueó recién, podemos cargar id luego en session()
+    /**
+     * JWT: almacena datos mínimos y soporta session.update({...})
+     */
+    async jwt({ token, user, trigger, session }) {
+      // 1) Primer login o cuando NextAuth inyecta "user" desde el provider/DB:
+      if (user) {
+        if (!token.id && user.id) token.id = user.id;         // id si viene del adapter
+        if (user.name != null) token.name = user.name;
+        if (user.email != null) token.email = user.email;
+        if (user.image != null) token.image = user.image;
+        if (user.whatsapp != null) token.whatsapp = user.whatsapp;
+        if (user.role != null) token.role = String(user.role).toLowerCase();
+      }
+
+      // 2) Soportar session.update({ ... }) desde el cliente (Opción 2)
+      if (trigger === "update" && session) {
+        if (session.name != null) token.name = session.name;
+        if (session.whatsapp != null) token.whatsapp = session.whatsapp;
+        if (session.image != null) token.image = session.image;
+        if (session.role != null) token.role = String(session.role).toLowerCase();
+      }
+
+      // Propagar id si faltaba (común cuando no hay adapter)
       if (!token.id && token.sub) token.id = token.sub;
+
       return token;
     },
 
+    /**
+     * SESSION: prioriza token (rápido) y minimiza acceso a DB.
+     * Si hay que enriquecer, usa UNA consulta liviana con _count (no incluye listas).
+     */
     async session({ session, token }) {
-      // Propagar id si existe
+      // Asegurar objeto user
+      session.user ??= {};
+
+      // 1) Copiar desde el token (estado global rápido)
       if (token?.id) {
         session.user.id = token.id;
         session.user.dbId = token.id;
       }
+      if (token?.email) session.user.email = token.email;
+      if (token?.name != null) session.user.name = token.name;
+      if (token?.image != null) session.user.image = token.image;
+      if (token?.whatsapp != null) session.user.whatsapp = token.whatsapp;
+      if (token?.role != null) session.user.role = String(token.role).toLowerCase();
 
-      // Enriquecer sesión desde tu DB, pero sin romper si falla
+      // 2) Intentar enriquecer con una sola query liviana (si hay email)
       if (!session?.user?.email) return session;
 
       try {
+        // Consulta liviana: NO traemos listas; usamos _count
         const dbUser = await prisma.user.findUnique({
           where: { email: session.user.email },
-          include: {
-            tickets: {
-              where: { isUsed: false },
-              include: {
-                raffle: {
-                  select: { id: true, title: true, status: true, endsAt: true, drawnAt: true, isPrivate: true },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            image: true,
+            whatsapp: true,
+            role: true,
+            isActive: true,
+            createdAt: true,
+            // Contadores sin traer arrays completos
+            _count: {
+              select: {
+                tickets: {
+                  where: { isUsed: false },
+                },
+                purchases: true,
+                wonRaffles: true,
+                notifications: {
+                  where: { read: false },
                 },
               },
-            },
-            purchases: {
-              orderBy: { createdAt: "desc" },
-              take: 5,
-              include: { tickets: { select: { id: true, code: true, status: true } } },
-            },
-            wonRaffles: {
-              select: { id: true, title: true, drawnAt: true, isPrivate: true },
-            },
-            notifications: {
-              where: { read: false },
-              orderBy: { createdAt: "desc" },
-              select: { id: true, title: true, message: true, type: true, createdAt: true },
             },
           },
         });
 
         if (dbUser) {
-          session.user.role = (dbUser.role ?? "USER").toString().toLowerCase();
+          // Campos base
           session.user.id = dbUser.id;
           session.user.dbId = dbUser.id;
+          session.user.name = dbUser.name ?? session.user.name ?? null;
+          session.user.image = dbUser.image ?? session.user.image ?? null;
+          session.user.whatsapp = dbUser.whatsapp ?? session.user.whatsapp ?? null;
+          session.user.role = String(dbUser.role ?? session.user.role ?? "user").toLowerCase();
           session.user.isActive = dbUser.isActive;
           session.user.memberSince = dbUser.createdAt;
 
-          session.user.availableTickets = dbUser.tickets?.length || 0;
-          session.user.totalPurchases = dbUser.purchases?.length || 0;
-          session.user.wonRaffles = dbUser.wonRaffles?.length || 0;
-          session.user.unreadNotifications = dbUser.notifications?.length || 0;
-          session.user.activeTicketsInRaffles =
-            dbUser.tickets?.filter((t) => t.raffle && t.raffle.status === "ACTIVE").length || 0;
+          // Contadores
+          session.user.availableTickets = dbUser._count?.tickets ?? 0;
+          session.user.totalPurchases = dbUser._count?.purchases ?? 0;
+          session.user.wonRaffles = dbUser._count?.wonRaffles ?? 0;
+          session.user.unreadNotifications = dbUser._count?.notifications ?? 0;
 
-          console.log("[SESSION] OK para:", dbUser.email, "role:", session.user.role);
+          console.log("[SESSION] OK:", dbUser.email, "role:", session.user.role);
         } else {
+          // Usuario no existe aún en DB
           session.user.role = "user";
           session.user.availableTickets = 0;
           session.user.totalPurchases = 0;
           session.user.wonRaffles = 0;
           session.user.unreadNotifications = 0;
-          session.user.activeTicketsInRaffles = 0;
           console.log("[SESSION] user no existe en DB aún:", session.user.email);
         }
       } catch (err) {
-        session.user.role = "user";
-        session.user.availableTickets = 0;
-        session.user.totalPurchases = 0;
-        session.user.wonRaffles = 0;
-        session.user.unreadNotifications = 0;
-        session.user.activeTicketsInRaffles = 0;
+        // Si falla la DB, no rompemos la sesión
+        session.user.role = session.user.role ?? "user";
+        session.user.availableTickets = session.user.availableTickets ?? 0;
+        session.user.totalPurchases = session.user.totalPurchases ?? 0;
+        session.user.wonRaffles = session.user.wonRaffles ?? 0;
+        session.user.unreadNotifications = session.user.unreadNotifications ?? 0;
         console.error("[SESSION] error DB (ignorado):", err?.message);
       }
 
@@ -251,7 +289,9 @@ export async function getServerAuth() {
 export async function requireAdmin() {
   const session = await getServerAuth();
   if (!session?.user) throw new Error("Authentication required");
-  if (!["admin", "superadmin"].includes(session.user.role)) throw new Error("Admin access required");
+  if (!["admin", "superadmin"].includes(String(session.user.role).toLowerCase())) {
+    throw new Error("Admin access required");
+  }
   return session;
 }
 

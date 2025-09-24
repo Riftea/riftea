@@ -39,6 +39,10 @@ riftea
 │  │  │  └─ migration.sql
 │  │  ├─ 20250916005510_add_min_tickets_fields
 │  │  │  └─ migration.sql
+│  │  ├─ 20250922152234_init
+│  │  │  └─ migration.sql
+│  │  ├─ 20250923003912_validate
+│  │  │  └─ migration.sql
 │  │  └─ migration_lock.toml
 │  └─ schema.prisma
 ├─ public
@@ -52,6 +56,8 @@ riftea
 │  │  ├─ 091f558e82f44da0aecdeb24be7e66fe_thumb.webp
 │  │  ├─ 0d20fa11722c4466a3290cbb090dd702.webp
 │  │  ├─ 0d20fa11722c4466a3290cbb090dd702_thumb.webp
+│  │  ├─ 0e000c71bffa46b98061e6dc59f2c901.webp
+│  │  ├─ 0e000c71bffa46b98061e6dc59f2c901_thumb.webp
 │  │  ├─ 2207dd1ccb0342c5b2d191f53546120d.webp
 │  │  ├─ 2207dd1ccb0342c5b2d191f53546120d_thumb.webp
 │  │  ├─ 26c537eb9f364c4c81639aef7d858997.webp
@@ -98,10 +104,18 @@ riftea
 │  │  ├─ 9eded9db9dac4b8787eb5335b018d455_thumb.webp
 │  │  ├─ a458c28e313d4d40a019748736c29330.webp
 │  │  ├─ a458c28e313d4d40a019748736c29330_thumb.webp
+│  │  ├─ a9f8fa97d1214554b06753a9292242cf.webp
+│  │  ├─ a9f8fa97d1214554b06753a9292242cf_thumb.webp
+│  │  ├─ aad05fad154543419fee686c013467e3.webp
+│  │  ├─ aad05fad154543419fee686c013467e3_thumb.webp
 │  │  ├─ ad77b7db51f04f58a588fc404fc030f9.webp
 │  │  ├─ ad77b7db51f04f58a588fc404fc030f9_thumb.webp
+│  │  ├─ b556201c0ae443f1ae822268e532d257.webp
+│  │  ├─ b556201c0ae443f1ae822268e532d257_thumb.webp
 │  │  ├─ b792c788eec74ed184c1d9f87b0482b1.webp
 │  │  ├─ b792c788eec74ed184c1d9f87b0482b1_thumb.webp
+│  │  ├─ b846c7f6224c4f2fa16b911b728e1d03.webp
+│  │  ├─ b846c7f6224c4f2fa16b911b728e1d03_thumb.webp
 │  │  ├─ bab06c9715e9453faa9db34188dcc3dd.webp
 │  │  ├─ bab06c9715e9453faa9db34188dcc3dd_thumb.webp
 │  │  ├─ c8724f1f575c4e71a144be367b279580.webp
@@ -150,6 +164,8 @@ riftea
 │  │  │  ├─ generar-tickets
 │  │  │  │  └─ page.js
 │  │  │  ├─ page.js
+│  │  │  ├─ publicaciones-pendientes
+│  │  │  │  └─ page.js
 │  │  │  ├─ raffles
 │  │  │  │  └─ [id]
 │  │  │  │     └─ page.js
@@ -276,6 +292,7 @@ riftea
 │  │  │  └─ UserTicketsDisplay.jsx
 │  │  ├─ ui
 │  │  │  ├─ CountdownTimer.jsx
+│  │  │  ├─ SimpleCropper.jsx
 │  │  │  └─ SmartImage.jsx
 │  │  └─ UserDisplay.js
 │  ├─ contexts
@@ -290,7 +307,6 @@ riftea
 │  │  ├─ auth.js
 │  │  ├─ authz.js
 │  │  ├─ cron-jobs.js
-│  │  ├─ cron-jobs.js.backup
 │  │  ├─ crypto.js
 │  │  ├─ crypto.server.js
 │  │  ├─ generateTickets.js

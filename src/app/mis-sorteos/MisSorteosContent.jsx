@@ -1,8 +1,10 @@
+// src/app/admin/mis-sorteos/MisSorteosContent.jsx
 "use client";
 
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
+import Link from "next/link";
 import QRCode from "qrcode";
 import Image from "next/image";
 
@@ -29,8 +31,14 @@ export default function MisSorteosContent() {
   const [copying, setCopying] = useState(false);
   const qrWrapRef = useRef(null);
 
-  const role = (session?.user?.role || "user").toLowerCase();
-  const isSuperAdmin = role === "superadmin";
+  // Normalización de rol (SUPER_ADMIN, super-admin, etc.)
+  const normRole = useMemo(() => {
+    const raw = (session?.user?.role ?? "user").toString();
+    return raw.toLowerCase().replace(/[\s_-]/g, "");
+  }, [session?.user?.role]);
+
+  const isSuperAdmin = normRole === "superadmin";
+  const isAdmin = isSuperAdmin || normRole === "admin";
 
   // Impersonación de lectura: solo tiene efecto si es SUPERADMIN
   const asUser = useMemo(() => {
@@ -43,9 +51,8 @@ export default function MisSorteosContent() {
   const includePrivateFlag = useMemo(() => {
     if (!isSuperAdmin) return false;
     const raw = searchParams?.get("includePrivate");
-    if (raw === "1" || raw === "true") return true;
-    // por defecto, si es superadmin mostramos privados también
-    return true;
+    if (raw == null) return true; // default para superadmin
+    return raw === "1" || raw === "true";
   }, [searchParams, isSuperAdmin]);
 
   const moneyFmt = useMemo(
@@ -116,13 +123,12 @@ export default function MisSorteosContent() {
         // Si es superadmin y hay asUser, pedimos sorteos de ese usuario
         if (isSuperAdmin && asUser) params.set("asUser", asUser);
 
-        // Si es superadmin, pedimos también privados (por defecto)
+        // Si es superadmin, pedimos también privados (por defecto o según query)
         if (isSuperAdmin && includePrivateFlag) params.set("includePrivate", "1");
 
         const res = await fetch(`/api/raffles?${params.toString()}`, { cache: "no-store" });
 
         if (!res.ok) {
-          // Intentamos leer cuerpo para mensaje amigable
           let txt = "";
           try {
             txt = await res.text();
@@ -131,14 +137,18 @@ export default function MisSorteosContent() {
         }
 
         const data = await res.json();
-        const list = Array.isArray(data?.raffles) ? data.raffles : Array.isArray(data?.items) ? data.items : [];
+        const list = Array.isArray(data?.raffles)
+          ? data.raffles
+          : Array.isArray(data?.items)
+          ? data.items
+          : [];
 
         if (!abort) setRaffles(list);
         if (!abort) {
           setMsg(
-            `Se cargaron ${list.length} sorteos${isSuperAdmin && asUser ? ` del usuario ${asUser}` : ""}${
-              isSuperAdmin && includePrivateFlag ? " (incluye privados)" : ""
-            }`
+            `Se cargaron ${list.length} sorteos${
+              isSuperAdmin && asUser ? ` del usuario ${asUser}` : ""
+            }${isSuperAdmin && includePrivateFlag ? " (incluye privados)" : ""}`
           );
           setMsgType("info");
         }
@@ -215,18 +225,18 @@ export default function MisSorteosContent() {
   };
 
   const canDelete = (r) => {
-    if (role === "superadmin") return true;
+    if (isSuperAdmin) return true;
     if (isOwnerByRecord(r)) {
       return (r._count?.tickets ?? 0) === 0 && (r._count?.participations ?? 0) === 0;
     }
-    if (role === "admin") {
+    if (isAdmin) {
       return (r._count?.tickets ?? 0) === 0 && (r._count?.participations ?? 0) === 0;
     }
     return false;
   };
 
   const canEdit = (r) => {
-    if (role === "superadmin" || role === "admin") return true;
+    if (isAdmin) return true;
     return isOwnerByRecord(r);
   };
 
@@ -234,7 +244,8 @@ export default function MisSorteosContent() {
   async function handleDelete(id) {
     const raffle = raffles.find((x) => x.id === id);
     if (!raffle) return;
-    if (!confirm(`¿Eliminar el sorteo "${raffle.title}"?\nSolo se permite si no hay participantes/tickets.`)) return;
+    if (!confirm(`¿Eliminar el sorteo "${raffle.title}"?\nSolo se permite si no hay participantes/tickets.`))
+      return;
 
     setDeletingId(id);
     try {
@@ -277,7 +288,8 @@ export default function MisSorteosContent() {
         const c = incCopyCount(r.id);
         setCopyCount(c);
         noti("¡Enlace compartido!", "success");
-        openShareModal(r, url); // opcional
+        // Si no querés abrir el modal después del share nativo, borrá la línea siguiente:
+        openShareModal(r, url);
         return;
       }
     } catch (e) {
@@ -335,8 +347,7 @@ export default function MisSorteosContent() {
   }
 
   const clearImpersonation = () => {
-    // Quitar parámetros de impersonación de la URL
-    router.push(pathname);
+    router.push(pathname); // Quitar parámetros de impersonación de la URL
   };
 
   if (loading)
@@ -399,6 +410,9 @@ export default function MisSorteosContent() {
         }
         .animate-modal-enter {
           animation: modalEnter 300ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        .animate-fadeIn {
+          animation: fadeIn 200ms ease-out;
         }
       `}</style>
 
@@ -499,7 +513,6 @@ export default function MisSorteosContent() {
           ) : (
             <div className="space-y-5">
               {raffles.map((r) => {
-                // Precio DERIVADO del endpoint (no DB):
                 const derivedUnitPrice =
                   typeof r?.unitPrice === "number"
                     ? r.unitPrice
@@ -521,7 +534,6 @@ export default function MisSorteosContent() {
                               {r.title}
                             </h3>
 
-                            {/* Píldora PRIVADO */}
                             {r.isPrivate === true && (
                               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-white">
                                 Privado
@@ -556,7 +568,6 @@ export default function MisSorteosContent() {
                               Participantes: {r._count?.participations ?? 0}
                             </span>
 
-                            {/* Precio DERIVADO del backend */}
                             {typeof derivedUnitPrice === "number" && (
                               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -583,7 +594,7 @@ export default function MisSorteosContent() {
                         </div>
 
                         <div className="flex flex-col sm:flex-row sm:items-center gap-2 min-w-[200px]">
-                          <a
+                          <Link
                             href={`/sorteo/${r.id}`}
                             className="group/view inline-flex items-center justify-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200 hover:shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                           >
@@ -603,7 +614,7 @@ export default function MisSorteosContent() {
                               />
                             </svg>
                             Ver
-                          </a>
+                          </Link>
 
                           {canEdit(r) ? (
                             <button

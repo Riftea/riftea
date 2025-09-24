@@ -1,23 +1,20 @@
 // src/app/sorteo/[id]/page.js
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import ProgressBar from "@/components/raffle/ProgressBar";
 import ParticipateModal from "@/components/raffle/ParticipateModal";
-import CountdownTimer from "@/components/ui/CountdownTimer";
 
 /* ======================= Helpers ======================= */
 
 function parseMinFromDescription(desc = "") {
-  // Soporta texto "Mínimo de tickets por participante: X" (sugerido)
   const m1 = String(desc).match(/Mínimo de tickets por participante:\s*(\d+)/i);
   if (m1) return { min: Math.max(1, parseInt(m1[1], 10)), mandatory: false };
 
-  // Soporta texto "Cada participante debe comprar al menos X ticket(s)." (obligatorio)
   const m2 = String(desc).match(/Cada participante debe comprar al menos\s*(\d+)/i);
   if (m2) return { min: Math.max(1, parseInt(m2[1], 10)), mandatory: true };
 
@@ -79,64 +76,58 @@ function extractProgressPayload(raw) {
   return { list: Array.isArray(list) ? list : [], applied, max };
 }
 
-/* ========= Helper: debounce ========= */
-function debounce(func, wait) {
-  let timeout;
-  return function executedFunction(...args) {
-    const later = () => {
-      clearTimeout(timeout);
-      func(...args);
-    };
-    clearTimeout(timeout);
-    timeout = setTimeout(later, wait);
-  };
+/* ======================= Agrupado ======================= */
+
+function safeTicketCode(p) {
+  return (
+    p?.ticket?.code ||
+    p?.ticketCode ||
+    (p?.id ? String(p.id).slice(-6) : null) ||
+    "Código oculto"
+  );
 }
 
-/* ======================= Storage Helpers ======================= */
-
-function getStorageKey(id, suffix) {
-  return `raffle_${suffix}_${id}`;
+function participantKey(p, fallbackIndex) {
+  return (
+    p?.userId ||
+    p?.user?.id ||
+    p?.user?.email ||
+    p?.email ||
+    (p?.user?.name ? `name:${p.user.name}` : null) ||
+    `anon-${fallbackIndex}`
+  );
 }
 
-function saveGoalData(id, timestamp, drawTime) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(getStorageKey(id, "goal_timestamp"), timestamp);
-    localStorage.setItem(getStorageKey(id, "draw_time"), drawTime);
-  } catch (e) {
-    console.warn("No se pudo guardar en localStorage:", e);
-  }
-}
-
-function getGoalData(id) {
-  if (typeof window === "undefined") return { timestamp: null, drawTime: null };
-  try {
-    const timestamp = localStorage.getItem(getStorageKey(id, "goal_timestamp"));
-    const drawTime = localStorage.getItem(getStorageKey(id, "draw_time"));
-    return {
-      timestamp: timestamp ? new Date(timestamp) : null,
-      drawTime: drawTime ? new Date(drawTime) : null,
-    };
-  } catch (e) {
-    return { timestamp: null, drawTime: null };
-  }
-}
-
-function clearGoalData(id) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.removeItem(getStorageKey(id, "goal_timestamp"));
-    localStorage.removeItem(getStorageKey(id, "draw_time"));
-  } catch (e) {
-    console.warn("No se pudo limpiar localStorage:", e);
-  }
+function groupParticipants(list) {
+  const map = new Map();
+  list.forEach((p, idx) => {
+    const key = String(participantKey(p, idx));
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        name: p?.user?.name || p?.name || "Usuario",
+        avatar: p?.user?.image || p?.userImage || null,
+        userId: p?.userId || p?.user?.id || null,
+        tickets: [],
+        isWinner: !!p?.isWinner,
+      });
+    }
+    const g = map.get(key);
+    g.tickets.push({
+      id: p?.ticket?.id || p?.id || `${key}-${g.tickets.length}`,
+      code: safeTicketCode(p),
+      isWinner: !!p?.isWinner,
+      raw: p,
+    });
+    if (p?.isWinner) g.isWinner = true;
+  });
+  return Array.from(map.values());
 }
 
 /* ======================= Page ======================= */
 
 export default function SorteoPage() {
-  const params = useParams();
-  const id = params?.id;
+  const { id } = useParams();
   const { data: session } = useSession();
   const router = useRouter();
 
@@ -149,18 +140,7 @@ export default function SorteoPage() {
   const [showParticipateModal, setShowParticipateModal] = useState(false);
   const [userParticipation, setUserParticipation] = useState(null);
 
-  // Estados para detección de meta alcanzada
-  const [showGoalReached, setShowGoalReached] = useState(false);
-  const [previousParticipantsCount, setPreviousParticipantsCount] = useState(0);
-  const [notificationsSent, setNotificationsSent] = useState(false);
-  const [drawCountdownTarget, setDrawCountdownTarget] = useState(null);
-  const [goalReachedTimestamp, setGoalReachedTimestamp] = useState(null);
-
-  const [nowTs, setNowTs] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNowTs(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
+  /* =================== Carga base =================== */
 
   const unitPrice = useMemo(() => {
     if (!raffle) return 0;
@@ -168,44 +148,6 @@ export default function SorteoPage() {
     return Number.isFinite(n) ? n : 0;
   }, [raffle]);
 
-  // Inicializar datos del localStorage al cargar
-  useEffect(() => {
-    if (!id) return;
-    const { timestamp, drawTime } = getGoalData(id);
-
-    if (timestamp && drawTime) {
-      setGoalReachedTimestamp(timestamp);
-
-      // Solo configurar countdown si aún no ha expirado
-      if (drawTime.getTime() > Date.now()) {
-        setDrawCountdownTarget(drawTime);
-      } else {
-        // Si ya expiró, limpiar datos
-        clearGoalData(id);
-      }
-    }
-  }, [id]);
-
-  /* ========= Guardado optimizado (evita writes innecesarios) ========= */
-  const optimizedSaveGoalData = useCallback((raffleId, timestamp, drawTime) => {
-    if (typeof window === "undefined") return;
-    const existing = getGoalData(raffleId);
-    if (
-      existing.timestamp &&
-      existing.drawTime &&
-      existing.timestamp.getTime() === new Date(timestamp).getTime()
-    ) {
-      return; // Ya está guardado
-    }
-    try {
-      localStorage.setItem(getStorageKey(raffleId, "goal_timestamp"), timestamp);
-      localStorage.setItem(getStorageKey(raffleId, "draw_time"), drawTime);
-    } catch (e) {
-      console.warn("No se pudo guardar en localStorage:", e);
-    }
-  }, []); // <- sin getGoalData en deps
-
-  /* =================== Carga de participantes =================== */
   const loadParticipants = useCallback(
     async (raffleId = id) => {
       if (!raffleId) return;
@@ -216,125 +158,19 @@ export default function SorteoPage() {
           credentials: "include",
         });
         const data = await res.json().catch(() => ({}));
-
         if (!res.ok) {
           setParticipants([]);
           return;
         }
-
-        const { list, applied, max } = extractProgressPayload(data);
+        const { list } = extractProgressPayload(data);
         setParticipants(list);
-
-        // Detectar si se alcanzó la meta por primera vez
-        if (max && applied >= max && previousParticipantsCount < max && !goalReachedTimestamp) {
-          const now = new Date();
-          const drawTime = new Date(Date.now() + 1 * 60 * 1000); // 1 minuto
-
-          // Guardar en localStorage (optimizado)
-          optimizedSaveGoalData(id, now.toISOString(), drawTime.toISOString());
-
-          // Actualizar estados
-          setGoalReachedTimestamp(now);
-          setDrawCountdownTarget(drawTime);
-          setShowGoalReached(true);
-
-          // Enviar notificaciones (solo si es el owner)
-          if (session?.user?.id === raffle?.ownerId && !notificationsSent) {
-            try {
-              await fetch(`/api/raffles/${raffleId}/notify-participants`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-              });
-              setNotificationsSent(true);
-            } catch (error) {
-              console.error("Error enviando notificaciones:", error);
-            }
-          }
-
-          // Auto-ocultar la notificación después de 8 segundos
-          setTimeout(() => setShowGoalReached(false), 8000);
-        }
-
-        setPreviousParticipantsCount(applied);
       } catch {
         setParticipants([]);
       } finally {
         setParticipantsLoading(false);
       }
     },
-    [
-      id,
-      previousParticipantsCount,
-      session?.user?.id,
-      raffle?.ownerId,
-      notificationsSent,
-      goalReachedTimestamp,
-      optimizedSaveGoalData,
-    ]
-  );
-
-  /* ========== DEBOUNCED loadParticipants sin warning de deps ========== */
-  const debouncedLoadParticipants = useMemo(
-    () =>
-      debounce(async (raffleId) => {
-        if (participantsLoading) return; // Evita solapamiento
-        try {
-          setParticipantsLoading(true);
-          const res = await fetch(`/api/raffles/${raffleId}/progress`, {
-            cache: "no-store",
-            credentials: "include",
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            setParticipants([]);
-            return;
-          }
-
-          const { list, applied, max } = extractProgressPayload(data);
-          setParticipants(list);
-
-          if (max && applied >= max && previousParticipantsCount < max && !goalReachedTimestamp) {
-            const now = new Date();
-            const drawTime = new Date(Date.now() + 1 * 60 * 1000); // 1 minuto
-
-            optimizedSaveGoalData(id, now.toISOString(), drawTime.toISOString());
-            setGoalReachedTimestamp(now);
-            setDrawCountdownTarget(drawTime);
-            setShowGoalReached(true);
-
-            if (session?.user?.id === raffle?.ownerId && !notificationsSent) {
-              try {
-                await fetch(`/api/raffles/${raffleId}/notify-participants`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                });
-                setNotificationsSent(true);
-              } catch (error) {
-                console.error("Error enviando notificaciones:", error);
-              }
-            }
-
-            setTimeout(() => setShowGoalReached(false), 8000);
-          }
-
-          setPreviousParticipantsCount(applied);
-        } catch (error) {
-          console.error("Error loading participants (debounced):", error);
-          setParticipants([]);
-        } finally {
-          setParticipantsLoading(false);
-        }
-      }, 1000), // 1s de debounce
-    [
-      id,
-      previousParticipantsCount,
-      session?.user?.id,
-      raffle?.ownerId,
-      notificationsSent,
-      goalReachedTimestamp,
-      participantsLoading,
-      optimizedSaveGoalData,
-    ]
+    [id]
   );
 
   const checkUserParticipation = useCallback(
@@ -374,12 +210,8 @@ export default function SorteoPage() {
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) {
-          if (res.status === 404) {
-            throw new Error("Sorteo no encontrado");
-          } else if (res.status >= 500) {
-            throw new Error("Error del servidor");
-          }
-          // Para otros códigos, intentar usar la data existente
+          if (res.status === 404) throw new Error("Sorteo no encontrado");
+          if (res.status >= 500) throw new Error("Error del servidor");
         }
 
         const raffleObj = json?.raffle ?? json;
@@ -404,80 +236,16 @@ export default function SorteoPage() {
     };
   }, [id, session, loadParticipants, checkUserParticipation]);
 
-  /* =================== POLLING INTELIGENTE =================== */
+  // Polling ligero mientras el sorteo está abierto/publicado/listo
   useEffect(() => {
     if (!raffle?.id) return;
-    if (!["ACTIVE", "PUBLISHED", "READY_TO_DRAW"].includes(raffle.status)) return;
+    const ok = ["ACTIVE", "PUBLISHED", "READY_TO_DRAW"];
+    if (!ok.includes(raffle.status)) return;
+    const t = setInterval(() => loadParticipants(raffle.id), 30000);
+    return () => clearInterval(t);
+  }, [raffle?.id, raffle?.status, loadParticipants]);
 
-    let pollInterval = 30000; // 30s por defecto
-
-    if (raffle.maxParticipants) {
-      const currentCount = participants.length;
-      const remainingSlots = raffle.maxParticipants - currentCount;
-
-      // Acelerar solo cuando quedan 2 o menos
-      if (remainingSlots <= 2 && remainingSlots > 0) {
-        pollInterval = 5000; // 5s
-      }
-    }
-
-    // Si ya está listo para sorteo, no hay prisa
-    if (raffle.status === "READY_TO_DRAW") {
-      pollInterval = 60000; // 1 minuto
-    }
-
-    const intervalId = setInterval(() => {
-      // Usar la versión debounced ya memorizada
-      debouncedLoadParticipants(raffle.id);
-    }, pollInterval);
-
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [
-    raffle?.id,
-    raffle?.status,
-    raffle?.maxParticipants,
-    participants.length,
-    debouncedLoadParticipants,
-  ]);
-
-  // Polling crítico solo cuando queda 1 slot
-  useEffect(() => {
-    if (!raffle?.id) return;
-    if (raffle.status !== "ACTIVE") return;
-    if (!raffle.maxParticipants) return;
-
-    const currentCount = participants.length;
-    const remainingSlots = raffle.maxParticipants - currentCount;
-
-    if (remainingSlots === 1) {
-      const criticalInterval = setInterval(async () => {
-        try {
-          const res = await fetch(`/api/raffles/${raffle.id}/progress`, {
-            cache: "no-store",
-            credentials: "include",
-          });
-
-          if (res.ok) {
-            const data = await res.json().catch(() => ({}));
-            const { applied } = extractProgressPayload(data);
-
-            // Si se llenó, detener inmediatamente
-            if (applied >= raffle.maxParticipants) {
-              clearInterval(criticalInterval);
-              // Una última carga completa (no debounced)
-              loadParticipants(raffle.id);
-            }
-          }
-        } catch (error) {
-          console.error("Error en polling crítico:", error);
-        }
-      }, 3000); // 3s solo cuando queda 1
-
-      return () => clearInterval(criticalInterval);
-    }
-  }, [raffle?.id, raffle?.status, raffle?.maxParticipants, participants.length, loadParticipants]);
+  /* =================== Estado derivado =================== */
 
   const isOwner = session?.user?.id === raffle?.ownerId;
   const isExpired = raffle?.endsAt ? new Date() > new Date(raffle.endsAt) : false;
@@ -490,7 +258,7 @@ export default function SorteoPage() {
   const canParticipate = canPurchase && !isOwner;
 
   const participantsCount = useMemo(() => {
-    if (participants.length) return participants.length;
+    if (participants.length) return participants.length; // total de tickets/participaciones
     return (
       pickNumber(
         raffle?.stats?.participationsCount,
@@ -511,20 +279,88 @@ export default function SorteoPage() {
     );
   }, [raffle?.stats, raffle?.maxParticipants, raffle?.capacity]);
 
-  // Verificar si está lleno
   const isFull = maxParticipants && participantsCount >= maxParticipants;
 
-  const drawAtDate = raffle?.drawAt ? new Date(raffle.drawAt) : null;
-  const drawnAtDate = raffle?.drawnAt ? new Date(raffle.drawnAt) : null;
-  const isReadyToDraw = raffle?.status === "READY_TO_DRAW";
-  const msUntilDraw = drawAtDate ? drawAtDate.getTime() - nowTs : null;
-  const minutesUntilDraw =
-    msUntilDraw != null ? Math.max(0, Math.ceil(msUntilDraw / 60000)) : null;
+  // ====== Rol y botón "Realizar sorteo" ======
+  const [isPowerAdmin, setIsPowerAdmin] = useState(() => {
+    const role = String(session?.user?.role || "").toUpperCase();
+    return role === "SUPERADMIN" || role === "SUPER_ADMIN" || role === "ADMIN";
+  });
 
-  const showDrawCallout = isReadyToDraw && !!drawAtDate && !drawnAtDate;
-  const canGoLive = isReadyToDraw && !!drawAtDate && nowTs >= drawAtDate.getTime();
-  const goLive = () => router.push(`/sorteo/${id}/en-vivo`);
+  // Fallback: si el rol no venía en la sesión, lo consultamos a /api/users/me
+  useEffect(() => {
+    (async () => {
+      try {
+        const currentRole = String(session?.user?.role || "").toUpperCase();
+        if (currentRole) {
+          setIsPowerAdmin(
+            currentRole === "SUPERADMIN" ||
+              currentRole === "SUPER_ADMIN" ||
+              currentRole === "ADMIN"
+          );
+          return;
+        }
+        const res = await fetch("/api/users/me", { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        const r = String(data?.role || "").toUpperCase();
+        setIsPowerAdmin(r === "SUPERADMIN" || r === "SUPER_ADMIN" || r === "ADMIN");
+      } catch {
+        /* noop */
+      }
+    })();
+  }, [session?.user?.role]);
 
+  const noWinnerYet = !raffle?.drawnAt && !raffle?.winnerParticipationId;
+  const showSimpleDrawBtn =
+    isPowerAdmin &&
+    raffle?.status === "READY_TO_DRAW" &&
+    noWinnerYet &&
+    (participantsCount ?? 0) >= 2;
+
+  const [runningSimpleDraw, setRunningSimpleDraw] = useState(false);
+
+  async function runSimpleDraw() {
+    if (!id) return;
+    setRunningSimpleDraw(true);
+
+    const attempts = [
+      { url: `/api/admin/raffles/${id}/draw`, body: { action: "run", notify: true } }, // admin/superadmin
+      { url: `/api/raffles/${id}/draw`, body: { action: "run", notify: true } },       // público con permisos
+      { url: `/api/raffles/${id}/manual-draw`, body: { notify: true } },               // fallback legacy
+    ];
+
+    try {
+      for (const { url, body } of attempts) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          router.push(`/sorteo/${id}/en-vivo`);
+          return;
+        }
+        const msg = String(data?.error || data?.message || "").toLowerCase();
+        // Si es error duro (no de permisos/acción) paramos
+        if (![401, 403, 404].includes(res.status) && !msg.includes("acceso denegado")) {
+          alert(`Error ejecutando sorteo: ${data?.error || data?.message || "No se pudo completar"}`);
+          setRunningSimpleDraw(false);
+          return;
+        }
+        // si 401/403/404 probamos siguiente intento
+      }
+      alert("Error ejecutando sorteo: Acceso denegado o endpoint no disponible.");
+    } catch (e) {
+      alert("No se pudo ejecutar el sorteo (red/servidor).");
+    } finally {
+      setRunningSimpleDraw(false);
+    }
+  }
+
+  // ganador (si el backend ya lo marcó)
   const winnerParticipation = useMemo(
     () => participants.find((p) => p.isWinner) || null,
     [participants]
@@ -536,7 +372,6 @@ export default function SorteoPage() {
     return "/favicon.ico";
   };
 
-  // --------- mínimo por usuario (campo > descripción) ----------
   const { minTicketsRequired, minTicketsIsMandatory } = useMemo(() => {
     const fieldMin = Number(raffle?.minTicketsPerParticipant);
     const fieldMandatory = Boolean(raffle?.minTicketsIsMandatory);
@@ -596,70 +431,67 @@ export default function SorteoPage() {
     } catch {}
   };
 
-  /* ==================== ADMIN: verificación de rol ==================== */
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [executingDraw, setExecutingDraw] = useState(false);
+  /* ======================= Agrupado + carrusel ======================= */
+
+  const groupedParticipants = useMemo(() => groupParticipants(participants), [participants]);
+
+  // Índice de ticket visible por cada usuario (key -> idx)
+  const [carouselIdx, setCarouselIdx] = useState({});
+  const touchStartXRef = useRef({});
 
   useEffect(() => {
-    const checkAdminRole = async () => {
-      if (!session?.user?.id) {
-        setIsAdmin(false);
-        return;
-      }
-      try {
-        const res = await fetch("/api/users/me", { credentials: "include" });
-        if (res.ok) {
-          const userData = await res.json();
-          const role = String(userData?.role || "").toUpperCase();
-          setIsAdmin(role === "ADMIN" || role === "SUPER_ADMIN" || role === "SUPERADMIN");
-        } else {
-          setIsAdmin(false);
-        }
-      } catch (error) {
-        console.error("Error verificando rol de admin:", error);
-        setIsAdmin(false);
-      }
-    };
-    checkAdminRole();
-  }, [session?.user?.id]);
-
-  /* ==================== ADMIN: ejecutar sorteo manual ==================== */
-  const executeManualDraw = async () => {
-    if (!confirm("¿Estás seguro de que quieres ejecutar este sorteo manualmente?")) {
-      return;
-    }
-
-    setExecutingDraw(true);
-    try {
-      const res = await fetch(`/api/raffles/${id}/manual-draw`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
+    setCarouselIdx((prev) => {
+      const updated = { ...prev };
+      const keys = new Set(groupedParticipants.map((g) => g.key));
+      Object.keys(updated).forEach((k) => {
+        if (!keys.has(k)) delete updated[k];
       });
+      groupedParticipants.forEach((g) => {
+        const current = updated[g.key] ?? 0;
+        updated[g.key] = Math.min(Math.max(0, current), Math.max(0, g.tickets.length - 1));
+      });
+      return updated;
+    });
+  }, [groupedParticipants]);
 
-      const result = await res.json().catch(() => ({}));
+  const changeTicket = useCallback((key, dir, total) => {
+    setCarouselIdx((prev) => {
+      const current = prev[key] ?? 0;
+      const next = total > 0 ? ((current + dir) % total + total) % total : 0;
+      return { ...prev, [key]: next };
+    });
+  }, []);
 
-      if (res.ok && result?.success) {
-        alert(
-          `¡Sorteo ejecutado exitosamente!\nGanador: ${
-            result?.result?.winnerUserId || "Ver detalles"
-          }`
-        );
-        // Podrías redirigir directo al vivo:
-        // router.push(`/sorteo/${id}/en-vivo`);
-        setTimeout(() => {
-          window.location.reload();
-        }, 1000);
-      } else {
-        alert(`Error ejecutando sorteo: ${result?.error || result?.message || "Desconocido"}`);
+  const handleKeyNav = useCallback(
+    (e, key, total) => {
+      if (total <= 1) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        changeTicket(key, -1, total);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        changeTicket(key, 1, total);
       }
-    } catch (error) {
-      console.error("Error ejecutando sorteo manual:", error);
-      alert("Error de conexión al ejecutar sorteo");
-    } finally {
-      setExecutingDraw(false);
-    }
-  };
+    },
+    [changeTicket]
+  );
+
+  const onTouchStart = useCallback((key, clientX) => {
+    touchStartXRef.current[key] = clientX;
+  }, []);
+
+  const onTouchEnd = useCallback(
+    (key, clientX, total) => {
+      const start = touchStartXRef.current[key];
+      if (start == null) return;
+      const dx = clientX - start;
+      delete touchStartXRef.current[key];
+      const threshold = 30;
+      if (Math.abs(dx) < threshold || total <= 1) return;
+      changeTicket(key, dx < 0 ? 1 : -1, total);
+    },
+    [changeTicket]
+  );
 
   /* ======================= UI ======================= */
 
@@ -683,7 +515,6 @@ export default function SorteoPage() {
     );
   }
 
-  // Solo mostrar error si realmente no hay raffle y no es un problema de estado
   if (error && !raffle) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 pt-20">
@@ -714,65 +545,31 @@ export default function SorteoPage() {
     );
   }
 
-  const drawTimeHHMM = drawAtDate
-    ? drawAtDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : null;
-
-  // Determinar si mostrar botón de admin (se calcula acá para tener participantsCount definido)
-  const showAdminDrawButton =
-    isAdmin &&
-    raffle?.status === "READY_TO_DRAW" &&
-    !raffle?.drawnAt &&
-    !raffle?.winnerParticipationId &&
-    (participantsCount ?? 0) >= 2;
+  const winnerBlock =
+    raffle?.status === "FINISHED" && winnerParticipation ? (
+      <div className="bg-amber-500/20 border border-amber-500/40 rounded-2xl p-6 mb-8 text-center">
+        <div className="text-5xl mb-2">🏆</div>
+        <h3 className="text-2xl font-bold text-white">Ganador</h3>
+        <p className="mt-2 text-white/90">
+          {winnerParticipation.user?.name || "Usuario"} —{" "}
+          <span className="font-mono">
+            {winnerParticipation.ticket?.code ||
+              winnerParticipation.ticketCode ||
+              winnerParticipation.id?.slice(0, 6)}
+          </span>
+        </p>
+        <Link
+          href={`/sorteo/${id}/en-vivo`}
+          className="inline-block mt-3 text-amber-300 hover:underline"
+        >
+          Ver resultados →
+        </Link>
+      </div>
+    ) : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 pt-20">
       <div className="container mx-auto px-4 py-8">
-        {/* Notificación de meta alcanzada */}
-        {showGoalReached && (
-          <div className="fixed top-4 right-4 z-50 animate-bounce">
-            <div className="bg-gradient-to-r from-green-500 to-emerald-500 text-white p-4 rounded-2xl shadow-2xl border border-green-400 max-w-sm">
-              <div className="flex items-center gap-3">
-                <div className="text-3xl">🎯</div>
-                <div>
-                  <div className="font-bold text-lg">¡Meta Alcanzada!</div>
-                  <div className="text-sm opacity-90">
-                    El sorteo se ejecutará automáticamente
-                  </div>
-                  {drawCountdownTarget && (
-                    <div className="mt-1 bg-white/20 px-2 py-1 rounded text-xs font-mono">
-                      <CountdownTimer
-                        endsAt={drawCountdownTarget}
-                        mode="draw"
-                        compact={true}
-                        onExpire={() => {
-                          clearGoalData(id);
-                          router.push(`/sorteo/${id}/en-vivo`);
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="mt-3 flex gap-2">
-                <button
-                  onClick={() => router.push(`/sorteo/${id}/en-vivo`)}
-                  className="flex-1 bg-white/20 hover:bg-white/30 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
-                >
-                  Ver sorteo en vivo
-                </button>
-                <button
-                  onClick={() => setShowGoalReached(false)}
-                  className="px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-sm"
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Header */}
         <div className="mb-8">
           <div className="flex items-center justify-between mb-3">
@@ -830,112 +627,38 @@ export default function SorteoPage() {
                 : raffle?.status}
             </span>
             <span>Por: {raffle?.owner?.name || "Anónimo"}</span>
-            <span>Creado: {raffle?.createdAt ? new Date(raffle.createdAt).toLocaleDateString() : "-"}</span>
-            {goalReachedTimestamp && (
-              <span className="bg-green-500/20 px-2 py-1 rounded text-xs">
-                Meta alcanzada: {goalReachedTimestamp.toLocaleString()}
-              </span>
-            )}
+            <span>
+              Creado:{" "}
+              {raffle?.createdAt ? new Date(raffle.createdAt).toLocaleDateString() : "-"}
+            </span>
           </div>
         </div>
+
+        {/* Botón simple de sorteo (ADMIN / SUPERADMIN) */}
+        {showSimpleDrawBtn && (
+          <div className="bg-emerald-500/15 border border-emerald-500/40 rounded-2xl p-5 mb-6">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-emerald-300 font-semibold">Listo para ejecutar</p>
+                <p className="text-sm opacity-80">
+                  Al hacer clic se realizará el sorteo entre los participantes y se publicará el
+                  ganador.
+                </p>
+              </div>
+              <button
+                onClick={runSimpleDraw}
+                disabled={runningSimpleDraw}
+                className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60"
+              >
+                {runningSimpleDraw ? "Ejecutando…" : "🎲 Realizar sorteo"}
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Principal */}
           <div className="lg:col-span-2">
-            {/* READY_TO_DRAW → banner + countdown + CTA */}
-            {showDrawCallout && (
-              <div className="bg-yellow-500/20 border border-yellow-500/50 rounded-2xl p-5 mb-6">
-                <div className="flex items-center gap-3 text-yellow-200">
-                  <span className="text-2xl">🕒</span>
-                  <div className="flex-1">
-                    <p className="font-semibold">
-                      El sorteo se realizará a las <b>{drawTimeHHMM}</b>{" "}
-                      ({minutesUntilDraw > 0 ? `en ${minutesUntilDraw} min.` : "en instantes"}).
-                    </p>
-                    <p className="text-sm opacity-80">
-                      Programado para: {drawAtDate ? drawAtDate.toLocaleString() : "-"}
-                    </p>
-                  </div>
-                  <button
-                    onClick={goLive}
-                    disabled={!canGoLive}
-                    className={`px-4 py-2 rounded-xl font-bold transition-all ${
-                      canGoLive
-                        ? "bg-yellow-500 hover:bg-yellow-600 text-black"
-                        : "bg-white/10 text-white/60 cursor-not-allowed"
-                    }`}
-                  >
-                    Ir al sorteo →
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Botón Admin para ejecutar sorteo manual */}
-            {showAdminDrawButton && (
-              <div className="bg-red-500/15 border border-red-500/40 rounded-2xl p-5 mb-6">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-red-300 font-semibold">Listo para ejecutar sorteo</p>
-                    <p className="text-sm opacity-80">
-                      Solo administradores pueden ejecutar el sorteo manual cuando está <b>READY_TO_DRAW</b>.
-                    </p>
-                  </div>
-                  <button
-                    onClick={executeManualDraw}
-                    disabled={executingDraw}
-                    className="px-4 py-2 rounded-xl border border-red-600 bg-red-600/90 text-white font-medium hover:bg-red-600 disabled:opacity-60"
-                  >
-                    {executingDraw ? (
-                      <span className="flex items-center gap-2">
-                        <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></span>
-                        Ejecutando…
-                      </span>
-                    ) : (
-                      "🎲 Ejecutar sorteo ahora"
-                    )}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Banner cuando está lleno pero aún no es READY_TO_DRAW */}
-            {isFull && raffle?.status === "ACTIVE" && !showDrawCallout && (
-              <div className="bg-green-500/20 border border-green-500/50 rounded-2xl p-5 mb-6">
-                <div className="flex items-center gap-3 text-green-200">
-                  <span className="text-2xl">🎯</span>
-                  <div className="flex-1">
-                    <p className="font-semibold">¡Meta alcanzada!</p>
-                    <p className="text-sm opacity-80">
-                      Se alcanzó el número máximo de participantes. El sorteo se está preparando...
-                    </p>
-                    {goalReachedTimestamp && (
-                      <p className="text-xs opacity-70 mt-1">
-                        Alcanzada el: {goalReachedTimestamp.toLocaleString()}
-                      </p>
-                    )}
-                    {drawCountdownTarget && (
-                      <div className="mt-2 flex items-center gap-2">
-                        <span className="text-xs">Sorteo en:</span>
-                        <div className="bg-white/10 px-2 py-1 rounded font-mono text-sm">
-                          <CountdownTimer
-                            endsAt={drawCountdownTarget}
-                            mode="draw"
-                            compact={true}
-                            onExpire={() => {
-                              clearGoalData(id);
-                              router.push(`/sorteo/${id}/en-vivo`);
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  <div className="animate-spin h-6 w-6 border-2 border-green-300 border-t-transparent rounded-full"></div>
-                </div>
-              </div>
-            )}
-
             {/* Imagen + descripción */}
             <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 mb-8 border border-white/20">
               {raffle?.imageUrl && (
@@ -946,8 +669,8 @@ export default function SorteoPage() {
                       alt={raffle.title || "Sorteo"}
                       fill
                       className="object-cover rounded-2xl"
-                      loader={({ src }) => src} // passthrough para dominios no configurados
-                      unoptimized // evita restricción de dominios
+                      loader={({ src }) => src}
+                      unoptimized
                       priority
                     />
                   </div>
@@ -963,7 +686,7 @@ export default function SorteoPage() {
             {/* Barra de progreso */}
             <div className="mb-8">
               <div className="flex justify-between text-xs text-slate-400 mb-2">
-                <span>Participantes</span>
+                <span>Participaciones (tickets)</span>
                 <span>
                   {participantsCount}
                   {maxParticipants ? ` / ${maxParticipants}` : " / ∞"}
@@ -985,79 +708,116 @@ export default function SorteoPage() {
             </div>
 
             {/* FINISHED → Ganador */}
-            {raffle?.status === "FINISHED" && winnerParticipation && (
-              <div className="bg-amber-500/20 border border-amber-500/40 rounded-2xl p-6 mb-8 text-center">
-                <div className="text-5xl mb-2">🏆</div>
-                <h3 className="text-2xl font-bold text-white">Ganador</h3>
-                <p className="mt-2 text-white/90">
-                  {winnerParticipation.user?.name || "Usuario"} —{" "}
-                  <span className="font-mono">
-                    {winnerParticipation.ticket?.code ||
-                      winnerParticipation.ticketCode ||
-                      winnerParticipation.id?.slice(0, 6)}
-                  </span>
-                </p>
-                <Link
-                  href={`/sorteo/${id}/en-vivo`}
-                  className="inline-block mt-3 text-amber-300 hover:underline"
-                >
-                  Ver resultados →
-                </Link>
-              </div>
-            )}
+            {winnerBlock}
 
-            {/* Lista de participantes */}
+            {/* Participantes agrupados por usuario con carrusel */}
             <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20 mb-8">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold text-white">
-                  Participaciones ({participants.length})
-                </h3>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <h3 className="text-xl font-bold text-white">Participantes</h3>
+                <div className="text-xs text-slate-300">
+                  únicos: <b>{groupedParticipants.length}</b>
+                  <span className="opacity-60"> • tickets: {participants.length}</span>
+                </div>
                 <button
                   onClick={() => loadParticipants()}
                   disabled={participantsLoading}
-                  className="px-3 py-2 bg-white/20 hover:bg-white/30 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
+                  className="ml-auto px-3 py-2 bg-white/20 hover:bg-white/30 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
                 >
                   {participantsLoading ? "🔄" : "🔄 Actualizar"}
                 </button>
               </div>
 
-              {participants.length > 0 ? (
+              {groupedParticipants.length > 0 ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 max-h-80 overflow-y-auto">
-                  {participants.map((p, i) => (
-                    <div
-                      key={p.id || i}
-                      className={`group rounded-xl border overflow-hidden transition ${
-                        p.isWinner
-                          ? "bg-amber-500/20 border-amber-500/50"
-                          : "bg-slate-900/50 border-slate-800 hover:border-slate-700/60"
-                      }`}
-                    >
-                      <div className="p-4">
-                        <div className="flex items-center gap-3 mb-2">
-                          <div
-                            className={`w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-bold ${
-                              p.isWinner
-                                ? "bg-amber-500"
-                                : "bg-gradient-to-r from-purple-500 to-pink-500"
-                            }`}
-                          >
-                            {p.isWinner ? "👑" : i + 1}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-white font-medium truncate">
-                              {p.user?.name || p.name || "Usuario"}
+                  {groupedParticipants.map((g, i) => {
+                    const total = g.tickets.length;
+                    const idx = carouselIdx[g.key] ?? 0;
+                    const current =
+                      g.tickets[Math.min(idx, Math.max(0, total - 1))] || g.tickets[0];
+
+                    return (
+                      <div
+                        key={g.key}
+                        className={`group relative rounded-xl border overflow-hidden transition focus-within:ring-2 focus-within:ring-purple-400 outline-none ${
+                          g.isWinner
+                            ? "bg-amber-500/20 border-amber-500/50"
+                            : "bg-slate-900/50 border-slate-800 hover:border-slate-700/60"
+                        }`}
+                        tabIndex={0}
+                        role="region"
+                        aria-label={`Participante ${g.name}`}
+                        onKeyDown={(e) => handleKeyNav(e, g.key, total)}
+                        onTouchStart={(e) => onTouchStart(g.key, e.touches?.[0]?.clientX ?? 0)}
+                        onTouchEnd={(e) => onTouchEnd(g.key, e.changedTouches?.[0]?.clientX ?? 0, total)}
+                      >
+                        {/* Flechas / zonas clicables */}
+                        {total > 1 && (
+                          <>
+                            <button
+                              type="button"
+                              aria-label={`Ticket anterior de ${g.name}`}
+                              onClick={() => changeTicket(g.key, -1, total)}
+                              className="absolute inset-y-0 left-0 w-8 flex items-center justify-center bg-gradient-to-r from-black/20 to-transparent opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white/80" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M12.293 15.707a1 1 0 010-1.414L15.586 11H4a1 1 0 110-2h11.586l-3.293-3.293a1 1 0 111.414-1.414l5 5a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Siguiente ticket de ${g.name}`}
+                              onClick={() => changeTicket(g.key, 1, total)}
+                              className="absolute inset-y-0 right-0 w-8 flex items-center justify-center bg-gradient-to-l from-black/20 to-transparent opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 rotate-180 text-white/80" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M12.293 15.707a1 1 0 010-1.414L15.586 11H4a1 1 0 110-2h11.586l-3.293-3.293a1 1 0 111.414-1.414l5 5a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                              </svg>
+                            </button>
+                          </>
+                        )}
+
+                        <div className="p-4">
+                          <div className="flex items-center gap-3 mb-2">
+                            <div
+                              className={`w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-bold ${
+                                g.isWinner
+                                  ? "bg-amber-500"
+                                  : "bg-gradient-to-r from-purple-500 to-pink-500"
+                              }`}
+                            >
+                              {g.isWinner ? "👑" : i + 1}
                             </div>
-                            <div className="text-white/60 text-xs">
-                              Participante {p.isWinner ? "ganador" : "activo"}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <div className="text-white font-medium truncate">
+                                  {g.name}
+                                </div>
+                                {total > 1 && (
+                                  <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/80 text-[11px]">
+                                    x{total}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-white/60 text-xs">
+                                Participante {g.isWinner ? "ganador" : "activo"}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                        <div className="text-white/70 text-xs font-mono bg-white/5 rounded px-2 py-1">
-                          #{p.ticket?.code || p.ticketCode || p.id?.slice(-6) || "Código oculto"}
+
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-white/80 text-xs font-mono bg-white/5 rounded px-2 py-1">
+                              #{current?.code}
+                            </div>
+                            {total > 1 && (
+                              <div className="text-white/50 text-[11px]">
+                                {Math.min((carouselIdx[g.key] ?? 0) + 1, total)} / {total}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="text-center py-12">
@@ -1159,26 +919,6 @@ export default function SorteoPage() {
                 </div>
               )}
 
-              {showDrawCallout && (
-                <div className="mb-6 bg-yellow-500/20 border border-yellow-500/50 rounded-xl p-4 text-center">
-                  <p className="text-yellow-300 font-bold mb-1">
-                    Se realizará a las <b>{drawTimeHHMM}</b>{" "}
-                    ({minutesUntilDraw > 0 ? `en ${minutesUntilDraw} min.` : "en instantes"})
-                  </p>
-                  <button
-                    onClick={goLive}
-                    disabled={!canGoLive}
-                    className={`w-full py-3 rounded-xl font-bold transition-all ${
-                      canGoLive
-                        ? "bg-yellow-500 hover:bg-yellow-600 text-black"
-                        : "bg-white/10 text-white/60 cursor-not-allowed"
-                    }`}
-                  >
-                    Ir al sorteo →
-                  </button>
-                </div>
-              )}
-
               {session && userParticipation && raffle?.status !== "FINISHED" && (
                 <div className="mb-4 bg-green-500/20 border border-green-500/50 rounded-xl p-4 text-center">
                   <p className="text-green-300 font-bold mb-1">¡Ya estás participando!</p>
@@ -1190,7 +930,6 @@ export default function SorteoPage() {
 
               {session &&
                 canParticipate &&
-                !showDrawCallout &&
                 raffle?.status !== "FINISHED" &&
                 !isFull && (
                   <div className="mb-4">
@@ -1205,32 +944,6 @@ export default function SorteoPage() {
                     </p>
                   </div>
                 )}
-
-              {/* Mensaje cuando está lleno */}
-              {isFull && !isOwner && (
-                <div className="mb-4 bg-yellow-500/20 border border-yellow-500/50 rounded-xl p-4 text-center">
-                  <p className="text-yellow-300 font-bold mb-1">Cupo completo</p>
-                  <p className="text-yellow-200/80 text-xs">
-                    Este sorteo alcanzó su máximo de participantes
-                  </p>
-                  {drawCountdownTarget && (
-                    <div className="mt-2">
-                      <div className="text-xs text-yellow-200/80 mb-1">Sorteo en:</div>
-                      <div className="bg-white/10 px-2 py-1 rounded font-mono text-sm">
-                        <CountdownTimer
-                          endsAt={drawCountdownTarget}
-                          mode="draw"
-                          compact={true}
-                          onExpire={() => {
-                            clearGoalData(id);
-                            router.push(`/sorteo/${id}/en-vivo`);
-                          }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
 
               {isOwner && (
                 <div className="bg-blue-500/20 border border-blue-500/50 rounded-xl p-4 text-center">
@@ -1266,13 +979,12 @@ export default function SorteoPage() {
         </div>
       </div>
 
-      {/* Modal de participación (multi-selección) */}
+      {/* Modal de participación */}
       <ParticipateModal
         isOpen={showParticipateModal}
         onClose={() => setShowParticipateModal(false)}
         raffle={raffle}
         onSuccess={handleParticipationSuccess}
-        // NUEVO: pasar mínimo y si es obligatorio (para enforcement en el modal)
         minTicketsRequired={minTicketsRequired}
         minTicketsIsMandatory={minTicketsIsMandatory}
       />

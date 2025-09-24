@@ -15,6 +15,9 @@ function sha256hex(buf) {
 function toBytes(x) {
   return Buffer.isBuffer(x) ? x : Buffer.from(String(x));
 }
+function normRole(r) {
+  return String(r || '').toUpperCase().replace(/[\s-]/g, '_');
+}
 
 /** Fisher–Yates determinístico con seed (HMAC-DRBG sobre SHA-256) */
 function seededShuffle(array, seedBytes) {
@@ -54,42 +57,58 @@ export async function GET(_req, { params }) {
   try {
     const { id: raffleId } = await params;
 
-    const [raffle, items] = await Promise.all([
-      prisma.raffle.findUnique({
-        where: { id: raffleId },
-        select: {
-          id: true,
-          status: true,
-          maxParticipants: true,
-          drawAt: true,
-          drawnAt: true,
-          drawSeedHash: true,
-          drawSeedReveal: true,
-          winnerParticipationId: true,
-        },
-      }),
-      prisma.participation.findMany({
-        where: { raffleId },
-        select: {
-          id: true,
-          ticketId: true,
-          createdAt: true,
-          isWinner: true,
-          drawOrder: true,
-          ticket: {
-            select: {
-              id: true,
-              code: true,
-              user: { select: { id: true, name: true, image: true } },
-            },
-          },
-        },
-        orderBy: { createdAt: 'asc' },
-      }),
-    ]);
+    // 1) Traer la rifa primero para saber si ya fue sorteada
+    const raffle = await prisma.raffle.findUnique({
+      where: { id: raffleId },
+      select: {
+        id: true,
+        status: true,
+        maxParticipants: true,
+        drawAt: true,
+        drawnAt: true,
+        drawSeedHash: true,
+        drawSeedReveal: true,
+        winnerParticipationId: true,
+      },
+    });
 
     if (!raffle) {
       return NextResponse.json({ ok: false, error: 'Sorteo no encontrado' }, { status: 404 });
+    }
+
+    // 2) Elegir orden de DB: si ya se sorteó → drawOrder; si no → createdAt
+    const dbOrderBy = raffle.drawnAt
+      ? [{ drawOrder: 'asc' }, { createdAt: 'asc' }]
+      : [{ createdAt: 'asc' }];
+
+    // 3) Cargar participaciones con ese orden
+    let items = await prisma.participation.findMany({
+      where: { raffleId },
+      select: {
+        id: true,
+        ticketId: true,
+        createdAt: true,
+        isWinner: true,
+        drawOrder: true,
+        ticket: {
+          select: {
+            id: true,
+            code: true,
+            user: { select: { id: true, name: true, image: true } },
+          },
+        },
+      },
+      orderBy: dbOrderBy,
+    });
+
+    // 4) Seguridad adicional: si está sorteado, ordenar en memoria por drawOrder asc y backup createdAt
+    if (raffle.drawnAt) {
+      items = items.slice().sort((a, b) => {
+        const da = a.drawOrder ?? Number.MAX_SAFE_INTEGER;
+        const db = b.drawOrder ?? Number.MAX_SAFE_INTEGER;
+        if (da !== db) return da - db;
+        return new Date(a.createdAt) - new Date(b.createdAt);
+      });
     }
 
     const participants = items.map((p) => ({
@@ -125,10 +144,11 @@ export async function GET(_req, { params }) {
 }
 
 /* ============================
-   POST → programa o ejecuta el sorteo
+   POST → programa / commit / ejecuta
    Acciones:
    - { action: "schedule", minutesFromNow?: number }
-   - { action: "run" }
+   - { action: "commit" }
+   - { action: "run", autocommit?: boolean, notify?: boolean }
    ============================ */
 export async function POST(req, { params }) {
   const session = await getServerSession(authOptions);
@@ -164,36 +184,14 @@ export async function POST(req, { params }) {
       return NextResponse.json({ ok: false, error: 'Sorteo no encontrado' }, { status: 404 });
     }
 
-    const roleStr = String(session.user?.role || '').toUpperCase();
+    const roleStr = normRole(session.user?.role);
     const isOwner = session.user.id === raffle.ownerId;
-    const isAdmin = roleStr === 'ADMIN';
-    const isSuper = roleStr === 'SUPERADMIN';
-    if (!isOwner && !isAdmin && !isSuper) {
+    const isAdmin = roleStr === 'ADMIN' || roleStr === 'SUPERADMIN' || roleStr === 'SUPER_ADMIN';
+    if (!isOwner && !isAdmin) {
       return NextResponse.json({ ok: false, error: 'No autorizado' }, { status: 403 });
     }
 
-    const [items, target] = await Promise.all([
-      prisma.participation.findMany({
-        where: { raffleId },
-        select: {
-          id: true,
-          ticketId: true,
-          createdAt: true,
-          ticket: {
-            select: {
-              id: true,
-              code: true,
-              user: { select: { id: true, name: true, email: true } },
-            },
-          },
-        },
-        orderBy: { createdAt: 'asc' },
-      }),
-      raffle.maxParticipants ?? null,
-    ]);
-    const total = items.length;
-
-    // Estados no válidos para operar
+    // Estados que no permiten operar
     const forbidden = ['CANCELLED', 'FINISHED', 'COMPLETED'];
     if (forbidden.includes(raffle.status)) {
       return NextResponse.json(
@@ -202,15 +200,28 @@ export async function POST(req, { params }) {
       );
     }
 
+    // Cargar participaciones
+    const items = await prisma.participation.findMany({
+      where: { raffleId },
+      select: {
+        id: true,
+        ticketId: true,
+        createdAt: true,
+        ticket: {
+          select: {
+            id: true,
+            code: true,
+            user: { select: { id: true, name: true, email: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    const total = items.length;
+
     /* ====== 1) Programar ====== */
     if (action === 'schedule') {
-      if (target && total < target) {
-        return NextResponse.json(
-          { ok: false, error: `Aún no se alcanzó la meta (${total}/${target}).` },
-          { status: 400 }
-        );
-      }
-
+      // si querés exigir meta, reintroducí el check aquí
       const minutes = Number.isFinite(+body?.minutesFromNow)
         ? Math.max(1, +body.minutesFromNow)
         : 3;
@@ -227,7 +238,7 @@ export async function POST(req, { params }) {
       const updated = await prisma.raffle.update({
         where: { id: raffleId },
         data: {
-          status: 'READY_TO_DRAW',  // ← pasamos a listo para sortear
+          status: 'READY_TO_DRAW',
           drawAt,
           drawSeedReveal,
           drawSeedHash,
@@ -241,7 +252,6 @@ export async function POST(req, { params }) {
           new Set(items.map((i) => i.ticket?.user?.email).filter(Boolean))
         );
         console.log(`[NOTIFY] Sorteo ${raffleId} en ${minutes} minutos. Emails:`, emails);
-        // TODO: enviar emails / WS / push
       } catch (e) {
         console.warn('Notify failed (non-critical):', e);
       }
@@ -258,35 +268,39 @@ export async function POST(req, { params }) {
       );
     }
 
-    /* ====== 2) Ejecutar sorteo ====== */
+    /* ====== 2) Commit explícito (genera hash si falta) ====== */
+    if (action === 'commit') {
+      if (!raffle.drawSeedReveal || !raffle.drawSeedHash) {
+        const reveal = crypto.randomBytes(32).toString('hex');
+        const hash = sha256hex(Buffer.from(reveal, 'utf8'));
+        const updated = await prisma.raffle.update({
+          where: { id: raffleId },
+          data: { drawSeedReveal: reveal, drawSeedHash: hash },
+          select: { drawSeedHash: true, drawSeedReveal: true },
+        });
+        return NextResponse.json(
+          {
+            ok: true,
+            message: 'Compromiso creado',
+            commitment: `sha256:${updated.drawSeedHash}`,
+          },
+          { status: 200 }
+        );
+      }
+      return NextResponse.json(
+        {
+          ok: true,
+          message: 'Compromiso existente',
+          commitment: `sha256:${raffle.drawSeedHash}`,
+        },
+        { status: 200 }
+      );
+    }
+
+    /* ====== 3) Ejecutar sorteo ====== */
     if (action === 'run') {
       if (raffle.drawnAt) {
         return NextResponse.json({ ok: false, error: 'El sorteo ya fue ejecutado' }, { status: 400 });
-      }
-      if (!raffle.drawAt || new Date(raffle.drawAt) > new Date()) {
-        return NextResponse.json({ ok: false, error: 'Aún no es el horario del sorteo' }, { status: 400 });
-      }
-
-      // Estado permitido: READY_TO_DRAW o ACTIVE (si cumplió condiciones)
-      if (!['READY_TO_DRAW', 'ACTIVE'].includes(raffle.status)) {
-        return NextResponse.json(
-          { ok: false, error: `Estado inválido para ejecutar sorteo (${raffle.status})` },
-          { status: 400 }
-        );
-      }
-
-      if (!raffle.drawSeedReveal || !raffle.drawSeedHash) {
-        return NextResponse.json({ ok: false, error: 'Compromiso ausente' }, { status: 400 });
-      }
-      const check = sha256hex(Buffer.from(raffle.drawSeedReveal, 'utf8'));
-      if (check !== raffle.drawSeedHash) {
-        return NextResponse.json({ ok: false, error: 'Compromiso inválido' }, { status: 400 });
-      }
-      if (target && total < target) {
-        return NextResponse.json(
-          { ok: false, error: `No se alcanzó la meta (${total}/${target}).` },
-          { status: 400 }
-        );
       }
       if (total < 2) {
         return NextResponse.json(
@@ -295,12 +309,34 @@ export async function POST(req, { params }) {
         );
       }
 
+      // Autocommit si falta
+      let reveal = raffle.drawSeedReveal;
+      let hash = raffle.drawSeedHash;
+      if (!reveal || !hash) {
+        if (body?.autocommit !== false) {
+          reveal = crypto.randomBytes(32).toString('hex');
+          hash = sha256hex(Buffer.from(reveal, 'utf8'));
+          await prisma.raffle.update({
+            where: { id: raffleId },
+            data: { drawSeedReveal: reveal, drawSeedHash: hash },
+          });
+        } else {
+          return NextResponse.json({ ok: false, error: 'Compromiso ausente' }, { status: 400 });
+        }
+      }
+
+      // Validación de integridad del compromiso
+      const check = sha256hex(Buffer.from(reveal, 'utf8'));
+      if (check !== hash) {
+        return NextResponse.json({ ok: false, error: 'Compromiso inválido' }, { status: 400 });
+      }
+
       // Snapshot de códigos (inmutable para seed)
       const ticketCodes = items.map((i) => i.ticket?.code || i.id);
       const seed = composeSeed({
-        serverReveal: raffle.drawSeedReveal,
+        serverReveal: reveal,
         raffleId,
-        drawAt: raffle.drawAt,
+        drawAt: raffle.drawAt, // puede ser null; igual entra en la seed
         ticketCodes,
       });
 
@@ -310,7 +346,7 @@ export async function POST(req, { params }) {
       const rankingAsc = shuffled.slice().reverse(); // [ganador, 2°, 3°, ...]
       const winnerParticipationId = rankingAsc[0];
 
-      // Transacción: marca ganador + setea drawnAt y winnerParticipationId
+      // Transacción: marca ganador + FINISHED + winnerParticipationId + drawnAt
       const result = await prisma.$transaction(async (trx) => {
         // marcar ganador
         await trx.participation.update({
@@ -318,7 +354,7 @@ export async function POST(req, { params }) {
           data: { isWinner: true },
         });
 
-        // intentá guardar drawOrder (si la columna existe). Si falla, se omite.
+        // drawOrder opcional
         try {
           for (let idx = 0; idx < rankingAsc.length; idx++) {
             const pId = rankingAsc[idx];
@@ -328,11 +364,10 @@ export async function POST(req, { params }) {
             });
           }
         } catch (e) {
-          // columna ausente o incompatible: ignorar silenciosamente
           console.warn('drawOrder not persisted (optional):', e?.code || e?.message || e);
         }
 
-        // actualizar rifa → FINISHED (enum válido), winnerParticipationId y drawnAt
+        // actualizar rifa → FINISHED
         return trx.raffle.update({
           where: { id: raffleId },
           data: {
@@ -362,8 +397,8 @@ export async function POST(req, { params }) {
           ok: true,
           message: 'Sorteo ejecutado',
           raffle: result,
-          commitment: `sha256:${raffle.drawSeedHash}`,
-          reveal: raffle.drawSeedReveal,
+          commitment: `sha256:${hash}`,
+          reveal,
           order: rankingAsc,       // [ganador, 2°, 3°, ...]
           eliminatedDesc: shuffled // [último eliminado → … → penúltimo → ganador]
         },
