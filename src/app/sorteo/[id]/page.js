@@ -1,7 +1,6 @@
-// src/app/sorteo/[id]/page.js
 "use client";
 
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
@@ -76,8 +75,6 @@ function extractProgressPayload(raw) {
   return { list: Array.isArray(list) ? list : [], applied, max };
 }
 
-/* ======================= Agrupado ======================= */
-
 function safeTicketCode(p) {
   return (
     p?.ticket?.code ||
@@ -110,6 +107,7 @@ function groupParticipants(list) {
         userId: p?.userId || p?.user?.id || null,
         tickets: [],
         isWinner: !!p?.isWinner,
+        isVerified: !!p?.user?.verified || !!p?.userVerified,
       });
     }
     const g = map.get(key);
@@ -122,6 +120,11 @@ function groupParticipants(list) {
     if (p?.isWinner) g.isWinner = true;
   });
   return Array.from(map.values());
+}
+
+function initials(name = "Usuario") {
+  const parts = String(name).trim().split(/\s+/).slice(0, 2);
+  return parts.map((p) => p[0]?.toUpperCase() || "").join("") || "U";
 }
 
 /* ======================= Page ======================= */
@@ -139,6 +142,12 @@ export default function SorteoPage() {
 
   const [showParticipateModal, setShowParticipateModal] = useState(false);
   const [userParticipation, setUserParticipation] = useState(null);
+
+  // Descripción expandible
+  const [descOpen, setDescOpen] = useState(false);
+
+  // Índice de ticket por participante
+  const [ticketIdx, setTicketIdx] = useState({});
 
   /* =================== Carga base =================== */
 
@@ -236,7 +245,7 @@ export default function SorteoPage() {
     };
   }, [id, session, loadParticipants, checkUserParticipation]);
 
-  // Polling ligero mientras el sorteo está abierto/publicado/listo
+  // Polling ligero
   useEffect(() => {
     if (!raffle?.id) return;
     const ok = ["ACTIVE", "PUBLISHED", "READY_TO_DRAW"];
@@ -257,8 +266,9 @@ export default function SorteoPage() {
     raffle.publishedAt;
   const canParticipate = canPurchase && !isOwner;
 
-  const participantsCount = useMemo(() => {
-    if (participants.length) return participants.length; // total de tickets/participaciones
+  // "participaciones" = tickets
+  const participationsCount = useMemo(() => {
+    if (participants.length) return participants.length;
     return (
       pickNumber(
         raffle?.stats?.participationsCount,
@@ -279,7 +289,25 @@ export default function SorteoPage() {
     );
   }, [raffle?.stats, raffle?.maxParticipants, raffle?.capacity]);
 
-  const isFull = maxParticipants && participantsCount >= maxParticipants;
+  const isFull = maxParticipants && participationsCount >= maxParticipants;
+
+  const groupedParticipants = useMemo(
+    () => groupParticipants(participants),
+    [participants]
+  );
+  const uniqueParticipantsCount = groupedParticipants.length;
+
+  // faltantes < 25% del máximo
+  const remaining = useMemo(() => {
+    if (!maxParticipants && maxParticipants !== 0) return null;
+    return Math.max(0, maxParticipants - participationsCount);
+  }, [maxParticipants, participationsCount]);
+
+  const showAlmostFull =
+    typeof remaining === "number" &&
+    maxParticipants &&
+    remaining > 0 &&
+    remaining <= Math.ceil(maxParticipants * 0.25);
 
   // ====== Rol y botón "Realizar sorteo" ======
   const [isPowerAdmin, setIsPowerAdmin] = useState(() => {
@@ -287,7 +315,6 @@ export default function SorteoPage() {
     return role === "SUPERADMIN" || role === "SUPER_ADMIN" || role === "ADMIN";
   });
 
-  // Fallback: si el rol no venía en la sesión, lo consultamos a /api/users/me
   useEffect(() => {
     (async () => {
       try {
@@ -316,7 +343,7 @@ export default function SorteoPage() {
     isPowerAdmin &&
     raffle?.status === "READY_TO_DRAW" &&
     noWinnerYet &&
-    (participantsCount ?? 0) >= 2;
+    (participationsCount ?? 0) >= 2;
 
   const [runningSimpleDraw, setRunningSimpleDraw] = useState(false);
 
@@ -325,9 +352,9 @@ export default function SorteoPage() {
     setRunningSimpleDraw(true);
 
     const attempts = [
-      { url: `/api/admin/raffles/${id}/draw`, body: { action: "run", notify: true } }, // admin/superadmin
-      { url: `/api/raffles/${id}/draw`, body: { action: "run", notify: true } },       // público con permisos
-      { url: `/api/raffles/${id}/manual-draw`, body: { notify: true } },               // fallback legacy
+      { url: `/api/admin/raffles/${id}/draw`, body: { action: "run", notify: true } },
+      { url: `/api/raffles/${id}/draw`, body: { action: "run", notify: true } },
+      { url: `/api/raffles/${id}/manual-draw`, body: { notify: true } },
     ];
 
     try {
@@ -344,13 +371,11 @@ export default function SorteoPage() {
           return;
         }
         const msg = String(data?.error || data?.message || "").toLowerCase();
-        // Si es error duro (no de permisos/acción) paramos
         if (![401, 403, 404].includes(res.status) && !msg.includes("acceso denegado")) {
           alert(`Error ejecutando sorteo: ${data?.error || data?.message || "No se pudo completar"}`);
           setRunningSimpleDraw(false);
           return;
         }
-        // si 401/403/404 probamos siguiente intento
       }
       alert("Error ejecutando sorteo: Acceso denegado o endpoint no disponible.");
     } catch (e) {
@@ -360,7 +385,6 @@ export default function SorteoPage() {
     }
   }
 
-  // ganador (si el backend ya lo marcó)
   const winnerParticipation = useMemo(
     () => participants.find((p) => p.isWinner) || null,
     [participants]
@@ -380,7 +404,11 @@ export default function SorteoPage() {
     }
     const parsed = parseMinFromDescription(raffle?.description || "");
     return { minTicketsRequired: parsed.min, minTicketsIsMandatory: parsed.mandatory };
-  }, [raffle?.minTicketsPerParticipant, raffle?.minTicketsIsMandatory, raffle?.description]);
+  }, [
+    raffle?.minTicketsPerParticipant,
+    raffle?.minTicketsIsMandatory,
+    raffle?.description,
+  ]);
 
   const [copied, setCopied] = useState(false);
   const doShare = async () => {
@@ -388,16 +416,50 @@ export default function SorteoPage() {
       const url = typeof window !== "undefined" ? window.location.href : "";
       const title = raffle?.title || "Sorteo";
       const text = "¡Sumate a mi sorteo en Rifteá!";
-      if (navigator.share) {
+
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.share &&
+        navigator.canShare &&
+        navigator.canShare({ title, text, url })
+      ) {
         await navigator.share({ title, text, url });
       } else {
-        await navigator.clipboard.writeText(`${title} — ${url}`);
+        await navigator.clipboard.writeText(url);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       }
     } catch {
-      /* noop */
+      try {
+        const url = typeof window !== "undefined" ? window.location.href : "";
+        await navigator.clipboard.writeText(url);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch {
+        /* noop */
+      }
     }
+  };
+
+  const reportIssue = async () => {
+    try {
+      const res = await fetch(`/api/raffles/${id}/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ reason: "user_report" }),
+      });
+      if (res.ok) {
+        alert("¡Gracias! Revisaremos este sorteo.");
+        return;
+      }
+    } catch {}
+    const url = typeof window !== "undefined" ? window.location.href : "";
+    window.location.href =
+      "mailto:soporte@riftea.com?subject=Denuncia sorteo " +
+      id +
+      "&body=Detecté un problema en: " +
+      encodeURIComponent(url);
   };
 
   const handleParticipationSuccess = async (payload) => {
@@ -431,83 +493,33 @@ export default function SorteoPage() {
     } catch {}
   };
 
-  /* ======================= Agrupado + carrusel ======================= */
-
-  const groupedParticipants = useMemo(() => groupParticipants(participants), [participants]);
-
-  // Índice de ticket visible por cada usuario (key -> idx)
-  const [carouselIdx, setCarouselIdx] = useState({});
-  const touchStartXRef = useRef({});
-
-  useEffect(() => {
-    setCarouselIdx((prev) => {
-      const updated = { ...prev };
-      const keys = new Set(groupedParticipants.map((g) => g.key));
-      Object.keys(updated).forEach((k) => {
-        if (!keys.has(k)) delete updated[k];
-      });
-      groupedParticipants.forEach((g) => {
-        const current = updated[g.key] ?? 0;
-        updated[g.key] = Math.min(Math.max(0, current), Math.max(0, g.tickets.length - 1));
-      });
-      return updated;
-    });
-  }, [groupedParticipants]);
-
-  const changeTicket = useCallback((key, dir, total) => {
-    setCarouselIdx((prev) => {
-      const current = prev[key] ?? 0;
-      const next = total > 0 ? ((current + dir) % total + total) % total : 0;
+  // helpers carrusel de tickets
+  const changeTicket = (key, dir, total) => {
+    if (!total || total <= 1) return;
+    setTicketIdx((prev) => {
+      const curr = prev[key] ?? 0;
+      const next = ((curr + dir) % total + total) % total;
       return { ...prev, [key]: next };
     });
-  }, []);
-
-  const handleKeyNav = useCallback(
-    (e, key, total) => {
-      if (total <= 1) return;
-      if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        changeTicket(key, -1, total);
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        changeTicket(key, 1, total);
-      }
-    },
-    [changeTicket]
-  );
-
-  const onTouchStart = useCallback((key, clientX) => {
-    touchStartXRef.current[key] = clientX;
-  }, []);
-
-  const onTouchEnd = useCallback(
-    (key, clientX, total) => {
-      const start = touchStartXRef.current[key];
-      if (start == null) return;
-      const dx = clientX - start;
-      delete touchStartXRef.current[key];
-      const threshold = 30;
-      if (Math.abs(dx) < threshold || total <= 1) return;
-      changeTicket(key, dx < 0 ? 1 : -1, total);
-    },
-    [changeTicket]
-  );
+  };
 
   /* ======================= UI ======================= */
 
+  const TABS = ["Participantes", "Detalles"];
+  const [activeTab, setActiveTab] = useState(TABS[0]);
+
+  const isLongDesc = (raffle?.description?.length || 0) > 240;
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 pt-20">
-        <div className="container mx-auto px-4 py-8">
-          <div className="animate-pulse">
-            <div className="h-8 bg-white/20 rounded w-1/3 mb-6"></div>
-            <div className="bg-white/10 rounded-3xl p-8 mb-8">
-              <div className="h-64 bg-white/20 rounded-2xl mb-6"></div>
-              <div className="space-y-4">
-                <div className="h-6 bg-white/20 rounded"></div>
-                <div className="h-4 bg-white/20 rounded w-3/4"></div>
-                <div className="h-4 bg-white/20 rounded w-1/2"></div>
-              </div>
+      <div className="min-h-screen bg-gradient-to-br from-violet-900 via-indigo-900 to-sky-900 pt-10">
+        <div className="container mx-auto px-4 py-6">
+          <div className="animate-pulse max-w-6xl mx-auto">
+            <div className="h-6 bg-white/20 rounded w-1/4 mb-4"></div>
+            <div className="h-8 bg-white/20 rounded w-1/2 mb-6"></div>
+            <div className="grid grid-cols-12 gap-6">
+              <div className="col-span-12 lg:col-span-6 h-64 bg-white/10 rounded-2xl"></div>
+              <div className="col-span-12 lg:col-span-6 h-64 bg-white/10 rounded-2xl"></div>
             </div>
           </div>
         </div>
@@ -517,26 +529,26 @@ export default function SorteoPage() {
 
   if (error && !raffle) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 pt-20">
+      <div className="min-h-screen bg-gradient-to-br from-violet-900 via-indigo-900 to-sky-900 pt-10">
         <div className="container mx-auto px-4 py-8">
-          <div className="border rounded-3xl p-8 text-center bg-red-500/20 border-red-500/50">
-            <div className="text-6xl mb-4">❌</div>
-            <h1 className="text-2xl font-bold text-white mb-4">Sorteo no encontrado</h1>
-            <p className="text-white/70 mb-6">
+          <div className="max-w-md mx-auto border rounded-2xl p-8 text-center bg-red-500/20 border-red-500/50">
+            <div className="text-5xl mb-4">❌</div>
+            <h1 className="text-xl font-bold text-white mb-4">Sorteo no encontrado</h1>
+            <p className="text-white/70 mb-6 text-sm">
               {error || "No se pudo cargar la información del sorteo"}
             </p>
-            <div className="flex gap-4 justify-center">
+            <div className="flex gap-3 justify-center">
               <button
                 onClick={() => window.location.reload()}
-                className="px-6 py-3 bg-purple-500 hover:bg-purple-600 text-white rounded-xl transition-colors"
+                className="px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white text-sm rounded-lg transition-colors"
               >
                 Reintentar
               </button>
               <Link
-                href="/"
-                className="inline-block px-6 py-3 bg-white/20 hover:bg-white/30 text-white rounded-xl transition-colors"
+                href="/sorteos"
+                className="inline-block px-4 py-2 bg-white/20 hover:bg-white/30 text-white text-sm rounded-lg transition-colors"
               >
-                Volver al inicio
+                Ir a sorteos
               </Link>
             </div>
           </div>
@@ -545,436 +557,478 @@ export default function SorteoPage() {
     );
   }
 
+  const statusPill = (
+    <span
+      className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+        raffle?.status === "ACTIVE"
+          ? "bg-green-500/25 text-green-100"
+          : raffle?.status === "PUBLISHED"
+          ? "bg-blue-500/25 text-blue-100"
+          : raffle?.status === "READY_TO_DRAW"
+          ? "bg-yellow-500/25 text-yellow-100"
+          : raffle?.status === "FINISHED"
+          ? "bg-fuchsia-500/25 text-fuchsia-100"
+          : "bg-gray-500/25 text-gray-100"
+      }`}
+    >
+      {raffle?.status === "ACTIVE" && isFull
+        ? "🎯 Meta alcanzada"
+        : raffle?.status === "ACTIVE"
+        ? "🔥 Activo"
+        : raffle?.status === "PUBLISHED"
+        ? "📢 Publicado"
+        : raffle?.status === "FINISHED"
+        ? "🏆 Finalizado"
+        : raffle?.status === "READY_TO_DRAW"
+        ? "⏳ Listo para sortear"
+        : raffle?.status}
+    </span>
+  );
+
   const winnerBlock =
     raffle?.status === "FINISHED" && winnerParticipation ? (
-      <div className="bg-amber-500/20 border border-amber-500/40 rounded-2xl p-6 mb-8 text-center">
-        <div className="text-5xl mb-2">🏆</div>
-        <h3 className="text-2xl font-bold text-white">Ganador</h3>
-        <p className="mt-2 text-white/90">
-          {winnerParticipation.user?.name || "Usuario"} —{" "}
+      <div className="bg-amber-500/20 border border-amber-500/40 rounded-lg px-2 py-1 text-center">
+        <p className="text-white text-xs font-semibold flex items-center justify-center gap-1">
+          <span>🏆</span> Ganador: {winnerParticipation.user?.name || "Usuario"}{" "}
           <span className="font-mono">
+            #
             {winnerParticipation.ticket?.code ||
               winnerParticipation.ticketCode ||
               winnerParticipation.id?.slice(0, 6)}
           </span>
         </p>
-        <Link
-          href={`/sorteo/${id}/en-vivo`}
-          className="inline-block mt-3 text-amber-300 hover:underline"
-        >
-          Ver resultados →
-        </Link>
       </div>
     ) : null;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 pt-20">
-      <div className="container mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="mb-8">
+    <div className="min-h-screen bg-gradient-to-br from-violet-900 via-indigo-900 to-sky-900 pt-10">
+      <div className="container mx-auto px-4 py-4">
+        <div className="max-w-6xl mx-auto">
+          {/* Top bar */}
           <div className="flex items-center justify-between mb-3">
-            <Link
-              href="/"
-              className="inline-flex items-center text-white/70 hover:text-white transition-colors"
+            <button
+              onClick={() => router.push("/sorteos")}
+              className="inline-flex items-center text-white/90 hover:text-white transition-colors text-sm"
+              title="Volver a sorteos"
             >
-              ← Volver a sorteos
-            </Link>
+              ← Volver
+            </button>
 
             <div className="flex items-center gap-2">
-              <button
-                onClick={doShare}
-                className="px-3 py-2 bg-white/20 hover:bg-white/30 text-white text-sm rounded-lg transition-colors"
-                title="Compartir"
-              >
-                {copied ? "¡Copiado!" : "Compartir"}
-              </button>
               {session?.user?.id === raffle?.ownerId && (
                 <Link
                   href={`/admin/raffles/${id}`}
-                  className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white text-sm rounded-lg transition-colors"
+                  className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white text-sm rounded-lg transition-colors"
                 >
-                  Administrar
+                  Admin
                 </Link>
               )}
             </div>
           </div>
 
-          <h1 className="text-4xl font-bold text-white mb-2">{raffle?.title}</h1>
-          <div className="flex flex-wrap items-center gap-3 text-white/70">
-            <span
-              className={`px-3 py-1 rounded-full text-sm font-medium ${
-                raffle?.status === "ACTIVE"
-                  ? "bg-green-500/20 text-green-300"
-                  : raffle?.status === "PUBLISHED"
-                  ? "bg-blue-500/20 text-blue-300"
-                  : raffle?.status === "READY_TO_DRAW"
-                  ? "bg-yellow-500/20 text-yellow-300"
-                  : raffle?.status === "FINISHED"
-                  ? "bg-purple-500/20 text-purple-300"
-                  : "bg-gray-500/20 text-gray-300"
-              }`}
-            >
-              {raffle?.status === "ACTIVE" && isFull
-                ? "🎯 Meta alcanzada"
-                : raffle?.status === "ACTIVE"
-                ? "🔥 Activo"
-                : raffle?.status === "PUBLISHED"
-                ? "📢 Publicado"
-                : raffle?.status === "FINISHED"
-                ? "🏆 Finalizado"
-                : raffle?.status === "READY_TO_DRAW"
-                ? "⏳ Listo para sortear"
-                : raffle?.status}
-            </span>
-            <span>Por: {raffle?.owner?.name || "Anónimo"}</span>
-            <span>
-              Creado:{" "}
-              {raffle?.createdAt ? new Date(raffle.createdAt).toLocaleDateString() : "-"}
-            </span>
-          </div>
-        </div>
+          {/* HERO */}
+          <div className="grid grid-cols-12 gap-5 mb-6">
+            {/* Izquierda: Imagen + Descripción */}
+            <div className="col-span-12 lg:col-span-6">
+              {raffle?.imageUrl ? (
+                <div className="relative w-full aspect-[4/3] rounded-xl overflow-hidden shadow-xl border border-white/15">
+                  <Image
+                    src={raffle.imageUrl}
+                    alt={raffle.title || "Sorteo"}
+                    fill
+                    className="object-cover"
+                    loader={({ src }) => src}
+                    unoptimized
+                    priority
+                  />
+                </div>
+              ) : (
+                <div className="w-full aspect-[4/3] rounded-xl bg-white/10 border border-white/15" />
+              )}
 
-        {/* Botón simple de sorteo (ADMIN / SUPERADMIN) */}
-        {showSimpleDrawBtn && (
-          <div className="bg-emerald-500/15 border border-emerald-500/40 rounded-2xl p-5 mb-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-emerald-300 font-semibold">Listo para ejecutar</p>
-                <p className="text-sm opacity-80">
-                  Al hacer clic se realizará el sorteo entre los participantes y se publicará el
-                  ganador.
-                </p>
-              </div>
-              <button
-                onClick={runSimpleDraw}
-                disabled={runningSimpleDraw}
-                className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60"
-              >
-                {runningSimpleDraw ? "Ejecutando…" : "🎲 Realizar sorteo"}
-              </button>
-            </div>
-          </div>
-        )}
+              {raffle?.description && (
+                <div className="mt-3 bg-white/10 backdrop-blur-lg rounded-xl p-4 border border-white/20 relative">
+                  <h3 className="text-white font-semibold mb-2">Descripción</h3>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Principal */}
-          <div className="lg:col-span-2">
-            {/* Imagen + descripción */}
-            <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-8 mb-8 border border-white/20">
-              {raffle?.imageUrl && (
-                <div className="mb-6">
-                  <div className="relative w-full aspect-[16/9]">
-                    <Image
-                      src={raffle.imageUrl}
-                      alt={raffle.title || "Sorteo"}
-                      fill
-                      className="object-cover rounded-2xl"
-                      loader={({ src }) => src}
-                      unoptimized
-                      priority
+                  <div className={`relative ${descOpen ? "" : "max-h-32 overflow-hidden"}`}>
+                    <p className="text-white/90 text-sm leading-relaxed">{raffle?.description}</p>
+                  </div>
+
+                  {/* Handle en borde inferior */}
+                  <div
+                    role="button"
+                    aria-label={descOpen ? "Ver menos" : "Ver más"}
+                    onClick={() => setDescOpen((v) => !v)}
+                    className={`absolute left-0 right-0 bottom-0 rounded-b-xl cursor-pointer select-none
+                               ${descOpen ? "h-7" : "h-10"} flex items-end justify-center`}
+                    style={{ zIndex: 1 }}
+                  >
+                    <div
+                      className={`pointer-events-none w-full h-full rounded-b-xl 
+                                  ${descOpen ? "bg-white/5" : "bg-gradient-to-t from-[#0b0f1a]/80 to-transparent"}`}
                     />
+                    <span className="absolute bottom-1 text-[11px] text-white/80">
+                      {descOpen ? "↑ Ver menos" : "↓ Ver más"}
+                    </span>
                   </div>
                 </div>
               )}
-              <div className="prose prose-invert max-w-none">
-                <p className="text-white/90 text-lg leading-relaxed">
-                  {raffle?.description || "Sin descripción disponible"}
-                </p>
-              </div>
             </div>
 
-            {/* Barra de progreso */}
-            <div className="mb-8">
-              <div className="flex justify-between text-xs text-slate-400 mb-2">
-                <span>Participaciones (tickets)</span>
-                <span>
-                  {participantsCount}
-                  {maxParticipants ? ` / ${maxParticipants}` : " / ∞"}
-                </span>
+            {/* Derecha: Título + estado + progreso + CTA + info + compartir */}
+            <div className="col-span-12 lg:col-span-6 flex flex-col">
+              <div className="flex-1 bg-white/10 backdrop-blur-lg rounded-xl p-5 border border-white/20">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h1 className="text-3xl lg:text-4xl font-bold text-white mb-1 leading-tight line-clamp-2">
+                      {raffle?.title}
+                    </h1>
+                    <div className="flex flex-wrap items-center gap-2 text-white/80 text-xs">
+                      {statusPill}
+                    </div>
+                  </div>
+                  {winnerBlock}
+                </div>
+
+                {/* Progreso */}
+                <div className="mt-4">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-white/90 text-sm">Progreso</span>
+                    <span className="text-white/80 text-xs">
+                      {participationsCount}
+                      {maxParticipants ? ` / ${maxParticipants}` : ""} participaciones
+                    </span>
+                  </div>
+                  <ProgressBar
+                    current={participationsCount}
+                    target={maxParticipants || Math.max(1, participationsCount)}
+                    animated
+                  />
+                  {isFull && (
+                    <div className="mt-2 text-center">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-green-500/25 text-green-100 text-xs font-medium">
+                        <span className="w-1.5 h-1.5 bg-green-300 rounded-full mr-2 animate-pulse"></span>
+                        Cupo completo
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* CTA */}
+                <div className="mt-4">
+                  {session && canParticipate && raffle?.status !== "FINISHED" && !isFull ? (
+                    <button
+                      onClick={() => setShowParticipateModal(true)}
+                      className="relative w-full py-3 bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 hover:from-emerald-600 hover:via-teal-600 hover:to-cyan-600 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center gap-2"
+                    >
+                      🎟️ Participar
+                      {minTicketsIsMandatory && minTicketsRequired > 1 && (
+                        <span className="absolute -top-3 -right-3 bg-red-500 text-white text-xs font-bold rounded-full w-8 h-8 flex items-center justify-center shadow-lg">
+                          x{minTicketsRequired}
+                        </span>
+                      )}
+                    </button>
+                  ) : !session ? (
+                    <button
+                      onClick={() => router.push("/login")}
+                      className="w-full py-3 bg-white/15 hover:bg-white/25 text-white font-bold rounded-xl transition-colors text-sm"
+                    >
+                      Iniciar sesión
+                    </button>
+                  ) : null}
+                </div>
+
+                {/* Info bajo CTA: 8/10 + faltantes + participantes reales + compartir a la derecha */}
+                <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-3">
+                    <div className="text-white text-sm font-semibold">
+                      {participationsCount}
+                      {maxParticipants ? ` / ${maxParticipants}` : ""}{" "}
+                      <span className="font-normal text-white/80">participaciones</span>
+                    </div>
+
+                    <span className="px-2 py-1 rounded-full bg-white/10 text-white/80 text-xs">
+                      👤 {uniqueParticipantsCount} participantes
+                    </span>
+                  </div>
+
+                  <button
+                    onClick={doShare}
+                    className="inline-flex items-center gap-2 px-3 py-2 bg-white/10 hover:bg-white/20 text-white text-xs rounded-lg"
+                    title="Compartir sorteo"
+                  >
+                    📤 {copied ? "¡Copiado!" : "Compartir"}
+                  </button>
+                </div>
+
+                {showAlmostFull && (
+                  <div className="mt-1 text-amber-200 text-xs">
+                    Faltan solo <b>{remaining}</b> participaciones.
+                  </div>
+                )}
               </div>
-              <ProgressBar
-                current={participantsCount}
-                target={maxParticipants || Math.max(1, participantsCount)}
-                animated
-              />
-              {isFull && (
-                <div className="mt-2 text-center">
-                  <span className="inline-flex items-center px-3 py-1 rounded-full bg-green-500/20 text-green-300 text-sm font-medium">
-                    <span className="w-2 h-2 bg-green-400 rounded-full mr-2 animate-pulse"></span>
-                    Cupo completo
-                  </span>
+
+              {/* Botón Admin sorteo manual */}
+              {showSimpleDrawBtn && (
+                <div className="mt-3 bg-emerald-500/15 border border-emerald-500/40 rounded-xl p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-emerald-200 font-semibold text-xs">Listo para ejecutar</p>
+                    <button
+                      onClick={runSimpleDraw}
+                      disabled={runningSimpleDraw}
+                      className="px-4 py-2 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60 text-sm"
+                    >
+                      {runningSimpleDraw ? "Ejecutando…" : "🎲 Sortear ahora"}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
+          </div>
 
-            {/* FINISHED → Ganador */}
-            {winnerBlock}
-
-            {/* Participantes agrupados por usuario con carrusel */}
-            <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20 mb-8">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-                <h3 className="text-xl font-bold text-white">Participantes</h3>
-                <div className="text-xs text-slate-300">
-                  únicos: <b>{groupedParticipants.length}</b>
-                  <span className="opacity-60"> • tickets: {participants.length}</span>
-                </div>
+          {/* TABS */}
+          <div className="bg-white/10 backdrop-blur-lg rounded-xl border border-white/20">
+            <div className="flex gap-1 p-1">
+              {["Participantes", "Detalles"].map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setActiveTab(t)}
+                  className={`px-4 py-2 rounded-lg text-sm transition ${
+                    activeTab === t
+                      ? "bg-white/25 text-white"
+                      : "text-white/80 hover:text-white hover:bg-white/10"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+              <div className="ml-auto pr-1">
                 <button
                   onClick={() => loadParticipants()}
                   disabled={participantsLoading}
-                  className="ml-auto px-3 py-2 bg-white/20 hover:bg-white/30 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
+                  className="px-3 py-2 rounded-lg text-sm bg-white/10 hover:bg-white/20 text-white/90 disabled:opacity-50"
+                  title="Actualizar"
                 >
-                  {participantsLoading ? "🔄" : "🔄 Actualizar"}
+                  🔄
                 </button>
               </div>
+            </div>
 
-              {groupedParticipants.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 max-h-80 overflow-y-auto">
-                  {groupedParticipants.map((g, i) => {
-                    const total = g.tickets.length;
-                    const idx = carouselIdx[g.key] ?? 0;
-                    const current =
-                      g.tickets[Math.min(idx, Math.max(0, total - 1))] || g.tickets[0];
+            {/* Participantes */}
+            {activeTab === "Participantes" && (
+              <div className="p-4">
+                {groupedParticipants.length > 0 ? (
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-8 gap-3">
+                    {groupedParticipants.map((g) => {
+                      const total = g.tickets.length;
+                      const idx = Math.min(ticketIdx[g.key] ?? 0, Math.max(0, total - 1));
+                      const current = g.tickets[idx] || g.tickets[0];
 
-                    return (
-                      <div
-                        key={g.key}
-                        className={`group relative rounded-xl border overflow-hidden transition focus-within:ring-2 focus-within:ring-purple-400 outline-none ${
-                          g.isWinner
-                            ? "bg-amber-500/20 border-amber-500/50"
-                            : "bg-slate-900/50 border-slate-800 hover:border-slate-700/60"
-                        }`}
-                        tabIndex={0}
-                        role="region"
-                        aria-label={`Participante ${g.name}`}
-                        onKeyDown={(e) => handleKeyNav(e, g.key, total)}
-                        onTouchStart={(e) => onTouchStart(g.key, e.touches?.[0]?.clientX ?? 0)}
-                        onTouchEnd={(e) => onTouchEnd(g.key, e.changedTouches?.[0]?.clientX ?? 0, total)}
-                      >
-                        {/* Flechas / zonas clicables */}
-                        {total > 1 && (
-                          <>
-                            <button
-                              type="button"
-                              aria-label={`Ticket anterior de ${g.name}`}
-                              onClick={() => changeTicket(g.key, -1, total)}
-                              className="absolute inset-y-0 left-0 w-8 flex items-center justify-center bg-gradient-to-r from-black/20 to-transparent opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
-                            >
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white/80" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M12.293 15.707a1 1 0 010-1.414L15.586 11H4a1 1 0 110-2h11.586l-3.293-3.293a1 1 0 111.414-1.414l5 5a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0z" clipRule="evenodd" />
-                              </svg>
-                            </button>
-                            <button
-                              type="button"
-                              aria-label={`Siguiente ticket de ${g.name}`}
-                              onClick={() => changeTicket(g.key, 1, total)}
-                              className="absolute inset-y-0 right-0 w-8 flex items-center justify-center bg-gradient-to-l from-black/20 to-transparent opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
-                            >
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 rotate-180 text-white/80" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M12.293 15.707a1 1 0 010-1.414L15.586 11H4a1 1 0 110-2h11.586l-3.293-3.293a1 1 0 111.414-1.414l5 5a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0z" clipRule="evenodd" />
-                              </svg>
-                            </button>
-                          </>
-                        )}
-
-                        <div className="p-4">
-                          <div className="flex items-center gap-3 mb-2">
-                            <div
-                              className={`w-10 h-10 rounded-full flex items-center justify-center text-white text-sm font-bold ${
-                                g.isWinner
-                                  ? "bg-amber-500"
-                                  : "bg-gradient-to-r from-purple-500 to-pink-500"
-                              }`}
-                            >
-                              {g.isWinner ? "👑" : i + 1}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <div className="text-white font-medium truncate">
-                                  {g.name}
+                      return (
+                        <div
+                          key={g.key}
+                          className="group bg-white/5 hover:bg-white/10 transition rounded-xl p-2 ring-1 ring-white/10"
+                        >
+                          <div className="relative w-full aspect-square rounded-lg overflow-hidden bg-gradient-to-br from-fuchsia-700/30 to-sky-700/30 flex items-center justify-center">
+                            {g.avatar ? (
+                              <Image
+                                src={g.avatar}
+                                alt={g.name}
+                                fill
+                                className="object-cover"
+                                loader={({ src }) => src}
+                                unoptimized
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <div className="w-14 h-14 rounded-full bg-white/10 flex items-center justify-center text-white text-lg font-bold">
+                                  {initials(g.name)}
                                 </div>
-                                {total > 1 && (
-                                  <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/80 text-[11px]">
-                                    x{total}
-                                  </span>
-                                )}
                               </div>
-                              <div className="text-white/60 text-xs">
-                                Participante {g.isWinner ? "ganador" : "activo"}
-                              </div>
-                            </div>
+                            )}
+                            {total > 1 && (
+                              <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-white/90 text-slate-900 shadow">
+                                x{total}
+                              </span>
+                            )}
+                            {g.isWinner && (
+                              <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-400 text-black shadow">
+                                🏆 Ganador
+                              </span>
+                            )}
                           </div>
 
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-white/80 text-xs font-mono bg-white/5 rounded px-2 py-1">
-                              #{current?.code}
+                          <div className="mt-1.5">
+                            <p className="text-white text-[12px] font-medium truncate" title={g.name}>
+                              {g.name}
+                            </p>
+
+                            <div className="mt-0.5 flex items-center justify-center gap-1">
+                              <button
+                                onClick={() => changeTicket(g.key, -1, total)}
+                                disabled={total <= 1}
+                                className="px-1.5 py-0.5 text-white/70 hover:text-white disabled:opacity-40"
+                                aria-label="Anterior ticket"
+                              >
+                                ‹
+                              </button>
+                              <span className="font-mono text-[10px] text-white/90">
+                                #{current?.code}
+                              </span>
+                              <button
+                                onClick={() => changeTicket(g.key, 1, total)}
+                                disabled={total <= 1}
+                                className="px-1.5 py-0.5 text-white/70 hover:text-white disabled:opacity-40"
+                                aria-label="Siguiente ticket"
+                              >
+                                ›
+                              </button>
                             </div>
                             {total > 1 && (
-                              <div className="text-white/50 text-[11px]">
-                                {Math.min((carouselIdx[g.key] ?? 0) + 1, total)} / {total}
+                              <div className="text-center text-[10px] text-white/50 mt-0.5">
+                                {idx + 1} / {total}
                               </div>
                             )}
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-center py-12">
-                  <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-white/5 flex items-center justify-center">
-                    <svg
-                      className="w-8 h-8 text-white/40"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 0 014 0zM7 10a2 2 0 11-4 0 2 0 4 0z"
-                      />
-                    </svg>
+                      );
+                    })}
                   </div>
-                  <h4 className="text-white font-medium mb-2">Aún no hay participantes</h4>
-                  <p className="text-white/60 text-sm mb-4">
-                    Sé el primero en participar en este sorteo
-                  </p>
-                  {session && canParticipate && (
-                    <button
-                      onClick={() => setShowParticipateModal(true)}
-                      className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 text-white text-sm font-medium rounded-lg transition-all"
-                    >
-                      🎯 Participar ahora
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
+                ) : (
+                  <div className="text-center py-12">
+                    <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-white/5 flex items-center justify-center">
+                      <svg className="w-6 h-6 text-white/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 0 014 0z" />
+                      </svg>
+                    </div>
+                    <h4 className="text-white font-medium mb-1 text-sm">Sin participantes</h4>
+                    <p className="text-white/60 text-xs mb-3">Sé el primero en participar</p>
+                    {session && canParticipate && (
+                      <button
+                        onClick={() => setShowParticipateModal(true)}
+                        className="inline-flex items-center px-3 py-2 bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 hover:from-emerald-600 hover:via-teal-600 hover:to-cyan-600 text-white text-xs font-medium rounded-lg transition-all"
+                      >
+                        🎟️ Participar
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
-            {/* Organizador */}
-            {raffle?.owner && (
-              <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20">
-                <h3 className="text-xl font-bold text-white mb-4">Organizador</h3>
-                <div className="flex items-center gap-4">
-                  <Image
-                    src={getOwnerImage()}
-                    alt={raffle.owner.name || "Usuario"}
-                    width={48}
-                    height={48}
-                    className="rounded-full border-2 border-white/20 object-cover"
-                    loader={({ src }) => src}
-                    unoptimized
-                  />
-                  <div>
-                    <p className="text-white font-medium">{raffle.owner.name}</p>
-                    <p className="text-white/70 text-sm">Organizador verificado</p>
+            {/* Detalles */}
+            {activeTab === "Detalles" && (
+              <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-white/90">
+                {/* Organizador */}
+                <div className="bg-white/10 border border-white/20 rounded-lg p-4 md:col-span-1">
+                  <h3 className="text-white font-semibold mb-3">Organizador</h3>
+                  {raffle?.owner ? (
+                    <div className="flex items-center gap-3">
+                      <div className="relative">
+                        <Image
+                          src={getOwnerImage()}
+                          alt={raffle?.owner?.name || "Usuario"}
+                          width={44}
+                          height={44}
+                          className="rounded-full border-2 border-white/20 object-cover"
+                          loader={({ src }) => src}
+                          unoptimized
+                        />
+                        {raffle?.owner?.verified && (
+                          <div className="absolute -top-1 -right-1 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
+                            <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                              <path
+                                fillRule="evenodd"
+                                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                                clipRule="evenodd"
+                              />
+                            </svg>
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-white font-medium text-sm">{raffle?.owner?.name}</p>
+                        <p className="text-white/70 text-xs">
+                          Verificado: {raffle?.owner?.verified ? "Sí" : "No"}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-white/60">—</p>
+                  )}
+
+                  <button
+                    onClick={reportIssue}
+                    className="mt-4 w-full px-3 py-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-100 text-sm"
+                  >
+                    🚩 Denunciar / Reportar problema
+                  </button>
+                </div>
+
+                {/* Reglas y metadatos */}
+                <div className="bg-white/10 border border-white/20 rounded-lg p-4 md:col-span-2">
+                  <h3 className="text-white font-semibold mb-2">Detalles</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <p>
+                        <span className="text-white/70">ID:</span>{" "}
+                        <span className="font-mono">{raffle?.id}</span>
+                      </p>
+                      <p className="mt-1">
+                        <span className="text-white/70">Estado:</span> {raffle?.status}
+                      </p>
+                      {maxParticipants && (
+                        <p className="mt-1">
+                          <span className="text-white/70">Capacidad (máx. participaciones):</span>{" "}
+                          {maxParticipants}
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      {raffle?.publishedAt && (
+                        <p className="mt-1">
+                          <span className="text-white/70">Publicado:</span>{" "}
+                          {new Date(raffle.publishedAt).toLocaleString()}
+                        </p>
+                      )}
+                      {raffle?.endsAt && (
+                        <p className="mt-1">
+                          <span className="text-white/70">Finaliza:</span>{" "}
+                          {new Date(raffle.endsAt).toLocaleString()}
+                        </p>
+                      )}
+                      {minTicketsRequired > 1 && (
+                        <p className="mt-1">
+                          <span className="text-white/70">
+                            Mínimo {minTicketsIsMandatory ? "obligatorio" : "sugerido"}:
+                          </span>{" "}
+                          {minTicketsRequired} ticket(s)
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Sidebar */}
-          <div className="lg:col-span-1">
-            <div className="bg-white/10 backdrop-blur-lg rounded-3xl p-6 border border-white/20 sticky top-24">
-              {unitPrice > 0 && (
-                <div className="text-center mb-6">
-                  <div className="text-lg text-white/70 mb-1">
-                    Tickets recomendados para participar
-                  </div>
-                  <div className="text-4xl font-bold text-white mb-2">{unitPrice}</div>
-                  <div className="text-white/70">por ticket</div>
-                </div>
-              )}
-
-              {minTicketsRequired > 1 && (
-                <div className="mb-4 text-center">
-                  <div className="inline-block px-3 py-1 rounded-full bg-white/15 text-white/90 text-sm">
-                    {minTicketsIsMandatory ? "Mínimo obligatorio:" : "Mínimo sugerido:"}{" "}
-                    <b>{minTicketsRequired}</b> ticket(s)
-                  </div>
-                </div>
-              )}
-
-              {/* Contadores */}
-              <div className="grid grid-cols-2 gap-4 mb-6">
-                <div className="text-center p-4 bg-white/5 rounded-xl border border-white/10">
-                  <div className="text-2xl font-bold text-white">{participantsCount}</div>
-                  <div className="text-sm text-white/70">Participaciones</div>
-                </div>
-                <div className="text-center p-4 bg-white/5 rounded-xl border border-white/10">
-                  <div className="text-2xl font-bold text-white">{maxParticipants ?? "∞"}</div>
-                  <div className="text-sm text-white/70">Máximo</div>
-                </div>
-              </div>
-
-              {raffle?.endsAt && (
-                <div className="mb-6 text-center">
-                  <div className="text-white/70 text-sm mb-1">Finaliza:</div>
-                  <div className={`font-medium ${isExpired ? "text-red-400" : "text-white"}`}>
-                    {new Date(raffle.endsAt).toLocaleString()}
-                  </div>
-                  {isExpired && <div className="text-red-400 text-sm mt-1">¡Sorteo expirado!</div>}
-                </div>
-              )}
-
-              {session && userParticipation && raffle?.status !== "FINISHED" && (
-                <div className="mb-4 bg-green-500/20 border border-green-500/50 rounded-xl p-4 text-center">
-                  <p className="text-green-300 font-bold mb-1">¡Ya estás participando!</p>
-                  <p className="text-green-200/80 text-xs">
-                    Podés agregar más tickets si querés aumentar tus chances.
-                  </p>
-                </div>
-              )}
-
-              {session &&
-                canParticipate &&
-                raffle?.status !== "FINISHED" &&
-                !isFull && (
-                  <div className="mb-4">
-                    <button
-                      onClick={() => setShowParticipateModal(true)}
-                      className="w-full py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
-                    >
-                      🎯 Participar
-                    </button>
-                    <p className="text-white/60 text-xs text-center mt-2">
-                      Elegí tus tickets disponibles para participar
-                    </p>
-                  </div>
-                )}
-
-              {isOwner && (
-                <div className="bg-blue-500/20 border border-blue-500/50 rounded-xl p-4 text-center">
-                  <p className="text-blue-300 text-sm">👑 Sos el organizador de este sorteo</p>
-                  <Link
-                    href={`/admin/raffles/${id}`}
-                    className="inline-block mt-2 text-blue-400 hover:underline text-sm"
-                  >
-                    Administrar sorteo →
-                  </Link>
-                </div>
-              )}
-
-              {!canPurchase &&
-                !isOwner &&
-                raffle?.status !== "READY_TO_DRAW" &&
-                raffle?.status !== "FINISHED" && (
-                  <div className="mt-4 bg-yellow-500/20 border border-yellow-500/50 rounded-xl p-4 text-center">
-                    <p className="text-yellow-300 text-sm">Este sorteo no está disponible</p>
-                  </div>
-                )}
-
-              {!session && (
+          {/* Sticky action bar (mobile) */}
+          <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40">
+            {session && canParticipate && raffle?.status !== "FINISHED" && !isFull ? (
+              <div className="m-3 p-2 rounded-2xl bg-slate-900/80 backdrop-blur border border-white/10 shadow-xl">
                 <button
-                  onClick={() => router.push("/login")}
-                  className="w-full mt-4 py-3 bg-white/20 hover:bg-white/30 text-white font-bold rounded-xl transition-colors"
+                  onClick={() => setShowParticipateModal(true)}
+                  className="relative w-full py-3 bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 text-white font-bold rounded-xl"
                 >
-                  Iniciar sesión para participar
+                  🎟️ Participar
+                  {minTicketsIsMandatory && minTicketsRequired > 1 && (
+                    <span className="absolute -top-3 -right-3 bg-red-500 text-white text-xs font-bold rounded-full w-8 h-8 flex items-center justify-center">
+                      x{minTicketsRequired}
+                    </span>
+                  )}
                 </button>
-              )}
-            </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
