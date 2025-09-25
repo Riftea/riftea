@@ -30,10 +30,11 @@ export async function GET(req) {
     const page = Math.max(1, toPosInt(searchParams.get('page'), 1));
     const perPage = Math.min(toPosInt(searchParams.get('perPage'), 12), 50);
 
-    // Catálogo público: solo listados públicos + estados visibles
+    // Catálogo público: solo listados públicos + APROBADOS + estados visibles
     const where = {
       isPrivate: false,
-      status: { in: ['PUBLISHED', 'ACTIVE', 'READY_TO_DRAW', 'FINISHED'] },
+      listingStatus: 'APPROVED',
+      status: { in: ['PUBLISHED', 'ACTIVE', 'READY_TO_DRAW', 'FINISHED'] }, // quitar 'FINISHED' si no querés mostrar finalizados
       ...(qRaw
         ? {
             OR: [

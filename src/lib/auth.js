@@ -4,22 +4,41 @@ import { getServerSession } from "next-auth/next";
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 
-// Aviso útil si faltan envs críticas
-const missing = ["NEXTAUTH_SECRET", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"].filter(
-  (k) => !process.env[k]
-);
-if (missing.length) {
-  console.warn("[AUTH] Faltan variables .env:", missing.join(", "));
+/* ================= ENV VARS robustas ================= */
+const NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || "";
+
+// Soportar ambos nombres posibles (GOOGLE_CLIENT_ID / GOOGLE_ID)
+const GOOGLE_CLIENT_ID =
+  process.env.GOOGLE_CLIENT_ID ||
+  process.env.GOOGLE_ID ||
+  "";
+
+// Soportar ambos nombres posibles (GOOGLE_CLIENT_SECRET / GOOGLE_SECRET)
+const GOOGLE_CLIENT_SECRET =
+  process.env.GOOGLE_CLIENT_SECRET ||
+  process.env.GOOGLE_SECRET ||
+  "";
+
+// Aviso útil si faltan envs críticas (solo en dev)
+if (process.env.NODE_ENV !== "production") {
+  const missing = [];
+  if (!NEXTAUTH_SECRET) missing.push("NEXTAUTH_SECRET");
+  if (!GOOGLE_CLIENT_ID) missing.push("GOOGLE_CLIENT_ID (o GOOGLE_ID)");
+  if (!GOOGLE_CLIENT_SECRET) missing.push("GOOGLE_CLIENT_SECRET (o GOOGLE_SECRET)");
+  if (missing.length) {
+    console.warn("[AUTH] Faltan variables .env:", missing.join(", "));
+  }
 }
 
+/* ================= NextAuth options ================= */
 export const authOptions = {
   trustHost: true,
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: NEXTAUTH_SECRET,
 
   providers: [
     GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID ?? "",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+      clientId: GOOGLE_CLIENT_ID,
+      clientSecret: GOOGLE_CLIENT_SECRET,
     }),
   ],
 
@@ -48,7 +67,7 @@ export const authOptions = {
         if (user.role != null) token.role = String(user.role).toLowerCase();
       }
 
-      // 2) Soportar session.update({ ... }) desde el cliente (Opción 2)
+      // 2) Soportar session.update({ ... }) desde el cliente
       if (trigger === "update" && session) {
         if (session.name != null) token.name = session.name;
         if (session.whatsapp != null) token.whatsapp = session.whatsapp;
@@ -158,22 +177,15 @@ export const authOptions = {
   events: {
     async signIn({ user }) {
       if (!user?.email) return;
-      
+
       try {
-        // ✅ SOLUCIÓN OPTIMIZADA: Verificar existencia primero con una sola consulta
+        // ✅ Verificar existencia con una sola consulta
         const existingUser = await prisma.user.findUnique({
           where: { email: user.email },
-          select: { id: true, name: true, firstLogin: true }
+          select: { id: true, name: true, firstLogin: true },
         });
 
-        // 🔍 DEBUG LOGS - AGREGAR TEMPORALMENTE
-        console.log("🔍 DEBUG - Usuario:", user.email);
-        console.log("🔍 DEBUG - existingUser:", existingUser ? "SÍ EXISTE" : "NO EXISTE");
-        console.log("🔍 DEBUG - existingUser data:", existingUser);
-
         const isNewUser = !existingUser;
-        console.log("🔍 DEBUG - isNewUser:", isNewUser);
-
         let userId;
         let userName;
 
@@ -185,81 +197,63 @@ export const authOptions = {
               email: user.email,
               image: user.image ?? null,
               password: "NEXTAUTH_USER",
-              firstLogin: true, // Marcar como primer login
+              firstLogin: true,
             },
-            select: { id: true, name: true }
+            select: { id: true, name: true },
           });
-          
+
           userId = newUser.id;
           userName = newUser.name;
           console.log("[EVENT signIn] NUEVO usuario creado:", user.email);
-          
         } else {
-          // Usuario EXISTENTE - Solo actualizar datos
+          // Usuario EXISTENTE - Actualizar datos base
           const updatedUser = await prisma.user.update({
             where: { email: user.email },
             data: {
               name: user.name ?? undefined,
               image: user.image ?? undefined,
             },
-            select: { id: true, name: true }
+            select: { id: true, name: true },
           });
-          
+
           userId = updatedUser.id;
           userName = updatedUser.name;
           console.log("[EVENT signIn] Usuario existente actualizado:", user.email);
         }
 
-        // ⭐ CREAR NOTIFICACIÓN BASADA EN SI ES NUEVO O EXISTENTE
+        // ⭐ Notificación de bienvenida / regreso (no bloqueante)
         try {
-          let notificationTitle;
-          let notificationMessage;
+          const notificationTitle = isNewUser
+            ? "¡Bienvenido a Riftea!"
+            : "¡Hola de nuevo!";
+          const notificationMessage = isNewUser
+            ? `¡Hola ${userName ?? ""}! Gracias por registrarte. ¡Esperamos que disfrutes de los sorteos!`
+            : `¡Bienvenido de vuelta, ${userName ?? ""}! ¡Que tengas suerte en los sorteos!`;
 
-          if (isNewUser) {
-            // PRIMERA VEZ - Mensaje de registro
-            notificationTitle = "¡Bienvenido a Riftea!";
-            notificationMessage = `¡Hola ${userName ?? ""}! Gracias por registrarte. ¡Esperamos que disfrutes de los sorteos!`;
-            
-            // Marcar como ya no es primer login para próximas sesiones
-            await prisma.user.update({
-              where: { id: userId },
-              data: { firstLogin: false }
-            });
-            
-          } else {
-            // LOGIN POSTERIOR - Mensaje de bienvenida de vuelta
-            notificationTitle = "¡Hola de nuevo!";
-            notificationMessage = `¡Bienvenido de vuelta, ${userName ?? ""}! ¡Que tengas suerte en los sorteos!`;
-          }
-
-          // 🔍 DEBUG LOGS - VER QUÉ MENSAJE SE ESTÁ ENVIANDO
-          console.log("🔍 DEBUG - Tipo de mensaje:", isNewUser ? "REGISTRO (NUEVO)" : "LOGIN (EXISTENTE)");
-          console.log("🔍 DEBUG - Título:", notificationTitle);
-          console.log("🔍 DEBUG - Mensaje:", notificationMessage);
-
-          // Crear la notificación correspondiente
           await prisma.notification.create({
             data: {
-              userId: userId,
+              userId,
               title: notificationTitle,
               message: notificationMessage,
               type: "SYSTEM_ALERT",
             },
           });
 
-          console.log(`[NOTIFICATION] ${isNewUser ? 'REGISTRO' : 'LOGIN'} notification created for:`, user.email);
-          
+          if (isNewUser) {
+            await prisma.user.update({
+              where: { id: userId },
+              data: { firstLogin: false },
+            });
+          }
         } catch (notificationError) {
-          console.error("[NOTIFICATION] Error creating notification (ignored):", notificationError?.message);
-          // No bloquear el login por errores de notificación
+          console.error("[NOTIFICATION] Error creando notificación (ignorado):", notificationError?.message);
         }
-
       } catch (mainError) {
         console.error("[EVENT signIn] Error principal (ignorado):", mainError?.message);
         // No bloquear el login por errores de DB
       }
     },
-    
+
     async signOut() {
       console.log("[EVENT] signOut");
     },
@@ -276,7 +270,7 @@ export const authOptions = {
   },
 };
 
-// Helpers
+/* ================= Helpers ================= */
 export async function getServerAuth() {
   try {
     return await getServerSession(authOptions);

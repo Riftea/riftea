@@ -127,6 +127,27 @@ function initials(name = "Usuario") {
   return parts.map((p) => p[0]?.toUpperCase() || "").join("") || "U";
 }
 
+/* ===== Ícono de Ticket con muescas y perforado ===== */
+function TicketIcon({ className = "" }) {
+  return (
+    <svg viewBox="0 0 48 48" aria-hidden="true" className={className} role="img">
+      <path
+        d="M8 14a4 4 0 0 1 4-4h24a4 4 0 0 1 4 4v5a4 4 0 1 0 0 10v5a4 4 0 0 1-4 4H12a4 4 0 0 1-4-4v-5a4 4 0 1 0 0-10v-5z"
+        fill="currentColor"
+      />
+      <path
+        d="M24 10v28"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeDasharray="2 6"
+        className="opacity-70"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
 /* ======================= Page ======================= */
 
 export default function SorteoPage() {
@@ -143,10 +164,7 @@ export default function SorteoPage() {
   const [showParticipateModal, setShowParticipateModal] = useState(false);
   const [userParticipation, setUserParticipation] = useState(null);
 
-  // Descripción expandible
   const [descOpen, setDescOpen] = useState(false);
-
-  // Índice de ticket por participante
   const [ticketIdx, setTicketIdx] = useState({});
 
   /* =================== Carga base =================== */
@@ -245,7 +263,6 @@ export default function SorteoPage() {
     };
   }, [id, session, loadParticipants, checkUserParticipation]);
 
-  // Polling ligero
   useEffect(() => {
     if (!raffle?.id) return;
     const ok = ["ACTIVE", "PUBLISHED", "READY_TO_DRAW"];
@@ -266,7 +283,6 @@ export default function SorteoPage() {
     raffle.publishedAt;
   const canParticipate = canPurchase && !isOwner;
 
-  // "participaciones" = tickets
   const participationsCount = useMemo(() => {
     if (participants.length) return participants.length;
     return (
@@ -297,7 +313,6 @@ export default function SorteoPage() {
   );
   const uniqueParticipantsCount = groupedParticipants.length;
 
-  // faltantes < 25% del máximo
   const remaining = useMemo(() => {
     if (!maxParticipants && maxParticipants !== 0) return null;
     return Math.max(0, maxParticipants - participationsCount);
@@ -309,7 +324,6 @@ export default function SorteoPage() {
     remaining > 0 &&
     remaining <= Math.ceil(maxParticipants * 0.25);
 
-  // ====== Rol y botón "Realizar sorteo" ======
   const [isPowerAdmin, setIsPowerAdmin] = useState(() => {
     const role = String(session?.user?.role || "").toUpperCase();
     return role === "SUPERADMIN" || role === "SUPER_ADMIN" || role === "ADMIN";
@@ -332,9 +346,7 @@ export default function SorteoPage() {
         const data = await res.json().catch(() => ({}));
         const r = String(data?.role || "").toUpperCase();
         setIsPowerAdmin(r === "SUPERADMIN" || r === "SUPER_ADMIN" || r === "ADMIN");
-      } catch {
-        /* noop */
-      }
+      } catch {}
     })();
   }, [session?.user?.role]);
 
@@ -350,13 +362,11 @@ export default function SorteoPage() {
   async function runSimpleDraw() {
     if (!id) return;
     setRunningSimpleDraw(true);
-
     const attempts = [
       { url: `/api/admin/raffles/${id}/draw`, body: { action: "run", notify: true } },
       { url: `/api/raffles/${id}/draw`, body: { action: "run", notify: true } },
       { url: `/api/raffles/${id}/manual-draw`, body: { notify: true } },
     ];
-
     try {
       for (const { url, body } of attempts) {
         const res = await fetch(url, {
@@ -410,13 +420,18 @@ export default function SorteoPage() {
     raffle?.description,
   ]);
 
+  const showRequiredCount =
+    !!minTicketsIsMandatory && Number.isFinite(minTicketsRequired) && minTicketsRequired >= 1;
+
+  const showSuggestedCount =
+    !minTicketsIsMandatory && Number.isFinite(minTicketsRequired) && minTicketsRequired > 1;
+
   const [copied, setCopied] = useState(false);
   const doShare = async () => {
     try {
       const url = typeof window !== "undefined" ? window.location.href : "";
       const title = raffle?.title || "Sorteo";
       const text = "¡Sumate a mi sorteo en Rifteá!";
-
       if (
         typeof navigator !== "undefined" &&
         navigator.share &&
@@ -435,9 +450,7 @@ export default function SorteoPage() {
         await navigator.clipboard.writeText(url);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
-      } catch {
-        /* noop */
-      }
+      } catch {}
     }
   };
 
@@ -465,7 +478,6 @@ export default function SorteoPage() {
   const handleParticipationSuccess = async (payload) => {
     const successes = Array.isArray(payload?.successes) ? payload.successes : [];
     setShowParticipateModal(false);
-
     if (successes.length > 0) {
       setUserParticipation((prev) => ({
         ...(prev || {}),
@@ -477,9 +489,7 @@ export default function SorteoPage() {
         status: "IN_RAFFLE",
       }));
     }
-
     await loadParticipants(id);
-
     try {
       const res = await fetch(`/api/raffles/${id}`, {
         cache: "no-store",
@@ -493,7 +503,6 @@ export default function SorteoPage() {
     } catch {}
   };
 
-  // helpers carrusel de tickets
   const changeTicket = (key, dir, total) => {
     if (!total || total <= 1) return;
     setTicketIdx((prev) => {
@@ -714,20 +723,47 @@ export default function SorteoPage() {
                   )}
                 </div>
 
-                {/* CTA */}
+                {/* CTA – VERDE + TICKET + RECOMENDACIÓN */}
                 <div className="mt-4">
                   {session && canParticipate && raffle?.status !== "FINISHED" && !isFull ? (
-                    <button
-                      onClick={() => setShowParticipateModal(true)}
-                      className="relative w-full py-3 bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 hover:from-emerald-600 hover:via-teal-600 hover:to-cyan-600 text-white font-bold rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center gap-2"
-                    >
-                      🎟️ Participar
-                      {minTicketsIsMandatory && minTicketsRequired > 1 && (
-                        <span className="absolute -top-3 -right-3 bg-red-500 text-white text-xs font-bold rounded-full w-8 h-8 flex items-center justify-center shadow-lg">
-                          x{minTicketsRequired}
+                    <>
+                      <button
+                        onClick={() => setShowParticipateModal(true)}
+                        className="relative w-full py-3 rounded-xl font-extrabold
+                                   bg-gradient-to-r from-lime-400 via-lime-500 to-emerald-600
+                                   hover:from-lime-500 hover:via-emerald-600 hover:to-emerald-700
+                                   text-slate-900 shadow-lg hover:shadow-xl ring-1 ring-black/10
+                                   transition-all duration-200 flex items-center justify-center gap-2"
+                        aria-label={
+                          showRequiredCount
+                            ? `Participar, requiere ${minTicketsRequired} ticket${minTicketsRequired > 1 ? "s" : ""}`
+                            : "Participar"
+                        }
+                      >
+                        <span>Participar</span>
+                        <span className="inline-flex items-center ml-1">
+                          <TicketIcon className="-rotate-12 w-5 h-5 opacity-95 drop-shadow" />
+                          {showRequiredCount && (
+                            <span className="ml-1 font-extrabold tracking-tight">
+                              {minTicketsRequired}
+                            </span>
+                          )}
                         </span>
+                      </button>
+
+                      {/* Recomendación NO obligatoria destacada */}
+                      {!showRequiredCount && showSuggestedCount && (
+                        <div className="mt-2 flex items-center justify-center sm:justify-start gap-2
+                                        px-3 py-2 rounded-lg bg-lime-400/15 ring-1 ring-lime-300/40">
+                          <TicketIcon className="-rotate-12 w-4 h-4 text-lime-300" />
+                          <span className="text-lime-100 text-xs">
+                            <span className="font-semibold">Sugerido:</span>{" "}
+                            <span className="font-extrabold">{minTicketsRequired}</span>{" "}
+                            ticket{minTicketsRequired > 1 ? "s" : ""} para mejores chances
+                          </span>
+                        </div>
                       )}
-                    </button>
+                    </>
                   ) : !session ? (
                     <button
                       onClick={() => router.push("/login")}
@@ -738,7 +774,7 @@ export default function SorteoPage() {
                   ) : null}
                 </div>
 
-                {/* Info bajo CTA: 8/10 + faltantes + participantes reales + compartir a la derecha */}
+                {/* Info bajo CTA */}
                 <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
                   <div className="flex items-center gap-3">
                     <div className="text-white text-sm font-semibold">
@@ -904,12 +940,40 @@ export default function SorteoPage() {
                     <h4 className="text-white font-medium mb-1 text-sm">Sin participantes</h4>
                     <p className="text-white/60 text-xs mb-3">Sé el primero en participar</p>
                     {session && canParticipate && (
-                      <button
-                        onClick={() => setShowParticipateModal(true)}
-                        className="inline-flex items-center px-3 py-2 bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 hover:from-emerald-600 hover:via-teal-600 hover:to-cyan-600 text-white text-xs font-medium rounded-lg transition-all"
-                      >
-                        🎟️ Participar
-                      </button>
+                      <>
+                        <button
+                          onClick={() => setShowParticipateModal(true)}
+                          className="inline-flex items-center px-3 py-2 rounded-lg font-extrabold
+                                     bg-gradient-to-r from-lime-400 via-lime-500 to-emerald-600
+                                     hover:from-lime-500 hover:via-emerald-600 hover:to-emerald-700
+                                     text-slate-900 transition-all"
+                          aria-label={
+                            showRequiredCount
+                              ? `Participar, requiere ${minTicketsRequired} ticket${minTicketsRequired > 1 ? "s" : ""}`
+                              : "Participar"
+                          }
+                        >
+                          <span>Participar</span>
+                          <span className="inline-flex items-center ml-1">
+                            <TicketIcon className="-rotate-12 w-4 h-4 opacity-95" />
+                            {showRequiredCount && (
+                              <span className="ml-0.5 font-extrabold">{minTicketsRequired}</span>
+                            )}
+                          </span>
+                        </button>
+
+                        {!showRequiredCount && showSuggestedCount && (
+                          <div className="mt-2 mx-auto w-max flex items-center gap-2
+                                          px-3 py-2 rounded-lg bg-lime-400/15 ring-1 ring-lime-300/40">
+                            <TicketIcon className="-rotate-12 w-4 h-4 text-lime-300" />
+                            <span className="text-lime-100 text-xs">
+                              <span className="font-semibold">Sugerido:</span>{" "}
+                              <span className="font-extrabold">{minTicketsRequired}</span>{" "}
+                              ticket{minTicketsRequired > 1 ? "s" : ""} para mejores chances
+                            </span>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
@@ -1018,15 +1082,36 @@ export default function SorteoPage() {
               <div className="m-3 p-2 rounded-2xl bg-slate-900/80 backdrop-blur border border-white/10 shadow-xl">
                 <button
                   onClick={() => setShowParticipateModal(true)}
-                  className="relative w-full py-3 bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 text-white font-bold rounded-xl"
+                  className="relative w-full py-3 rounded-xl font-extrabold
+                             bg-gradient-to-r from-lime-400 via-lime-500 to-emerald-600
+                             hover:from-lime-500 hover:via-emerald-600 hover:to-emerald-700
+                             text-slate-900 ring-1 ring-black/10 flex items-center justify-center gap-2"
+                  aria-label={
+                    showRequiredCount
+                      ? `Participar, requiere ${minTicketsRequired} ticket${minTicketsRequired > 1 ? "s" : ""}`
+                      : "Participar"
+                  }
                 >
-                  🎟️ Participar
-                  {minTicketsIsMandatory && minTicketsRequired > 1 && (
-                    <span className="absolute -top-3 -right-3 bg-red-500 text-white text-xs font-bold rounded-full w-8 h-8 flex items-center justify-center">
-                      x{minTicketsRequired}
-                    </span>
-                  )}
+                  <span>Participar</span>
+                  <span className="inline-flex items-center">
+                    <TicketIcon className="-rotate-12 w-5 h-5 opacity-95" />
+                    {showRequiredCount && (
+                      <span className="ml-1 font-extrabold">{minTicketsRequired}</span>
+                    )}
+                  </span>
                 </button>
+
+                {!showRequiredCount && showSuggestedCount && (
+                  <div className="mt-2 flex items-center justify-center gap-2
+                                  px-3 py-2 rounded-lg bg-lime-400/15 ring-1 ring-lime-300/40">
+                    <TicketIcon className="-rotate-12 w-4 h-4 text-lime-300" />
+                    <span className="text-lime-100 text-xs">
+                      <span className="font-semibold">Sugerido:</span>{" "}
+                      <span className="font-extrabold">{minTicketsRequired}</span>{" "}
+                      ticket{minTicketsRequired > 1 ? "s" : ""} para mejores chances
+                    </span>
+                  </div>
+                )}
               </div>
             ) : null}
           </div>
