@@ -2,14 +2,23 @@
 import { PrismaClient } from '@prisma/client';
 
 const globalForPrisma = globalThis;
+const isProd = process.env.NODE_ENV === 'production';
 
-export const prisma = globalForPrisma.prisma || new PrismaClient({
-  log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
-});
+// ⚠️ Importante: el URL real viene del .env (DATABASE_URL con pgBouncer)
+// No pases DIRECT_URL aquí: DIRECT_URL es solo para migraciones.
 
-if (process.env.NODE_ENV !== 'production') {
-  globalForPrisma.prisma = prisma;
+function createPrismaClient() {
+  return new PrismaClient({
+    // Aseguramos el datasource explícitamente (evita sorpresas si el env cambia)
+    datasources: { db: { url: process.env.DATABASE_URL } },
+    // Logs: verbosos en dev, mínimos en prod
+    log: isProd ? ['error'] : ['error', 'warn'],
+  });
 }
 
-// Export both named and default for compatibility
+// Singleton en dev para evitar "Too many Prisma Clients"
+// En prod (serverless) una nueva instancia por lambda está OK.
+export const prisma = globalForPrisma.prisma ?? createPrismaClient();
+if (!isProd) globalForPrisma.prisma = prisma;
+
 export default prisma;

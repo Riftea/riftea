@@ -1,15 +1,85 @@
-// src/lib/cron-jobs.js - CORREGIDO (reemplazar completo)
+// src/lib/cron-jobs.js — CORREGIDO
 import cron from 'node-cron';
 import prisma from '@/lib/prisma';
-import { executeRaffleJob, checkRaffleProgressJob, cleanupExpiredRafflesJob } from '@/jobs/checkProgress';
+import {
+  executeRaffleJob,
+  checkRaffleProgressJob,
+  cleanupExpiredRafflesJob,
+} from '@/jobs/checkProgress';
 
-// Evita doble inicialización en hot-reload dev / múltiples imports
-const globalCron = globalThis.__rifteaCron ?? { initialized: false };
+/* =========================
+   Guards de entorno
+   ========================= */
+
+// No iniciar crons durante el build de Next.js / prerender
+const isProdBuild = process.env.NEXT_PHASE === 'phase-production-build';
+// Ejecutar SOLO en runtime Node.js (nunca en Edge)
+const isEdge = process.env.NEXT_RUNTIME === 'edge';
+
+// Zona horaria local (opcional, ajusta a tu preferencia)
+const TZ = process.env.CRON_TZ || 'America/Argentina/Buenos_Aires';
+
+/* =========================
+   Estado global (evita doble init)
+   ========================= */
+
+// Usamos un registro global para hot-reload en dev y múltiples imports
+const globalCron = globalThis.__rifteaCron ?? {
+  initialized: false,
+  tasks: [],
+};
 globalThis.__rifteaCron = globalCron;
 
 let isInitialized = globalCron.initialized;
+let tasks = globalCron.tasks;
+
+/* =========================
+   Helpers
+   ========================= */
+
+async function getSystemStats() {
+  const [active, readyToDraw, finished, total] = await Promise.all([
+    prisma.raffle.count({ where: { status: 'ACTIVE' } }),
+    prisma.raffle.count({ where: { status: 'READY_TO_DRAW' } }),
+    prisma.raffle.count({ where: { status: 'FINISHED' } }),
+    prisma.raffle.count(),
+  ]);
+  return {
+    raffles: { active, readyToDraw, finished, total },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function addTask(expr, fn, opts = {}) {
+  const task = cron.schedule(expr, fn, { timezone: TZ, ...opts });
+  tasks.push(task);
+  return task;
+}
+
+function clearTasks() {
+  for (const t of tasks) {
+    try {
+      t.stop();
+      t.destroy?.();
+    } catch (_) {
+      // ignore
+    }
+  }
+  tasks = [];
+  globalCron.tasks = tasks;
+}
+
+/* =========================
+   API pública
+   ========================= */
 
 export function initializeCronJobs() {
+  // Guards: nunca en build ni en edge
+  if (isProdBuild || isEdge) {
+    console.log('⏭️ Cron jobs deshabilitados en este entorno (build/edge).');
+    return;
+  }
+
   if (isInitialized) {
     console.log('⚠️ Cron jobs ya están inicializados');
     return;
@@ -18,9 +88,8 @@ export function initializeCronJobs() {
   console.log('🚀 Inicializando cron jobs para sorteos automáticos...');
 
   // JOB 1: Verificar sorteos cerca de completarse (cada 30s)
-  cron.schedule('*/30 * * * * *', async () => {
+  addTask('*/30 * * * * *', async () => {
     try {
-      // ⚠️ REMOVIDO: { maxParticipants: { not: null } } — no hace falta, es no nulo en el schema
       const activeRaffles = await prisma.raffle.findMany({
         where: {
           status: { in: ['ACTIVE', 'PUBLISHED'] },
@@ -33,11 +102,11 @@ export function initializeCronJobs() {
         },
       });
 
-      // Solo verificar sorteos que están al 80% o más de capacidad
-      const needsCheck = activeRaffles.filter((r) =>
-        typeof r.maxParticipants === 'number' &&
-        r.maxParticipants > 0 &&
-        r._count.participations >= Math.floor(r.maxParticipants * 0.8)
+      const needsCheck = activeRaffles.filter(
+        (r) =>
+          typeof r.maxParticipants === 'number' &&
+          r.maxParticipants > 0 &&
+          r._count.participations >= Math.floor(r.maxParticipants * 0.8),
       );
 
       if (needsCheck.length > 0) {
@@ -45,10 +114,7 @@ export function initializeCronJobs() {
         for (const raffle of needsCheck) {
           try {
             await checkRaffleProgressJob({
-              data: {
-                raffleId: raffle.id,
-                deltaParticipants: 1,
-              },
+              data: { raffleId: raffle.id, deltaParticipants: 1 },
             });
           } catch (error) {
             console.error(`Error verificando progreso ${raffle.id}:`, error);
@@ -61,10 +127,9 @@ export function initializeCronJobs() {
   });
 
   // JOB 2: Ejecutar sorteos programados (cada minuto)
-  cron.schedule('0 * * * * *', async () => {
+  addTask('0 * * * * *', async () => {
     try {
       const now = new Date();
-
       const readyRaffles = await prisma.raffle.findMany({
         where: {
           status: 'READY_TO_DRAW',
@@ -72,11 +137,7 @@ export function initializeCronJobs() {
           drawnAt: null,
           winnerParticipationId: null,
         },
-        select: {
-          id: true,
-          title: true,
-          drawAt: true,
-        },
+        select: { id: true, title: true, drawAt: true },
       });
 
       if (readyRaffles.length > 0) {
@@ -91,7 +152,9 @@ export function initializeCronJobs() {
               },
             });
             console.log(
-              `✅ Sorteo ${raffle.id} (${raffle.title}) ejecutado. Ganador: ${result.winnerUserId || 'N/A'}`
+              `✅ Sorteo ${raffle.id} (${raffle.title}) ejecutado. Ganador: ${
+                result?.winnerUserId || 'N/A'
+              }`,
             );
           } catch (error) {
             console.error(`❌ Error ejecutando sorteo ${raffle.id}:`, error);
@@ -104,12 +167,12 @@ export function initializeCronJobs() {
   });
 
   // JOB 3: Limpieza y mantenimiento (cada 10 minutos)
-  cron.schedule('0 */10 * * * *', async () => {
+  addTask('0 */10 * * * *', async () => {
     try {
       const result = await cleanupExpiredRafflesJob({});
-      if (result.cleanedRaffles > 0) {
+      if (result?.cleanedRaffles > 0) {
         console.log(
-          `🧹 Limpieza completada: ${result.cleanedRaffles} sorteos cancelados por vencimiento`
+          `🧹 Limpieza completada: ${result.cleanedRaffles} sorteos cancelados por vencimiento`,
         );
       }
     } catch (error) {
@@ -118,7 +181,7 @@ export function initializeCronJobs() {
   });
 
   // JOB 4: Verificación de estado general (cada hora)
-  cron.schedule('0 0 * * * *', async () => {
+  addTask('0 0 * * * *', async () => {
     try {
       const stats = await getSystemStats();
       console.log('📊 Estadísticas del sistema:', stats);
@@ -132,58 +195,41 @@ export function initializeCronJobs() {
   console.log('✅ Cron jobs inicializados correctamente');
 }
 
-// Función auxiliar para estadísticas
-async function getSystemStats() {
-  const [active, readyToDraw, finished, total] = await Promise.all([
-    prisma.raffle.count({ where: { status: 'ACTIVE' } }),
-    prisma.raffle.count({ where: { status: 'READY_TO_DRAW' } }),
-    prisma.raffle.count({ where: { status: 'FINISHED' } }),
-    prisma.raffle.count(),
-  ]);
-
-  return {
-    raffles: { active, readyToDraw, finished, total },
-    timestamp: new Date().toISOString(),
-  };
-}
-
-// Estado de cron jobs
 export function getCronStatus() {
   return {
     initialized: isInitialized,
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV,
+    tz: TZ,
   };
 }
 
-// Detener cron jobs (tests)
 export function stopCronJobs() {
-  if (isInitialized) {
-    cron.destroy();
-    isInitialized = false;
-    globalCron.initialized = false;
-    console.log('🛑 Cron jobs detenidos');
+  if (!isInitialized) {
+    console.log('ℹ️ Cron jobs ya estaban detenidos');
+    return;
   }
+  clearTasks();
+  isInitialized = false;
+  globalCron.initialized = false;
+  console.log('🛑 Cron jobs detenidos');
 }
 
-// Handlers “manuales” para testear (si lo montás como ruta)
+/* =========================
+   Handlers “manuales” (opcionales)
+   Si montás este archivo como ruta, estos handlers responden.
+   Recomendado: moverlos a /api/admin/init-crons si preferís separar.
+   ========================= */
+
 export async function GET() {
   try {
     const now = new Date();
-    // ⚠️ REMOVIDO: maxParticipants: { not: null }
     const [activeCount, readyCount] = await Promise.all([
       prisma.raffle.count({
-        where: {
-          status: { in: ['ACTIVE', 'PUBLISHED'] },
-          drawAt: null,
-        },
+        where: { status: { in: ['ACTIVE', 'PUBLISHED'] }, drawAt: null },
       }),
       prisma.raffle.count({
-        where: {
-          status: 'READY_TO_DRAW',
-          drawAt: { lte: now },
-          drawnAt: null,
-        },
+        where: { status: 'READY_TO_DRAW', drawAt: { lte: now }, drawnAt: null },
       }),
     ]);
 
@@ -194,19 +240,16 @@ export async function GET() {
       pendingVerification: activeCount,
       readyToExecute: readyCount,
       stats: await getSystemStats(),
+      tz: TZ,
     });
   } catch (error) {
     console.error('❌ Error en status manual:', error);
-    return Response.json(
-      {
-        success: false,
-        error: error.message,
-      },
-      { status: 500 }
-    );
+    return Response.json({ success: false, error: error.message }, { status: 500 });
   }
 }
 
 export async function POST() {
+  // Si quisieras iniciar desde un POST manual: initializeCronJobs();
+  // Pero por defecto devolvemos el estado (idempotente)
   return GET();
 }
