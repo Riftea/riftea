@@ -145,6 +145,7 @@ export async function GET(_request, { params }) {
  * - No leer ni persistir ticketPrice
  * - minParticipants = ceil(prizeValue / POT_CONTRIBUTION_PER_TICKET)
  * - Validar maxTickets >= minParticipants
+ * - 🚦 Agregado: reglas de edición para "tickets mínimos obligatorios"
  */
 export async function PUT(request, { params }) {
   try {
@@ -336,6 +337,85 @@ export async function PUT(request, { params }) {
       }
     }
 
+    // ---------------------------------------------------------------------
+    // 🔧 Reglas de edición para "mínimo de tickets por participante"
+    // ---------------------------------------------------------------------
+    const hasParticipants =
+      (currentRaffle._count?.tickets ?? 0) > 0 ||
+      (currentRaffle._count?.participations ?? 0) > 0;
+
+    // Valores actuales (ajustá los nombres si en tu modelo difieren)
+    const currentMandatory = Boolean(currentRaffle.minTicketsIsMandatory ?? false);
+    const currentMinTickets = Number(currentRaffle.minTicketsPerParticipant ?? 1);
+
+    // ¿Vienen nuevos valores en el body?
+    const bodyHasMandatory = Object.prototype.hasOwnProperty.call(body, "minTicketsIsMandatory");
+    const bodyHasMinTickets = Object.prototype.hasOwnProperty.call(body, "minTicketsPerParticipant");
+
+    let nextMandatory = currentMandatory;
+    let nextMinTickets = currentMinTickets;
+
+    if (bodyHasMandatory) {
+      nextMandatory = Boolean(body.minTicketsIsMandatory);
+    }
+    if (bodyHasMinTickets) {
+      const n = Number(body.minTicketsPerParticipant);
+      if (!Number.isInteger(n) || n < 1) {
+        return NextResponse.json(
+          { error: "El mínimo de tickets por participante debe ser un entero ≥ 1" },
+          { status: 400 }
+        );
+      }
+      nextMinTickets = n;
+    }
+
+    const mandatoryChanged = bodyHasMandatory && nextMandatory !== currentMandatory;
+    const minTicketsChanged = bodyHasMinTickets && nextMinTickets !== currentMinTickets;
+
+    if (mandatoryChanged || minTicketsChanged) {
+      if (hasParticipants) {
+        // Con participantes: solo se permite RELAJAR la regla
+        // ❌ Prohibido: activar obligatoriedad si antes NO lo era
+        if (!currentMandatory && nextMandatory) {
+          return NextResponse.json(
+            { error: "No se puede activar la obligatoriedad de tickets porque ya hay participantes." },
+            { status: 409 }
+          );
+        }
+        // ❌ Prohibido: aumentar cantidad mínima
+        if (nextMinTickets > currentMinTickets) {
+          return NextResponse.json(
+            { error: "No se puede aumentar la cantidad mínima de tickets por participante porque ya hay participantes." },
+            { status: 409 }
+          );
+        }
+        // ✅ Permitido: desactivar obligatoriedad o disminuir el mínimo
+      }
+
+      updateData.minTicketsIsMandatory = nextMandatory;
+      updateData.minTicketsPerParticipant = nextMinTickets;
+
+      // Si relajamos la regla (desactivar o bajar), avisar a los participantes (asincrónico, sin bloquear)
+      const relaxed =
+        (currentMandatory && !nextMandatory) ||
+        (nextMinTickets < currentMinTickets);
+
+      if (relaxed) {
+        (async () => {
+          try {
+            await notifyParticipantsOfRaffleChange(id, {
+              type: "MIN_TICKETS_RELAXED",
+              from: { mandatory: currentMandatory, min: currentMinTickets },
+              to:   { mandatory: nextMandatory,   min: nextMinTickets },
+            });
+          } catch (e) {
+            console.warn("No se pudo encolar notificación de cambio de regla:", e);
+          }
+        })();
+      }
+    }
+    // ---------------------------------------------------------------------
+
     // --- Consolidar valores finales para validar capacidad mínima
     const finalPrizeValue =
       (updateData.prizeValue !== undefined
@@ -350,6 +430,9 @@ export async function PUT(request, { params }) {
       const minParticipants = Math.ceil(
         finalPrizeValue / POT_CONTRIBUTION_PER_TICKET
       );
+
+      // Si hay obligatoriedad y un mínimo por usuario, este mínimo de usuarios podría relajarse
+      // en el front; acá mantenemos la regla financiera base: la capacidad no puede ser menor.
       if (finalMaxTickets < minParticipants) {
         return NextResponse.json(
           {
@@ -468,4 +551,17 @@ export async function DELETE(_request, { params }) {
       { status: 500 }
     );
   }
+}
+
+/**
+ * Stub de notificaciones: reemplazá por tu integración real (cola/email/push).
+ * No requiere cambios en la base de datos.
+ */
+async function notifyParticipantsOfRaffleChange(raffleId, payload) {
+  // TODO: integrá con tu sistema real (cola, email, push, outbox).
+  // Ejemplos sin migrar DB:
+  // - Publicar en una cola (Redis/Rabbit/SQS)
+  // - Llamar a un microservicio de notificaciones
+  // - Registrar en logs para auditoría
+  console.log("[notifyParticipantsOfRaffleChange]", { raffleId, payload });
 }

@@ -1,9 +1,10 @@
 // src/app/admin/raffles/[id]/page.js
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useRouter, useParams } from "next/navigation";
-import Image from "next/image";
+import NextImage from "next/image";
+import { useSession } from "next-auth/react";
 
 /* =======================
    Helpers
@@ -44,9 +45,7 @@ function probabilityPct(k, total) {
   return Math.max(0, Math.min(1, p)) * 100;
 }
 
-// Resize en el browser → WebP
-const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
-const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB
+// Resize en el browser → WebP (post-crop para asegurar tamaño razonable)
 async function resizeImageFile(file, maxW = 1600, quality = 0.85) {
   const bitmap = await createImageBitmap(file);
   const scale = Math.min(1, maxW / bitmap.width);
@@ -67,12 +66,101 @@ async function resizeImageFile(file, maxW = 1600, quality = 0.85) {
   return new File([blob], name, { type: blob.type });
 }
 
+const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/jpg", "image/avif"];
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB
+
 // Aporte al pozo por ticket (UX); el server usa su propia constante
 const POT_CONTRIBUTION_CLIENT = 500;
+
+/* =======================
+   Parser/Rebuilder de reglas en descripción
+   ======================= */
+
+// Extrae (si existiera) el bloque de reglas del final y devuelve:
+// { cleanDescription, min, mandatory }
+function parseRulesFromDescription(desc = "") {
+  let clean = String(desc || "");
+  let min = 1;
+  let mandatory = false;
+
+  // Dos variantes: Sugeridas u Obligatorias
+  const reMandatory = /\n?—\nℹ️ Reglas obligatorias:\s*\n• Cada participante debe comprar al menos (\d+)\s*ticket\(s\)\.\s*$/m;
+  const reSuggested = /\n?—\nℹ️ Reglas sugeridas:\s*\n• Mínimo de tickets por participante:\s*(\d+)\s*$/m;
+
+  const m1 = clean.match(reMandatory);
+  const m2 = clean.match(reSuggested);
+
+  if (m1) {
+    mandatory = true;
+    min = Math.max(1, parseInt(m1[1], 10));
+    clean = clean.replace(reMandatory, "").trim();
+  } else if (m2) {
+    mandatory = false;
+    min = Math.max(1, parseInt(m2[1], 10));
+    clean = clean.replace(reSuggested, "").trim();
+  }
+
+  return { cleanDescription: clean, minTickets: min, mandatory };
+}
+
+function buildRulesFooter(minTicketsPerParticipant, minTicketsIsMandatory, category) {
+  let lines = [];
+  if (category) {
+    lines.push(`• Categoría: ${category}`);
+  }
+  if (minTicketsPerParticipant > 1) {
+    const ruleLabel = minTicketsIsMandatory ? "Reglas obligatorias" : "Reglas sugeridas";
+    const ruleText = minTicketsIsMandatory
+      ? `• Cada participante debe comprar al menos ${minTicketsPerParticipant} ticket(s).`
+      : `• Mínimo de tickets por participante: ${minTicketsPerParticipant}`;
+    lines.push(`—\nℹ️ ${ruleLabel}:\n${ruleText}`);
+  }
+  return lines.length ? `\n\n${lines.join("\n")}` : "";
+}
+
+/* =======================
+   CROP LIGERO (cuadrado 1:1)
+   ======================= */
+
+function useHTMLImageObject(url) {
+  const [img, setImg] = useState(null);
+  useEffect(() => {
+    if (!url) return setImg(null);
+    const i = new window.Image();
+    i.crossOrigin = "anonymous";
+    i.onload = () => setImg(i);
+    i.onerror = () => setImg(null);
+    i.src = url;
+    return () => {
+      setImg(null);
+    };
+  }, [url]);
+  return img;
+}
+
+async function blobFromUrl(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  const blob = await res.blob();
+  return blob;
+}
+
+async function fileFromUrl(url, filename = "image.webp") {
+  const blob = await blobFromUrl(url);
+  return new File([blob], filename, { type: blob.type || "image/webp" });
+}
+
+/* =======================
+   Page
+   ======================= */
 
 export default function AdminRaffleEditPage() {
   const router = useRouter();
   const { id } = useParams();
+
+  // Sesión (para habilitar edición libre a SUPERADMIN)
+  const { data: session } = useSession();
+  const role = String(session?.user?.role || "").toUpperCase();
+  const isSuperAdmin = role === "SUPERADMIN";
 
   // ----- estado base
   const [loaded, setLoaded] = useState(false);
@@ -97,8 +185,25 @@ export default function AdminRaffleEditPage() {
   const [uploading, setUploading] = useState(false);
   const [imageError, setImageError] = useState("");
 
-  // Mínimo tickets (stepper)
+  // === Crop modal state
+  const [cropOpen, setCropOpen] = useState(false);
+  const [cropSrc, setCropSrc] = useState(""); // ObjectURL
+  const [cropZoom, setCropZoom] = useState(1.2); // 1..3
+  const [cropX, setCropX] = useState(0); // -1..1
+  const [cropY, setCropY] = useState(0); // -1..1
+  const [cropWorking, setCropWorking] = useState(false);
+  const cropCanvasRef = useRef(null);
+  const cropSizePx = 640; // tamaño de salida cuadrado (suficiente para web)
+  const cropImg = useHTMLImageObject(cropSrc);
+
+  // Reglas: mínimo tickets + obligatoriedad
   const [minTicketsPerParticipant, setMinTickets] = useState(1);
+  const [minTicketsMandatory, setMinTicketsMandatory] = useState(false);
+
+  // Estado anterior para restricciones (derivado de la descripción y del sorteo actual)
+  const [prevMinTickets, setPrevMinTickets] = useState(1);
+  const [prevMandatory, setPrevMandatory] = useState(false);
+  const [participantsCount, setParticipantsCount] = useState(0);
 
   // UI
   const [saving, setSaving] = useState(false);
@@ -122,13 +227,21 @@ export default function AdminRaffleEditPage() {
     [prizeValueInput]
   );
 
-  const minParticipantsUX = useMemo(() => {
+  // Tickets totales necesarios para cubrir el premio (para cálculo UX)
+  const totalTicketsNeeded = useMemo(() => {
     if (!prizeValueNormalized) return null;
     return Math.ceil(prizeValueNormalized / POT_CONTRIBUTION_CLIENT);
   }, [prizeValueNormalized]);
 
-  // Estimación de total de tickets en juego: objetivo si lo hay, si no el mínimo requerido
-  const totalTicketsEstimado = useMemo(() => {
+  // Mínimo de participantes UX considerando obligatoriedad (coherente con "crear")
+  const minParticipantsUX = useMemo(() => {
+    if (!totalTicketsNeeded) return null;
+    const m = Math.max(1, Number(minTicketsPerParticipant || 1));
+    return Math.ceil(totalTicketsNeeded / (minTicketsMandatory ? m : 1));
+  }, [totalTicketsNeeded, minTicketsPerParticipant, minTicketsMandatory]);
+
+  // Estimación de total de tickets/participantes en juego: objetivo si lo hay, si no el mínimo requerido
+  const totalParticipantsEstimado = useMemo(() => {
     const explicit = parseIntOrNull(participantGoal);
     if (explicit && explicit > 0) return explicit;
     return minParticipantsUX || null;
@@ -136,9 +249,9 @@ export default function AdminRaffleEditPage() {
 
   // Tope del stepper: floor(totalEstimado / 2) para que siempre haya ≥2 participantes
   const maxMinTickets = useMemo(() => {
-    if (!totalTicketsEstimado) return 1;
-    return Math.max(1, Math.floor(totalTicketsEstimado / 2));
-  }, [totalTicketsEstimado]);
+    if (!totalParticipantsEstimado) return 1;
+    return Math.max(1, Math.floor(totalParticipantsEstimado / 2));
+  }, [totalParticipantsEstimado]);
 
   useEffect(() => {
     setMinTickets((v) => Math.min(Math.max(1, v), maxMinTickets));
@@ -155,32 +268,46 @@ export default function AdminRaffleEditPage() {
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
-  // -------- Carga inicial
+  // -------- Carga inicial (ADMIN endpoint)
   useEffect(() => {
     let mounted = true;
     (async () => {
       setLoadError("");
       try {
-        const res = await fetch(`/api/raffles/${id}`, { credentials: "include" });
+        const res = await fetch(`/api/admin/raffles/${id}`, { credentials: "include" });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data?.error || data?.message || "No se pudo cargar el sorteo");
         const r = data?.raffle || data;
 
         if (!mounted) return;
 
+        // Parsear reglas desde la descripción
+        const { cleanDescription, minTickets, mandatory } = parseRulesFromDescription(r.description || "");
+
         setTitle(r.title || "");
-        // limpiar posible footer de reglas antes de editar
-        setDescription((r.description || "").replace(/\n—\nℹ️ Reglas sugeridas:[\s\S]*$/m, "").trim());
+        setDescription(cleanDescription);
         setCategory(r.prizeCategory || "");
         setIsPrivate(!!r.isPrivate);
 
         setPrizeValueInput(String(r.prizeValue ?? ""));
+        // En edición, "Objetivo" lo tomamos de maxParticipants si está. (coherente con admin route)
         setParticipantGoal(String(r.maxParticipants ?? ""));
 
         setStartsAt(toLocalDateTimeInputValue(r.startsAt));
         setEndsAt(toLocalDateTimeInputValue(r.endsAt));
 
         setCurrentImageUrl(r.imageUrl || "");
+
+        // Estado/Reglas previas (para restricciones)
+        const pCount = (r?._count?.participations ?? 0) + (r?._count?.tickets ?? 0);
+        setParticipantsCount(pCount);
+        setPrevMinTickets(minTickets || 1);
+        setPrevMandatory(Boolean(mandatory));
+
+        // Valores iniciales del stepper/toggle
+        setMinTickets(minTickets || 1);
+        setMinTicketsMandatory(Boolean(mandatory));
+
         setLoaded(true);
       } catch (e) {
         if (!mounted) return;
@@ -206,9 +333,23 @@ export default function AdminRaffleEditPage() {
       const goalInt = parseIntOrNull(participantGoal);
       if (!goalInt || goalInt <= 0)
         return "El objetivo de participantes debe ser un entero mayor a 0";
-      const minNeeded = Math.ceil(prizeFinal / POT_CONTRIBUTION_CLIENT);
-      if (goalInt < minNeeded) {
-        return `El objetivo de participantes debe ser ≥ ${minNeeded}`;
+
+      // Mínimo requerido según obligatoriedad y mínimo de tickets actual
+      const baseNeeded = Math.ceil(prizeFinal / POT_CONTRIBUTION_CLIENT);
+      const divisor = minTicketsMandatory ? Math.max(1, Number(minTicketsPerParticipant || 1)) : 1;
+      const minRequired = Math.ceil(baseNeeded / divisor);
+      if (goalInt < minRequired) {
+        return `El objetivo de participantes debe ser ≥ ${minRequired}`;
+      }
+    }
+
+    // Restricciones si ya hay participantes (salteadas para SUPERADMIN)
+    if (participantsCount > 0 && !isSuperAdmin) {
+      if (!prevMandatory && minTicketsMandatory) {
+        return "No podés activar la obligatoriedad de tickets porque ya hay participantes.";
+      }
+      if (minTicketsPerParticipant > prevMinTickets) {
+        return `No podés aumentar el mínimo de tickets por participante (actual: ${prevMinTickets}). Solo podés mantener o disminuir.`;
       }
     }
 
@@ -226,7 +367,7 @@ export default function AdminRaffleEditPage() {
 
     if (file) {
       if (!ALLOWED_TYPES.includes(file.type))
-        return "Formato de imagen no soportado (usa JPG/PNG/WebP)";
+        return "Formato de imagen no soportado (usa JPG/PNG/WebP/AVIF)";
       if (file.size > MAX_FILE_BYTES) return "La imagen supera el tamaño máximo (10MB)";
     }
 
@@ -240,7 +381,8 @@ export default function AdminRaffleEditPage() {
 
   // -------- Subida de imagen (si se cambió)
   const maybeUploadImage = async () => {
-    if (!file) return currentImageUrl || null; // mantener la actual
+    // Si no hay nuevo archivo, devolvemos la actual (puede ser "" para quitar)
+    if (!file) return currentImageUrl || null;
     setImageError("");
     setUploading(true);
     try {
@@ -264,7 +406,7 @@ export default function AdminRaffleEditPage() {
     }
   };
 
-  // -------- Guardar cambios (PUT /api/raffles)
+  // -------- Guardar cambios (PUT /api/admin/raffles/[id])
   const handleSave = async (e) => {
     e.preventDefault();
     setError("");
@@ -277,10 +419,10 @@ export default function AdminRaffleEditPage() {
 
     const prizeFinal = normalizeThousandRule(prizeValueInput);
 
-    // Si se deja vacío el objetivo, aplicamos el mínimo requerido automáticamente
+    // Si se deja vacío el objetivo, aplicamos el mínimo requerido automáticamente (coherente con "crear")
     const goalFromUx =
       String(participantGoal).trim() === "" && prizeFinal
-        ? Math.ceil(prizeFinal / POT_CONTRIBUTION_CLIENT)
+        ? (minParticipantsUX ?? Math.ceil(prizeFinal / POT_CONTRIBUTION_CLIENT))
         : null;
 
     const maxParticipants =
@@ -288,12 +430,13 @@ export default function AdminRaffleEditPage() {
         ? goalFromUx
         : parseInt(participantGoal, 10);
 
-    // Footer informativo opcional
-    const baseDesc = description.trim().replace(/\n—\nℹ️ Reglas sugeridas:[\s\S]*$/m, "");
-    const footer =
-      minTicketsPerParticipant > 1
-        ? `\n\n—\nℹ️ Reglas sugeridas:\n• Mínimo de tickets por participante: ${minTicketsPerParticipant}`
-        : "";
+    // Quitar footer viejo y reconstruir con las reglas actuales
+    const baseDesc = description.trim();
+    const footer = buildRulesFooter(
+      Math.max(1, Number(minTicketsPerParticipant)),
+      Boolean(minTicketsMandatory),
+      category
+    );
     const finalDescription = `${baseDesc}${footer}`;
 
     setSaving(true);
@@ -301,19 +444,21 @@ export default function AdminRaffleEditPage() {
       const finalImageUrl = await maybeUploadImage();
 
       const payload = {
-        id: String(id),
         title: title.trim(),
         description: finalDescription,
         prizeValue: prizeFinal,
         ...(maxParticipants != null ? { maxParticipants } : {}),
-        ...(finalImageUrl ? { imageUrl: finalImageUrl } : { imageUrl: null }),
-        ...(startsAt ? { startsAt } : { startsAt: null }),
-        ...(endsAt ? { endsAt } : { endsAt: null }),
-        ...(category ? { category } : { category: null }),
+        imageUrl: finalImageUrl ?? null,
+        startsAt: startsAt || null,
+        endsAt: endsAt || null,
+        prizeCategory: category || null,
         isPrivate,
+        // Por si en el futuro el backend los soporta:
+        minTicketsPerParticipant: Math.max(1, Number(minTicketsPerParticipant)),
+        minTicketsIsMandatory: Boolean(minTicketsMandatory),
       };
 
-      const res = await fetch("/api/raffles", {
+      const res = await fetch(`/api/admin/raffles/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -323,8 +468,9 @@ export default function AdminRaffleEditPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || data?.message || "No se pudo guardar");
 
-      // Volvemos a la misma página (refresca datos)
-      router.refresh?.();
+      // ✅ Ir al sorteo publicado (vista pública)
+      router.push(`/sorteo/${id}`);
+      return;
     } catch (err) {
       console.error("Error saving raffle:", err);
       setError(err.message || "No se pudo guardar el sorteo");
@@ -333,13 +479,16 @@ export default function AdminRaffleEditPage() {
     }
   };
 
-  // -------- Eliminar sorteo
+  // -------- Eliminar sorteo (ADMIN endpoint)
   const handleDelete = async () => {
     if (!confirm("¿Eliminar este sorteo? Esta acción no se puede deshacer.")) return;
     setDeleting(true);
     setError("");
     try {
-      const res = await fetch(`/api/raffles?id=${id}`, { method: "DELETE", credentials: "include" });
+      const res = await fetch(`/api/admin/raffles/${id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || data?.message || "No se pudo eliminar");
       router.push("/admin");
@@ -377,11 +526,103 @@ export default function AdminRaffleEditPage() {
   const DESC_MAX = 600;
 
   const minTicketsProb = useMemo(() => {
-    if (!minTicketsPerParticipant || !totalTicketsEstimado) return null;
-    return probabilityPct(minTicketsPerParticipant, totalTicketsEstimado);
-  }, [minTicketsPerParticipant, totalTicketsEstimado]);
+    if (!minTicketsPerParticipant || !totalParticipantsEstimado) return null;
+    return probabilityPct(minTicketsPerParticipant, totalParticipantsEstimado);
+  }, [minTicketsPerParticipant, totalParticipantsEstimado]);
 
-  // -------- UI
+  /* =======================
+     CROP: helpers UI
+     ======================= */
+
+  const openCropWithFile = async (f) => {
+    if (!f) return;
+    if (!ALLOWED_TYPES.includes(f.type)) {
+      setImageError("Formato de imagen no soportado (usa JPG/PNG/WebP/AVIF)");
+      return;
+    }
+    if (f.size > MAX_FILE_BYTES) {
+      setImageError("La imagen supera el tamaño máximo (10MB)");
+      return;
+    }
+    setImageError("");
+    if (cropSrc) URL.revokeObjectURL(cropSrc);
+    const url = URL.createObjectURL(f);
+    setCropSrc(url);
+    setCropZoom(1.2);
+    setCropX(0);
+    setCropY(0);
+    setCropOpen(true);
+  };
+
+  const openCropWithCurrent = async () => {
+    try {
+      if (!currentImageUrl) return;
+      const f = await fileFromUrl(currentImageUrl, "actual.webp");
+      await openCropWithFile(f);
+    } catch (e) {
+      setImageError("No se pudo abrir la imagen actual para recortar");
+    }
+  };
+
+  const applyCrop = async () => {
+    if (!cropImg) return;
+    setCropWorking(true);
+    try {
+      // Canvas destino cuadrado
+      const size = cropSizePx;
+      const canvas = cropCanvasRef.current || document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d");
+
+      // Fondo negro transparente
+      ctx.clearRect(0, 0, size, size);
+
+      // Calcular escala y offsets
+      const imgW = cropImg.naturalWidth || cropImg.width;
+      const imgH = cropImg.naturalHeight || cropImg.height;
+
+      // Queremos cubrir el square (cover) con zoom adicional
+      const baseScale = Math.max(size / imgW, size / imgH);
+      const scale = baseScale * cropZoom;
+
+      const drawW = imgW * scale;
+      const drawH = imgH * scale;
+
+      // cropX/cropY en rango -1..1 -> desplazamiento máximo hasta 25% del lado
+      const maxShift = 0.25; // más de esto suele cortar demasiado
+      const shiftX = cropX * maxShift * drawW;
+      const shiftY = cropY * maxShift * drawH;
+
+      const dx = (size - drawW) / 2 + shiftX;
+      const dy = (size - drawH) / 2 + shiftY;
+
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(cropImg, dx, dy, drawW, drawH);
+
+      const blob = await new Promise((r) =>
+        canvas.toBlob(r, "image/webp", 0.9)
+      );
+      if (!blob) throw new Error("No se pudo generar el recorte");
+
+      const outFile = new File([blob], "raffle-image.webp", { type: "image/webp" });
+      setFile(outFile);
+      // actualizamos preview local
+      if (preview) URL.revokeObjectURL(preview);
+      const purl = URL.createObjectURL(outFile);
+      setPreview(purl);
+      setCropOpen(false);
+    } catch (e) {
+      setImageError(e.message || "Error al recortar la imagen");
+    } finally {
+      setCropWorking(false);
+    }
+  };
+
+  /* =======================
+     UI
+     ======================= */
+
   if (loadError) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-slate-50 p-6">
@@ -409,6 +650,11 @@ export default function AdminRaffleEditPage() {
     );
   }
 
+  // Flags de restricción en UI (no aplican al SUPERADMIN)
+  const hasParticipants = !isSuperAdmin && participantsCount > 0;
+  const cannotIncreaseMin = hasParticipants && minTicketsPerParticipant > prevMinTickets;
+  const cannotEnableMandatory = hasParticipants && !prevMandatory && minTicketsMandatory;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 to-gray-900 text-gray-100">
       <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -431,7 +677,7 @@ export default function AdminRaffleEditPage() {
 
           <div className="p-8">
             {/* Error */}
-            {error && (
+            {(error || cannotIncreaseMin || cannotEnableMandatory) && (
               <div className="mb-6 p-5 bg-red-900/30 border border-red-800 rounded-xl">
                 <div className="flex items-start">
                   <svg className="h-5 w-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
@@ -441,13 +687,23 @@ export default function AdminRaffleEditPage() {
                       clipRule="evenodd"
                     />
                   </svg>
-                  <div>
-                    <h3 className="text-lg font-medium text-red-200">No se pudo guardar</h3>
-                    <div className="mt-2 text-red-300">
-                      <p>{error}</p>
-                    </div>
+                  <div className="text-red-300">
+                    {error && <p className="mb-1">{error}</p>}
+                    {cannotEnableMandatory && (
+                      <p className="mb-1">No podés activar la obligatoriedad de tickets porque ya hay participantes.</p>
+                    )}
+                    {cannotIncreaseMin && (
+                      <p>No podés aumentar el mínimo de tickets por participante (actual: {prevMinTickets}).</p>
+                    )}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Aviso amarillo: solo si NO es super */}
+            {hasParticipants && (
+              <div className="mb-6 p-4 bg-amber-900/20 border border-amber-800 rounded-xl text-amber-200 text-sm">
+                Este sorteo ya tiene participantes. Solo podés <b>mantener o reducir</b> el mínimo de tickets por participante y no podés <b>activar</b> la obligatoriedad si no lo estaba.
               </div>
             )}
 
@@ -527,6 +783,9 @@ export default function AdminRaffleEditPage() {
                   {minParticipantsUX && (
                     <p className="text-xs mt-1 text-gray-300">
                       Mínimo requerido para realizar el sorteo: <b className="text-orange-300">{minParticipantsUX}</b>
+                      {minTicketsMandatory && minTicketsPerParticipant > 1 ? (
+                        <span className="text-gray-400"> (con mínimo {minTicketsPerParticipant} ticket(s) por usuario)</span>
+                      ) : null}
                     </p>
                   )}
                 </div>
@@ -548,7 +807,7 @@ export default function AdminRaffleEditPage() {
                 </div>
               </div>
 
-              {/* Categoría + mínimo tickets (stepper) */}
+              {/* Categoría + mínimo tickets (stepper + toggle obligatoriedad) */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-200 mb-2">Categoría</label>
@@ -575,13 +834,24 @@ export default function AdminRaffleEditPage() {
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center justify-between mb-2 gap-4">
                     <label className="block text-sm font-medium text-gray-200">
-                      Mínimo de tickets por participante
+                      Cantidad de tickets por participante
                     </label>
-                    <span className="text-xs text-gray-400">
-                      Máx: {maxMinTickets} {maxMinTickets <= 1 ? "" : "(asegura ≥2 participantes)"}
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <label htmlFor="minTicketsMandatory" className="text-xs text-gray-300 whitespace-nowrap">
+                        Hacer obligatorio
+                      </label>
+                      <input
+                        id="minTicketsMandatory"
+                        type="checkbox"
+                        checked={minTicketsMandatory}
+                        onChange={(e) => setMinTicketsMandatory(e.target.checked)}
+                        className="h-4 w-4 text-orange-600 rounded border-gray-600"
+                        disabled={!isSuperAdmin && (hasParticipants && !prevMandatory)}
+                        title={!isSuperAdmin && (hasParticipants && !prevMandatory) ? "No podés activar obligatoriedad con participantes existentes" : ""}
+                      />
+                    </div>
                   </div>
 
                   <div className="inline-flex items-center bg-gray-700/50 border border-gray-600 rounded-xl overflow-hidden">
@@ -604,15 +874,30 @@ export default function AdminRaffleEditPage() {
                       onClick={() => setMinTickets((v) => Math.min(maxMinTickets, v + 1))}
                       aria-label="Aumentar"
                       className="px-4 py-3.5 hover:bg-gray-700 disabled:opacity-50"
-                      disabled={minTicketsPerParticipant >= maxMinTickets}
+                      disabled={!isSuperAdmin && (minTicketsPerParticipant >= maxMinTickets || (hasParticipants && minTicketsPerParticipant >= prevMinTickets))}
+                      title={!isSuperAdmin && (hasParticipants && minTicketsPerParticipant >= prevMinTickets) ? `No podés aumentar por encima de ${prevMinTickets} con participantes` : ""}
                     >
                       <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor"><path d="M12 5v14M5 12h14"></path></svg>
                     </button>
                   </div>
 
-                  {minTicketsProb != null && totalTicketsEstimado != null && (
+                  <div className="mt-2 text-xs text-gray-400">
+                    Máxima por usuario: <b className="text-gray-300">{maxMinTickets}</b> {maxMinTickets <= 1 ? "" : "(para asegurar al menos 2 participantes)"}
+                    {minTicketsMandatory ? (
+                      <div className="mt-1 text-orange-300">Esta regla será obligatoria.</div>
+                    ) : (
+                      <div className="mt-1">Esta regla será una sugerencia.</div>
+                    )}
+                    {!isSuperAdmin && hasParticipants && (
+                      <div className="mt-1 text-amber-300">
+                        Con participantes: solo podés mantener o disminuir el mínimo actual ({prevMinTickets}).
+                      </div>
+                    )}
+                  </div>
+
+                  {minTicketsProb != null && totalParticipantsEstimado != null && (
                     <p className="text-xs text-gray-400 mt-2">
-                      Con <b>{minTicketsPerParticipant} ticket(s)</b> y ~<b>{totalTicketsEstimado}</b> en juego, tu prob. ≈{" "}
+                      Con <b>{minTicketsPerParticipant} ticket(s)</b> y ~<b>{totalParticipantsEstimado}</b> participantes, tu prob. ≈{" "}
                       <b>{minTicketsProb.toFixed(1)}%</b>
                     </p>
                   )}
@@ -644,12 +929,12 @@ export default function AdminRaffleEditPage() {
                 </div>
               </div>
 
-              {/* Imagen (solo subir/tomar) */}
+              {/* Imagen (actual + subir/tomar + RECORTAR) */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">Imagen actual</label>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Imagen actual / Preview</label>
                   <div className="relative w-full h-56 overflow-hidden rounded-lg border border-gray-700 bg-gray-800">
-                    <Image
+                    <NextImage
                       src={preview || currentImageUrl || "/avatar-default.png"}
                       alt="Imagen del sorteo"
                       fill
@@ -659,31 +944,43 @@ export default function AdminRaffleEditPage() {
                       unoptimized={Boolean(preview)}
                     />
                   </div>
-                  {currentImageUrl && !preview && (
-                    <button
-                      type="button"
-                      onClick={() => setCurrentImageUrl("")}
-                      className="mt-2 px-3 py-2 rounded-lg border border-gray-600 bg-gray-700/40 hover:bg-gray-700/60 transition text-sm"
-                    >
-                      Quitar imagen
-                    </button>
-                  )}
+                  <div className="flex gap-3 mt-2">
+                    {currentImageUrl && !preview && (
+                      <button
+                        type="button"
+                        onClick={() => setCurrentImageUrl("")}
+                        className="px-3 py-2 rounded-lg border border-gray-600 bg-gray-700/40 hover:bg-gray-700/60 transition text-sm"
+                      >
+                        Quitar imagen
+                      </button>
+                    )}
+                    {(currentImageUrl || preview) && (
+                      <button
+                        type="button"
+                        onClick={openCropWithCurrent}
+                        className="px-3 py-2 rounded-lg border border-orange-600 bg-orange-600/10 hover:bg-orange-600/20 text-orange-200 transition text-sm"
+                        title="Recortar imagen actual"
+                      >
+                        Recortar imagen actual
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">Subir / Tomar nueva imagen</label>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Subir / Tomar nueva imagen (con recorte)</label>
                   <input
                     type="file"
                     accept={ALLOWED_TYPES.join(",")}
                     capture="environment"
-                    onChange={(e) => setFile(e.target.files?.[0] || null)}
+                    onChange={(e) => openCropWithFile(e.target.files?.[0] || null)}
                     className="block w-full text-sm text-gray-300
                       file:mr-4 file:py-2.5 file:px-4
                       file:rounded-lg file:border-0
                       file:text-sm file:font-semibold
                       file:bg-orange-600 file:text-white
                       hover:file:bg-orange-700"
-                    title="Formatos permitidos: JPG, PNG, WebP (máx. 10MB)"
+                    title="Formatos permitidos: JPG, PNG, WebP, AVIF (máx. 10MB)"
                   />
                   {imageError && <p className="mt-2 text-sm text-red-300">{imageError}</p>}
                   {uploading && <p className="mt-2 text-xs text-gray-400">Subiendo y optimizando imagen…</p>}
@@ -694,9 +991,17 @@ export default function AdminRaffleEditPage() {
               <div className="flex flex-col sm:flex-row gap-4 pt-6 border-t border-gray-700">
                 <button
                   type="submit"
-                  disabled={!canSubmit}
+                  disabled={!canSubmit || (!isSuperAdmin && (cannotIncreaseMin || cannotEnableMandatory))}
                   className="group flex-1 px-6 py-3.5 bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-xl font-medium hover:from-orange-600 hover:to-orange-700 focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-60 disabled:cursor-not-allowed transition-all"
-                  title={!canSubmit ? disabledReason : undefined}
+                  title={
+                    !canSubmit
+                      ? disabledReason
+                      : (!isSuperAdmin && cannotEnableMandatory)
+                        ? "No podés activar obligatoriedad con participantes"
+                        : (!isSuperAdmin && cannotIncreaseMin)
+                          ? "No podés aumentar el mínimo con participantes"
+                          : undefined
+                  }
                 >
                   {saving ? "Guardando..." : "Guardar cambios"}
                   {!canSubmit && (
@@ -739,12 +1044,133 @@ export default function AdminRaffleEditPage() {
               <div className="ml-3 flex-1 text-sm text-gray-300">
                 <p>Si dejás vacío el objetivo, se aplicará automáticamente el mínimo requerido para cubrir el premio.</p>
                 <p>El mínimo de tickets por participante tiene tope dinámico para asegurar ≥2 participantes (mitad del total estimado).</p>
+                {!isSuperAdmin && hasParticipants && (
+                  <p className="mt-1 text-amber-200">
+                    Con participantes: solo se permite reducir el mínimo o mantenerlo; no se puede volver obligatorio si no lo era.
+                  </p>
+                )}
               </div>
             </div>
           </div>
           {/* /Footer */}
         </div>
       </div>
+
+      {/* ======= MODAL DE CROP ======= */}
+      {cropOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-2xl bg-gray-900 border border-gray-700 rounded-2xl overflow-hidden shadow-2xl">
+            <div className="px-5 py-3 border-b border-gray-700 flex items-center justify-between">
+              <h3 className="text-gray-100 font-semibold">Recortar imagen (1:1)</h3>
+              <button
+                onClick={() => setCropOpen(false)}
+                className="text-gray-300 hover:text-white px-2 py-1 rounded"
+                aria-label="Cerrar"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="relative w-full aspect-square bg-gray-800 rounded-xl overflow-hidden border border-gray-700">
+                {/* Área de “preview de recorte” */}
+                <div className="absolute inset-0">
+                  {/* Imagen con transform segun zoom y desplazamiento */}
+                  {cropSrc && (
+                    <img
+                      src={cropSrc}
+                      alt="Crop source"
+                      className="absolute left-1/2 top-1/2 will-change-transform select-none pointer-events-none"
+                      style={{
+                        transform: `translate(-50%, -50%) translate(${cropX * 25}%, ${cropY * 25}%) scale(${cropZoom})`,
+                        transformOrigin: "center center",
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "cover",
+                        userSelect: "none",
+                        WebkitUserDrag: "none",
+                      }}
+                    />
+                  )}
+                </div>
+
+                {/* Marco cuadrado (borde) */}
+                <div className="absolute inset-0 border-2 border-white/30 pointer-events-none rounded-none"></div>
+              </div>
+
+              {/* Controles */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs text-gray-300 mb-1">Zoom</label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={3}
+                    step={0.01}
+                    value={cropZoom}
+                    onChange={(e) => setCropZoom(Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-300 mb-1">Desplazamiento X</label>
+                  <input
+                    type="range"
+                    min={-1}
+                    max={1}
+                    step={0.01}
+                    value={cropX}
+                    onChange={(e) => setCropX(Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-300 mb-1">Desplazamiento Y</label>
+                  <input
+                    type="range"
+                    min={-1}
+                    max={1}
+                    step={0.01}
+                    value={cropY}
+                    onChange={(e) => setCropY(Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="px-5 py-4 border-t border-gray-700 flex items-center justify-end gap-3">
+              <button
+                onClick={() => {
+                  setCropZoom(1.2);
+                  setCropX(0);
+                  setCropY(0);
+                }}
+                className="px-4 py-2 text-sm rounded-lg border border-gray-600 bg-gray-800 hover:bg-gray-700 text-gray-200"
+              >
+                Reiniciar
+              </button>
+              <button
+                onClick={() => setCropOpen(false)}
+                className="px-4 py-2 text-sm rounded-lg border border-gray-600 bg-gray-800 hover:bg-gray-700 text-gray-200"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={applyCrop}
+                disabled={!cropImg || cropWorking}
+                className="px-5 py-2 text-sm rounded-lg bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white font-medium"
+              >
+                {cropWorking ? "Aplicando..." : "Aplicar recorte"}
+              </button>
+            </div>
+
+            {/* Canvas oculto para generar el recorte */}
+            <canvas ref={cropCanvasRef} width={cropSizePx} height={cropSizePx} className="hidden" />
+          </div>
+        </div>
+      )}
+      {/* ======= /MODAL DE CROP ======= */}
     </div>
   );
 }

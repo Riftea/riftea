@@ -88,8 +88,20 @@ function normalizeImageUrl(u) {
   return null;
 }
 
+/** Etiquetas legibles para motivos tipificados (solo para mensajes/notas) */
+function reasonLabel(code) {
+  const map = {
+    IMAGE_QUALITY: "Mejorar imagen",
+    DESCRIPTION_CLARITY: "Mejorar descripción",
+    PROHIBITED_ITEM: "Contenido no permitido",
+    REVIEW_CONDITIONS: "Revisar condiciones",
+    OTHER: "Otro",
+  };
+  return map[String(code || "").toUpperCase()] || "Otro";
+}
+
 /* =======================
-   POST: Crear rifa
+   POST: Crear rifa (SIN CAMBIOS)
    ======================= */
 
 export async function POST(request) {
@@ -240,7 +252,7 @@ export async function POST(request) {
           prizeCategory: normalizedCategory,
           status: initialStatus,
           publishedAt: new Date(),
-          ownerImage: dbUser.image || session.user.image || null,
+          ownerImage: dbUser.image || (/** @type any */(session.user))?.image || null,
           isPrivate: isPrivateFlag,
           listingStatus,
           owner: { connect: { id: dbUser.id } },
@@ -273,13 +285,6 @@ export async function POST(request) {
             isPrivate: raffle.isPrivate,
             prizeCategory: raffle.prizeCategory || null,
             listingStatus: raffle.listingStatus,
-            meta: {
-              minTicketsPerParticipant: minTicketsPP,
-              minTicketsIsMandatory: isMandatory,
-              baseTicketsNeeded,
-              divisor,
-              minParticipants,
-            },
           },
         },
       });
@@ -359,7 +364,7 @@ export async function POST(request) {
 }
 
 /* =======================
-   GET: Listar rifas
+   GET: Listar rifas (AGREGADO: campos de moderación + datos de moderador)
    ======================= */
 
 export async function GET(request) {
@@ -471,6 +476,11 @@ export async function GET(request) {
           updatedAt: true,
           isPrivate: true,
           listingStatus: true,
+          // ⬇️ Campos de moderación para mostrar en el panel
+          listingReviewedBy: true,
+          listingReviewedAt: true,
+          listingReason: true,
+
           ownerId: true,
           owner: {
             select: { id: true, name: true, email: true, image: true, role: true },
@@ -482,8 +492,23 @@ export async function GET(request) {
       prisma.raffle.count({ where }),
     ]);
 
+    // Traer info del moderador (si existe) para cada rifa
+    const reviewerIds = Array.from(
+      new Set(rows.map(r => r.listingReviewedBy).filter(Boolean))
+    );
+
+    let reviewersMap = {};
+    if (reviewerIds.length > 0) {
+      const reviewers = await prisma.user.findMany({
+        where: { id: { in: reviewerIds } },
+        select: { id: true, name: true, email: true, image: true },
+      });
+      reviewersMap = Object.fromEntries(reviewers.map(u => [u.id, u]));
+    }
+
     const rafflesWithStats = rows.map((raffle) => ({
       ...raffle,
+      listingReviewedByUser: raffle.listingReviewedBy ? (reviewersMap[raffle.listingReviewedBy] || null) : null,
       unitPrice: TICKET_PRICE,
       stats: {
         totalTickets: raffle._count?.tickets ?? 0,
@@ -595,7 +620,7 @@ export async function PUT(request) {
     const isAdmin = isAdminish(role);
     const isSuper = role === "SUPERADMIN";
 
-    // Acciones de moderación (aprobación/rechazo de listado)
+    // ====== Moderación (validación de publicaciones) ======
     if (action === "approve_listing" || action === "reject_listing" || action === "request_listing") {
       if (action === "request_listing") {
         // Creador o admin puede volver a pedir aprobación (si el sorteo es público/listado)
@@ -645,10 +670,79 @@ export async function PUT(request) {
         );
       }
 
-      const newListingStatus = action === "approve_listing" ? "APPROVED" : "REJECTED";
+      if (action === "approve_listing") {
+        const updated = await prisma.raffle.update({
+          where: { id: id.trim() },
+          data: {
+            listingStatus: "APPROVED",
+            listingReviewedBy: dbUser.id,
+            listingReviewedAt: new Date(),
+            listingReason: null, // limpiar motivo previo si lo hubiera
+          },
+        });
+
+        // Notificación al dueño
+        try {
+          await prisma.notification.create({
+            data: {
+              userId: existingRaffle.ownerId,
+              type: "SYSTEM_ALERT",
+              title: "Publicación aprobada",
+              message: `Tu rifa "${existingRaffle.title}" fue aprobada y ahora aparece públicamente.`,
+              raffleId: existingRaffle.id,
+            },
+          });
+        } catch {}
+
+        // Audit (best-effort)
+        try {
+          await prisma.auditLog.create({
+            data: {
+              action: `raffle_approve_listing`,
+              userId: dbUser.id,
+              targetType: "raffle",
+              targetId: id.trim(),
+              oldValues: { listingStatus: existingRaffle.listingStatus },
+              newValues: { listingStatus: "APPROVED", listingReviewedBy: dbUser.id },
+            },
+          });
+        } catch {}
+
+        return NextResponse.json({
+          success: true,
+          message: "Rifa aprobada para listado público",
+          raffle: updated,
+          code: "LISTING_APPROVED",
+        });
+      }
+
+      // === reject_listing ===
+      // Acepta reasonCode (tipificado) y/o reason (texto libre)
+      const { reasonCode, reason, note } = updateData || {};
+      const codeStr = String(reasonCode || "").toUpperCase();
+      const label = reasonLabel(codeStr);
+      const noteStr = (typeof note === "string" ? note.trim() : "");
+      const freeStr = (typeof reason === "string" ? reason.trim() : "");
+
+      let finalReason = "";
+      if (codeStr) {
+        finalReason = `[${codeStr}] ${label}`;
+        if (noteStr) finalReason += ` — ${noteStr}`;
+      } else if (freeStr) {
+        finalReason = freeStr;
+      } else {
+        finalReason = "Publicación rechazada (sin motivo especificado)";
+      }
+      if (finalReason.length > 500) finalReason = finalReason.slice(0, 500);
+
       const updated = await prisma.raffle.update({
         where: { id: id.trim() },
-        data: { listingStatus: newListingStatus },
+        data: {
+          listingStatus: "REJECTED",
+          listingReviewedBy: dbUser.id,
+          listingReviewedAt: new Date(),
+          listingReason: finalReason,
+        },
       });
 
       // Notificación al dueño
@@ -657,43 +751,35 @@ export async function PUT(request) {
           data: {
             userId: existingRaffle.ownerId,
             type: "SYSTEM_ALERT",
-            title:
-              newListingStatus === "APPROVED"
-                ? "Publicación aprobada"
-                : "Publicación rechazada",
-            message:
-              newListingStatus === "APPROVED"
-                ? `Tu rifa "${existingRaffle.title}" fue aprobada y ahora aparece públicamente.`
-                : `Tu rifa "${existingRaffle.title}" fue rechazada para listado público.`,
+            title: "Publicación rechazada",
+            message: `Tu rifa "${existingRaffle.title}" fue rechazada para listado público. Motivo: ${finalReason}`,
             raffleId: existingRaffle.id,
           },
         });
-      } catch { /* no-op */ }
+      } catch {}
 
       // Audit (best-effort)
       try {
         await prisma.auditLog.create({
           data: {
-            action: `raffle_${action}`,
+            action: `raffle_reject_listing`,
             userId: dbUser.id,
             targetType: "raffle",
             targetId: id.trim(),
             oldValues: { listingStatus: existingRaffle.listingStatus },
-            newValues: { listingStatus: newListingStatus },
+            newValues: { listingStatus: "REJECTED", listingReason: finalReason, listingReviewedBy: dbUser.id },
           },
         });
-      } catch { /* no-op */ }
+      } catch {}
 
       return NextResponse.json({
         success: true,
-        message:
-          newListingStatus === "APPROVED"
-            ? "Rifa aprobada para listado público"
-            : "Rifa rechazada para listado público",
+        message: "Rifa rechazada para listado público",
         raffle: updated,
-        code: `LISTING_${newListingStatus}`,
+        code: "LISTING_REJECTED",
       });
     }
+    // ====== /Moderación ======
 
     // Resto de acciones (publicar/activar/finalizar/cancelar o edición)
     if (!isOwner && !isAdmin && !isSuper) {
@@ -774,6 +860,18 @@ export async function PUT(request) {
           updateObject.description = d;
         }
 
+        // === NUEVO: tomar regla de tickets por participante desde el payload (como en POST)
+        const superRole = String(dbUser.role || "").toUpperCase() === "SUPERADMIN";
+        const minPP_raw = updateData.minTicketsPerParticipant;
+        const mandatory_raw = updateData.minTicketsIsMandatory;
+
+        const minPP = Number.isFinite(Number(minPP_raw)) && Number(minPP_raw) > 0
+          ? Math.floor(Number(minPP_raw))
+          : 1;
+        const isMandatoryRule = Boolean(mandatory_raw);
+        const divisorFromRule = isMandatoryRule ? Math.max(1, minPP) : 1;
+
+        // --- prizeValue ---
         if (updateData.prizeValue !== undefined) {
           const pv = normalizePrizeValue(updateData.prizeValue);
           if (!pv || pv < 1000) {
@@ -784,45 +882,57 @@ export async function PUT(request) {
           }
           updateObject.prizeValue = pv;
 
-          const minNeeded = Math.ceil(pv / POT_CONTRIBUTION_PER_TICKET);
-          const targetMax =
-            updateData.maxParticipants !== undefined && updateData.maxParticipants !== null
-              ? Math.trunc(Number(updateData.maxParticipants))
-              : existingRaffle.maxParticipants;
+          if (!superRole) {
+            // 👇 mismo cálculo que en POST (aplica divisor si la regla es obligatoria)
+            const baseNeeded = Math.ceil(pv / POT_CONTRIBUTION_PER_TICKET);
+            const minRequired = Math.ceil(baseNeeded / divisorFromRule);
 
-          if (!Number.isFinite(targetMax) || targetMax < minNeeded) {
-            return NextResponse.json(
-              { error: `maxParticipants debe ser ≥ ${minNeeded} para cubrir el premio`, code: "VALIDATION_ERROR" },
-              { status: 400 }
-            );
-          }
-          if (updateData.maxParticipants === undefined) {
-            updateObject.maxParticipants = targetMax;
+            const targetMax =
+              updateData.maxParticipants !== undefined && updateData.maxParticipants !== null
+                ? Math.trunc(Number(updateData.maxParticipants))
+                : existingRaffle.maxParticipants;
+
+            if (!Number.isFinite(targetMax) || targetMax < minRequired) {
+              return NextResponse.json(
+                { error: `maxParticipants debe ser ≥ ${minRequired} para cubrir el premio`, code: "VALIDATION_ERROR" },
+                { status: 400 }
+              );
+            }
+            if (updateData.maxParticipants === undefined) {
+              updateObject.maxParticipants = targetMax;
+            }
+          } else {
+            // SUPERADMIN: no forzamos minRequired
+            if (updateData.maxParticipants !== undefined) {
+              updateObject.maxParticipants = Math.trunc(Number(updateData.maxParticipants));
+            }
           }
         }
 
+        // --- maxParticipants solo ---
         if (updateData.maxParticipants !== undefined) {
           const mp =
-            updateData.maxParticipants === null
-              ? null
-              : Math.trunc(Number(updateData.maxParticipants));
+            updateData.maxParticipants === null ? null : Math.trunc(Number(updateData.maxParticipants));
           if (mp === null || !Number.isFinite(mp) || mp <= 0) {
             return NextResponse.json(
               { error: "maxParticipants debe ser un entero mayor a 0", code: "VALIDATION_ERROR" },
               { status: 400 }
             );
           }
-          if (updateObject.prizeValue === undefined) {
-            const minNeeded = Math.ceil(
-              (existingRaffle.prizeValue ?? 0) / POT_CONTRIBUTION_PER_TICKET
-            );
-            if (mp < minNeeded) {
+
+          if (!superRole) {
+            const basePrize = updateObject.prizeValue ?? (existingRaffle.prizeValue ?? 0);
+            const baseNeeded = Math.ceil(basePrize / POT_CONTRIBUTION_PER_TICKET);
+            const minRequired = Math.ceil(baseNeeded / divisorFromRule);
+
+            if (mp < minRequired) {
               return NextResponse.json(
-                { error: `maxParticipants debe ser ≥ ${minNeeded}`, code: "VALIDATION_ERROR" },
+                { error: `maxParticipants debe ser ≥ ${minRequired}`, code: "VALIDATION_ERROR" },
                 { status: 400 }
               );
             }
           }
+
           updateObject.maxParticipants = mp;
         }
 

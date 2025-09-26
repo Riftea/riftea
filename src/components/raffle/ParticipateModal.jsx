@@ -3,6 +3,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
+import Link from "next/link";
+
+/* =========================================================
+   Helpers
+   ========================================================= */
 
 /** Parseo seguro de JSON para evitar "Unexpected end of JSON" */
 async function safeParseJSON(res) {
@@ -53,14 +58,34 @@ function normalizeParticipateResponse(data, fallbackIds = []) {
   return [];
 }
 
+/** Convierte un texto a "Oración": primera letra mayúscula, resto minúsculas */
+function toSentenceCase(s) {
+  const str = String(s || "").trim();
+  if (!str) return "";
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+/** Pluralización simple para "ticket" y "chance(s)" */
+function pluralize(word, n) {
+  if (word === "ticket") return n === 1 ? "ticket" : "tickets";
+  if (word === "chance") return n === 1 ? "chance" : "chances";
+  return word;
+}
+
+/* =========================================================
+   Componente
+   ========================================================= */
+
 export default function ParticipateModal({
   isOpen,
   onClose,
   raffle,     // { id, title, status, ... }
   onSuccess,  // ({ successes, failures }) => void
-  // NUEVO: reglas de mínimo
+  // Reglas de mínimo
   minTicketsRequired = 1,
   minTicketsIsMandatory = false,
+  // Ruta/endpoint hacia la tienda/marketplace
+  shopHref = "/marketplace",
 }) {
   const { data: session } = useSession();
 
@@ -83,6 +108,15 @@ export default function ParticipateModal({
   const isDrawLocked =
     raffle?.status === "READY_TO_DRAW" || raffle?.status === "FINISHED";
 
+  const prettyTitle = useMemo(
+    () => toSentenceCase(raffle?.title || "sorteo"),
+    [raffle?.title]
+  );
+
+  /* =========================================================
+     Carga de tickets del usuario
+     ========================================================= */
+
   useEffect(() => {
     if (!isOpen) return;
     if (!session) return;
@@ -90,6 +124,7 @@ export default function ParticipateModal({
 
     const ac = new AbortController();
     abortRef.current = ac;
+
     (async () => {
       await loadUserTickets(ac.signal);
     })();
@@ -140,7 +175,10 @@ export default function ParticipateModal({
     }
   }
 
-  // Selección múltiple
+  /* =========================================================
+     Selección
+     ========================================================= */
+
   const toggleSelect = (ticketId) => {
     setResults(null);
     setError(null);
@@ -188,12 +226,38 @@ export default function ParticipateModal({
     return t ? getTicketDisplayCode(t) : (id || "").slice(-6);
   };
 
-  // Cálculos de mínimo
-  const needsMinimum = minTicketsIsMandatory && minTicketsRequired > 1;
-  const lacksTicketsToMeetMinimum =
-    needsMinimum && userTickets.length < minTicketsRequired;
+  /* =========================================================
+     Reglas de mínimo
+     ========================================================= */
 
-  // Envío batch
+  // Se considera "mínimo obligatorio" para autoseleccionar incluso si el mínimo es 1
+  const hasMandatoryMinimum = minTicketsIsMandatory && minTicketsRequired >= 1;
+
+  // Este flag lo mantenemos para el *enforcement* de "más de 1"
+  const needsMinimumOverOne = minTicketsIsMandatory && minTicketsRequired > 1;
+
+  const lacksTicketsToMeetMinimum =
+    hasMandatoryMinimum && userTickets.length < minTicketsRequired;
+
+  // 🔹 AUTOPRESELECCIÓN:
+  // Si el sorteo exige un mínimo obligatorio (>=1) y hay suficientes, autoselecciona exactamente N.
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!hasMandatoryMinimum) return;
+    if (selectedIds.size > 0) return; // no pisar selección manual
+    if (userTickets.length === 0) return;
+
+    const preCount = Math.min(minTicketsRequired, userTickets.length);
+    if (preCount > 0) {
+      const firstN = new Set(userTickets.slice(0, preCount).map((t) => t.id));
+      setSelectedIds(firstN);
+    }
+  }, [isOpen, hasMandatoryMinimum, minTicketsRequired, userTickets, selectedIds.size]);
+
+  /* =========================================================
+     Envío
+     ========================================================= */
+
   async function handleParticipate() {
     try {
       if (isDrawLocked) {
@@ -206,12 +270,10 @@ export default function ParticipateModal({
         return;
       }
 
-      // ✅ ENFORCE mínimo obligatorio
-      if (needsMinimum && selectedCount < minTicketsRequired) {
+      // ✅ ENFORCE mínimo obligatorio (cuando es >1)
+      if (needsMinimumOverOne && selectedCount < minTicketsRequired) {
         setError(
-          `Este sorteo requiere un mínimo de ${minTicketsRequired} ticket${
-            minTicketsRequired > 1 ? "s" : ""
-          } por participante. Seleccionaste ${selectedCount}.`
+          `Este sorteo requiere un mínimo de ${minTicketsRequired} ${pluralize("ticket", minTicketsRequired)} por participante. Seleccionaste ${selectedCount}.`
         );
         return;
       }
@@ -325,6 +387,10 @@ export default function ParticipateModal({
 
   if (!isOpen) return null;
 
+  /* =========================================================
+     Render
+     ========================================================= */
+
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div
@@ -339,9 +405,8 @@ export default function ParticipateModal({
           <div className="flex justify-between items-center">
             <div>
               <h2 id="pm-title" className="text-2xl font-bold text-white mb-1">
-                Participar en Sorteo
+                {`Participar por ${prettyTitle}`}
               </h2>
-              <p className="text-white/70 text-sm">{raffle?.title || "Cargando..."}</p>
             </div>
             <button
               type="button"
@@ -397,7 +462,7 @@ export default function ParticipateModal({
               <div className="text-6xl mb-4">⚠️</div>
               <h3 className="text-xl font-bold text-white mb-2">Error al cargar tickets</h3>
               <p className="text-white/70 mb-6 text-sm">{error}</p>
-              <div className="flex gap-3 justify-center">
+              <div className="flex flex-wrap gap-3 justify-center">
                 <button
                   type="button"
                   onClick={(e) => {
@@ -408,6 +473,12 @@ export default function ParticipateModal({
                 >
                   Reintentar
                 </button>
+                <Link
+                  href={shopHref}
+                  className="px-6 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 rounded-xl transition-colors"
+                >
+                  Comprar tickets
+                </Link>
                 <button
                   type="button"
                   onClick={(e) => {
@@ -428,16 +499,24 @@ export default function ParticipateModal({
               <div className="text-6xl mb-4">🎫</div>
               <h3 className="text-xl font-bold text-white mb-2">No tienes tickets disponibles</h3>
               <p className="text-white/70 mb-6">Necesitas comprar o generar tickets para participar.</p>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  handleClose();
-                }}
-                className="px-6 py-2 bg-white/20 hover:bg-white/30 text-white rounded-xl transition-colors"
-              >
-                Cerrar
-              </button>
+              <div className="flex flex-wrap gap-3 justify-center">
+                <Link
+                  href={shopHref}
+                  className="px-6 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 rounded-xl transition-colors"
+                >
+                  Comprar tickets
+                </Link>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    handleClose();
+                  }}
+                  className="px-6 py-2 bg-white/20 hover:bg-white/30 text-white rounded-xl transition-colors"
+                >
+                  Cerrar
+                </button>
+              </div>
             </div>
           )}
 
@@ -445,33 +524,49 @@ export default function ParticipateModal({
           {!isDrawLocked && !loading && userTickets.length > 0 && (
             <>
               {/* Info mínima requerida/sugerida */}
-              {(minTicketsRequired > 1 || minTicketsIsMandatory) && (
+              {(minTicketsIsMandatory || minTicketsRequired > 1) && (
                 <div
                   className={`rounded-2xl p-4 border ${
                     minTicketsIsMandatory
-                      ? "bg-red-500/15 border-red-500/30"
+                      ? "bg-blue-500/15 border-blue-400/30"
                       : "bg-yellow-500/20 border-yellow-500/30"
                   }`}
                 >
                   <div className="flex items-start gap-3">
-                    <span className="text-2xl">{minTicketsIsMandatory ? "❗" : "ℹ️"}</span>
+                    <span className="text-2xl">{minTicketsIsMandatory ? "ℹ️" : "ℹ️"}</span>
                     <div className="text-sm">
-                      <h4 className={`font-bold mb-1 ${minTicketsIsMandatory ? "text-red-300" : "text-yellow-300"}`}>
-                        {minTicketsIsMandatory ? "Mínimo obligatorio" : "Mínimo sugerido"}
+                      <h4 className={`font-bold mb-1 ${minTicketsIsMandatory ? "text-blue-200" : "text-yellow-300"}`}>
+                        {minTicketsIsMandatory ? "Requisito de participación" : "Mínimo sugerido"}
                       </h4>
-                      <p className={`${minTicketsIsMandatory ? "text-red-200/90" : "text-yellow-200/90"}`}>
-                        {minTicketsIsMandatory
-                          ? `Debes participar con al menos ${minTicketsRequired} ticket${
-                              minTicketsRequired > 1 ? "s" : ""
-                            }.`
-                          : `Se recomienda participar con ${minTicketsRequired} ticket${
-                              minTicketsRequired > 1 ? "s" : ""
-                            }.`}
-                      </p>
-                      {lacksTicketsToMeetMinimum && (
-                        <p className="mt-1 text-red-200/90">
-                          No tenés suficientes tickets disponibles para cumplir el mínimo.
+
+                      {minTicketsIsMandatory ? (
+                        <p className="text-blue-100/90">
+                          Se requieren {" "}
+                          <b>{minTicketsRequired}</b> {pluralize("ticket", minTicketsRequired)} y
+                          {" "}<b>tenés {minTicketsRequired} {pluralize("chance", minTicketsRequired)}</b> de ganar.
                         </p>
+                      ) : (
+                        <p className="text-yellow-200/90">
+                          Se recomienda participar con{" "}
+                          <b>{minTicketsRequired}</b> {pluralize("ticket", minTicketsRequired)}.
+                        </p>
+                      )}
+
+                      {/* Si faltan tickets para llegar al mínimo, mostramos CTA a tienda */}
+                      {lacksTicketsToMeetMinimum && (
+                        <div className="mt-2">
+                          <p className="text-blue-100/80 mb-2">
+                            Te faltan{" "}
+                            <b>{Math.max(0, minTicketsRequired - userTickets.length)}</b>{" "}
+                            {pluralize("ticket", Math.max(0, minTicketsRequired - userTickets.length))} para llegar al mínimo.
+                          </p>
+                          <Link
+                            href={shopHref}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 text-xs transition"
+                          >
+                            🛒 Comprar tickets
+                          </Link>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -529,6 +624,22 @@ export default function ParticipateModal({
                     </label>
                   );
                 })}
+              </div>
+
+              {/* Indicador de selección actual (chances visibles) */}
+              <div className="flex items-center justify-between mt-1">
+                <div className="text-white/80 text-xs">
+                  Seleccionaste{" "}
+                  <b className="text-white">{selectedCount}</b>{" "}
+                  {pluralize("ticket", selectedCount)}:{" "}
+                  <b className="text-white">{selectedCount}</b>{" "}
+                  {pluralize("chance", selectedCount)} de ganar.
+                </div>
+                {!minTicketsIsMandatory && minTicketsRequired > 1 && (
+                  <div className="text-white/60 text-[11px]">
+                    Sugerido: {minTicketsRequired} {pluralize("ticket", minTicketsRequired)}
+                  </div>
+                )}
               </div>
 
               {/* Error general (no crítico) */}
@@ -620,7 +731,7 @@ export default function ParticipateModal({
                           </div>
                         ))}
                       </div>
-                      <div className="mt-3 flex gap-2">
+                      <div className="mt-3 flex flex-wrap gap-2">
                         <button
                           type="button"
                           onClick={(e) => {
@@ -641,6 +752,14 @@ export default function ParticipateModal({
                         >
                           Limpiar resumen
                         </button>
+
+                        {/* Si hubo fallas por falta de tickets, da acceso rápido a la tienda */}
+                        <Link
+                          href={shopHref}
+                          className="px-4 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 text-sm"
+                        >
+                          🛒 Comprar más tickets
+                        </Link>
                       </div>
                     </div>
                   )}
@@ -672,7 +791,7 @@ export default function ParticipateModal({
                 participating ||
                 selectedCount === 0 ||
                 isDrawLocked ||
-                (needsMinimum && (selectedCount < minTicketsRequired || lacksTicketsToMeetMinimum))
+                (needsMinimumOverOne && (selectedCount < minTicketsRequired || lacksTicketsToMeetMinimum))
               }
               className="flex-1 py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
             >
@@ -682,7 +801,7 @@ export default function ParticipateModal({
                   Enviando...
                 </div>
               ) : (
-                `🎯 Participar con ${selectedCount} ticket${selectedCount > 1 ? "s" : ""}`
+                `🎯 Participar con ${selectedCount} ${pluralize("ticket", selectedCount)}`
               )}
             </button>
           </div>

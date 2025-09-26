@@ -725,7 +725,7 @@ export default function Header() {
                       className="block px-3 py-2 rounded hover:bg-gray-50 transition-colors"
                       onClick={() => setMenuOpen(false)}
                     >
-                      Favoritos
+                      Favoritos 🤍
                     </Link>
 
                     {(isAdmin || isSuper) && (

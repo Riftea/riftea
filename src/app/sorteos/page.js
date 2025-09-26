@@ -200,7 +200,7 @@ export default function SorteosPublicosPage() {
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, sortKey, page]);
+  }, [q, sortKey, page, showMode]); // 👈 FIX: agrega showMode
 
   // Filtro por estado + favoritos (cliente)
   const filteredItems = useMemo(() => {

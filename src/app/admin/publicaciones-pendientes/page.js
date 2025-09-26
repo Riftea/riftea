@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, Suspense } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -28,11 +28,13 @@ function AdminPublicacionesPendientesContent() {
   const [err, setErr] = useState("");
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [refreshKey, setRefreshKey] = useState(0); // fuerza refetch al aprobar/rechazar
+  const [refreshKey, setRefreshKey] = useState(0); // fuerza refetch al aprobar/rechazar/eliminar
+  const [deletingId, setDeletingId] = useState(null);
 
   const isAuthLoading = status === "loading";
   const role = String(session?.user?.role || "").toUpperCase();
   const isAdmin = role === "ADMIN" || role === "SUPERADMIN";
+  const isSuperAdmin = role === "SUPERADMIN";
 
   useEffect(() => {
     if (!isAuthLoading && !isAdmin) {
@@ -113,6 +115,29 @@ function AdminPublicacionesPendientesContent() {
       setRefreshKey((k) => k + 1);
     } catch (e) {
       alert(e.message || "Error rechazando publicación");
+    }
+  };
+
+  // NUEVO: eliminar (solo SUPERADMIN) — borra completamente la rifa
+  const removeRaffle = async (id, title) => {
+    if (!isSuperAdmin) return;
+    const ok = confirm(
+      `Vas a eliminar definitivamente el sorteo:\n\n• ${title}\n\nEsta acción no se puede deshacer. ¿Confirmás?`
+    );
+    if (!ok) return;
+    try {
+      setDeletingId(id);
+      const res = await fetch(`/api/raffles?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || data?.message || "No se pudo eliminar");
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      alert(e.message || "Error eliminando publicación");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -213,13 +238,14 @@ function AdminPublicacionesPendientesContent() {
                   )}
                 </div>
 
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   {r.listingStatus === "PENDING" && !r.isPrivate && (
                     <>
                       <button
                         onClick={() => approve(r.id)}
                         className="px-3 py-2 rounded-lg bg-green-600 hover:bg-green-700"
                         title="Aprobar publicación"
+                        disabled={deletingId === r.id}
                       >
                         Aprobar
                       </button>
@@ -227,11 +253,30 @@ function AdminPublicacionesPendientesContent() {
                         onClick={() => reject(r.id)}
                         className="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700"
                         title="Rechazar publicación"
+                        disabled={deletingId === r.id}
                       >
                         Rechazar
                       </button>
                     </>
                   )}
+
+                  {/* NUEVO: botón eliminar definitivo (solo SUPERADMIN) en PENDING/REJECTED */}
+                  {isSuperAdmin && (r.listingStatus === "PENDING" || r.listingStatus === "REJECTED") && (
+                    <button
+                      onClick={() => removeRaffle(r.id, r.title)}
+                      className={classNames(
+                        "px-3 py-2 rounded-lg border",
+                        deletingId === r.id
+                          ? "bg-gray-700 border-gray-600 cursor-wait opacity-70"
+                          : "bg-transparent border-red-600 text-red-400 hover:bg-red-600/10"
+                      )}
+                      title="Eliminar definitivamente"
+                      disabled={deletingId === r.id}
+                    >
+                      {deletingId === r.id ? "Eliminando…" : "Eliminar"}
+                    </button>
+                  )}
+
                   {r.isPrivate && (
                     <span className="self-center text-xs text-gray-400">
                       (No listado: no requiere aprobación)

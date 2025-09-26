@@ -5,6 +5,51 @@ import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+/* ============================================================
+   Helpers utilitarios (seguros, sin romper lo existente)
+   ============================================================ */
+
+/** Normaliza rol a MAYÚSCULAS */
+function toRole(x) {
+  return String(x || "").toUpperCase();
+}
+function isAdminish(role) {
+  const r = toRole(role);
+  return r === "ADMIN" || r === "SUPERADMIN";
+}
+
+/** Delay simple por si se usa en futuros flujos */
+function sleep(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+/** Lee un posible total desde varias formas comunes del backend */
+function pickTotalFromPagination(obj = {}) {
+  const p = obj?.pagination || obj;
+  return (
+    (typeof p?.totalItems === "number" && p.totalItems) ||
+    (typeof p?.total === "number" && p.total) ||
+    (typeof obj?.total === "number" && obj.total) ||
+    0
+  );
+}
+
+/** Parseo JSON con tolerancia a content-type */
+async function safeJson(res) {
+  try {
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return await res.json();
+    const txt = await res.text();
+    return { raw: txt };
+  } catch {
+    return {};
+  }
+}
+
+/* ============================================================
+   Componente principal del Panel de Administración
+   ============================================================ */
+
 export default function AdminPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
@@ -13,13 +58,97 @@ export default function AdminPage() {
   const [message, setMessage] = useState("");
   const clearMsgRef = useRef(null);
 
-  const userRole = useMemo(
-    () => String(session?.user?.role || "").toUpperCase(),
-    [session?.user?.role]
-  );
+  const userRole = useMemo(() => toRole(session?.user?.role), [session?.user?.role]);
   const isAdmin = userRole === "ADMIN";
   const isSuperAdmin = userRole === "SUPERADMIN";
 
+  // 🔔 Contador de publicaciones pendientes (solo para ADMIN/SUPERADMIN)
+  const [pendingCount, setPendingCount] = useState(0);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const abortRef = useRef(null);
+
+  // Limpieza de mensajes temporales
+  useEffect(() => {
+    return () => {
+      if (clearMsgRef.current) clearTimeout(clearMsgRef.current);
+      if (abortRef.current) abortRef.current.abort();
+    };
+  }, []);
+
+  const setAutoClearMessage = (text) => {
+    setMessage(text);
+    if (clearMsgRef.current) clearTimeout(clearMsgRef.current);
+    clearMsgRef.current = setTimeout(() => setMessage(""), 5000);
+  };
+
+  /** ================================
+   *  🔎 Carga del contador de pendientes
+   *  — Ejecuta SÓLO en:
+   *    • Montaje del panel (si es admin/superadmin)
+   *    • Cuando la ventana recupera el foco / visibilidad (al volver de publicaciones)
+   *    • Post-acciones locales (p.ej. al generar un ticket)
+   *  No hay intervalos ni polling periódico.
+   *  ================================ */
+  const fetchPendingCount = async () => {
+    if (!isAdminish(userRole)) return;
+    try {
+      if (abortRef.current) abortRef.current.abort();
+      abortRef.current = new AbortController();
+      setPendingLoading(true);
+
+      // limit=1 para cargar rapidísimo; usamos el total del paginado
+      const url = new URL("/api/raffles", window.location.origin);
+      url.searchParams.set("listingStatus", "PENDING");
+      url.searchParams.set("limit", "1");
+      url.searchParams.set("page", "1");
+
+      const res = await fetch(url.toString(), {
+        credentials: "include",
+        signal: abortRef.current.signal,
+      });
+      const data = await safeJson(res);
+      // Aunque no sea 200, intentamos leer por si devuelve {error, total}
+      const total = pickTotalFromPagination(data);
+      if (Number.isFinite(total) && total >= 0) {
+        setPendingCount(total);
+      } else if (!res.ok) {
+        // Si falla y no hay dato, dejamos el valor anterior
+        // (No spameamos errores en UI)
+      }
+    } catch {
+      // Silencioso: no queremos ruido si el usuario navega muy rápido
+    } finally {
+      setPendingLoading(false);
+    }
+  };
+
+  // Montaje: si es admin/superadmin, traer contador una vez
+  useEffect(() => {
+    if (status === "authenticated" && isAdminish(userRole)) {
+      fetchPendingCount();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, userRole]);
+
+  // Refetch cuando se vuelve a enfocar la pestaña o cambia visibilidad
+  useEffect(() => {
+    if (!isAdminish(userRole)) return;
+
+    const onFocus = () => fetchPendingCount();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") fetchPendingCount();
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userRole]);
+
+  // Redirecciones de seguridad
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/");
@@ -30,17 +159,9 @@ export default function AdminPage() {
     }
   }, [status, isAdmin, isSuperAdmin, router]);
 
-  useEffect(() => {
-    return () => {
-      if (clearMsgRef.current) clearTimeout(clearMsgRef.current);
-    };
-  }, []);
-
-  const setAutoClearMessage = (text) => {
-    setMessage(text);
-    if (clearMsgRef.current) clearTimeout(clearMsgRef.current);
-    clearMsgRef.current = setTimeout(() => setMessage(""), 5000);
-  };
+  /* =======================
+     Acciones del panel
+     ======================= */
 
   // ✅ Generar 1 ticket genérico para el usuario actual (vía /api/admin/tickets/issue)
   const generateDirectTicket = async () => {
@@ -63,11 +184,12 @@ export default function AdminPage() {
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
 
       if (!res.ok || data?.ok === false) {
         const errMsg = data?.error || "Operación fallida";
         setAutoClearMessage(`❌ Error: ${errMsg}`);
+        // Tras una operación fallida no hace falta refrescar contador
         return;
       }
 
@@ -76,6 +198,10 @@ export default function AdminPage() {
       const code = t?.code ?? t?.displayCode ?? "—";
 
       setAutoClearMessage(`✅ Ticket generado. CODE: ${code} • UUID: ${uuid}`);
+
+      // No es estrictamente necesario, pero si querés refrescar el contador cuando “tocás algo”
+      // (aunque esta acción no afecta publicaciones), lo dejamos.
+      fetchPendingCount();
     } catch (err) {
       console.error("Error generating ticket:", err);
       setAutoClearMessage("❌ Error de conexión");
@@ -83,6 +209,10 @@ export default function AdminPage() {
       setGenerating(false);
     }
   };
+
+  /* =======================
+     UI
+     ======================= */
 
   if (status === "loading") {
     return (
@@ -220,7 +350,7 @@ export default function AdminPage() {
                 </div>
               </button>
 
-              {/* Mis Favoritos (nuevo) */}
+              {/* Mis Favoritos */}
               <button
                 onClick={() => router.push("/mis-favoritos")}
                 className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-pink-500/10 to-pink-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(236,72,153,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-pink-500/50 focus:ring-offset-gray-900"
@@ -237,6 +367,39 @@ export default function AdminPage() {
                   </div>
                 </div>
               </button>
+
+              {/* Publicaciones pendientes (solo ADMIN/SUPERADMIN) */}
+              {isAdminish(userRole) && (
+                <button
+                  onClick={() => router.push("/admin/publicaciones-pendientes")}
+                  className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-amber-500/10 to-amber-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(245,158,11,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500/50 focus:ring-offset-gray-900"
+                >
+                  <div className="flex items-center justify-center gap-3 bg-gray-800/70 border border-gray-700/50 rounded-xl p-5 text-left transition-all duration-300 group-hover:bg-gray-700/70 group-hover:border-gray-600/50">
+                    <div className="relative">
+                      <div className="bg-amber-500/10 p-3 rounded-lg border border-amber-500/20">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                      </div>
+                      {/* Badge numérico (se oculta si 0) */}
+                      {pendingCount > 0 && (
+                        <span
+                          title={pendingLoading ? "Actualizando…" : `${pendingCount} pendientes`}
+                          className="absolute -top-2 -right-2 inline-flex items-center justify-center text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-gray-900 border border-amber-300 shadow"
+                        >
+                          {pendingCount > 99 ? "99+" : pendingCount}
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-lg font-semibold text-white">Publicaciones pendientes</p>
+                      <p className="text-sm text-gray-400">
+                        {pendingLoading ? "Comprobando…" : pendingCount > 0 ? "Hay publicaciones por revisar" : "Al día"}
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              )}
 
               {/* SuperAdmin: generar 1 ticket */}
               {isSuperAdmin && (
@@ -413,6 +576,15 @@ export default function AdminPage() {
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2.5 flex-shrink-0"></span>
                     <span>Los tickets “directos” se emiten como GENERIC/AVAILABLE y no quedan pegados a ningún sorteo.</span>
                   </li>
+                  {isAdminish(userRole) && (
+                    <li className="flex items-start">
+                      <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2.5 flex-shrink-0"></span>
+                      <span>
+                        El indicador de <b>Publicaciones</b> se actualiza al abrir el panel y cuando volvés a esta pestaña
+                        (no usa intervalos).
+                      </span>
+                    </li>
+                  )}
                 </ul>
               </div>
             </div>
