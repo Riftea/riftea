@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // app/api/users/me/update-profile/route.js
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
@@ -166,3 +167,4 @@ export async function PATCH(request) {
     return Response.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 }
+

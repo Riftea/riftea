@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // app/api/purchases/my-sales/route.js
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
@@ -5,8 +6,6 @@ import { authOptions } from '@/lib/auth.js';
 import prisma from '@/lib/prisma.js';
 // ✅ Precio centralizado en el servidor (.env) — no usar DB ni body
 import { TICKET_PRICE } from '@/lib/ticket.server';
-
-export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 

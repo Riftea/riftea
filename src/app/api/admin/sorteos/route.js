@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/admin/sorteos/route.js
 
 import { NextResponse } from "next/server";
@@ -6,7 +7,6 @@ import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 
 // Evita cache en esta ruta y fuerza ejecución en servidor Node
-export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
@@ -68,3 +68,4 @@ export async function GET() {
     return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 }
+

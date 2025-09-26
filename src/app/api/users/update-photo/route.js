@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // app/api/users/update-photo/route.js
 import { getServerSession } from "next-auth/next";
 import { authOptions } from '@/lib/auth';

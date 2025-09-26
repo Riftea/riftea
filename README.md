@@ -43,6 +43,12 @@ riftea
 │  │  │  └─ migration.sql
 │  │  ├─ 20250923003912_validate
 │  │  │  └─ migration.sql
+│  │  ├─ 20250925073157_listing_default_pending
+│  │  │  └─ migration.sql
+│  │  ├─ 20250925073550_listing_default_pending
+│  │  │  └─ migration.sql
+│  │  ├─ 20250925_reconcile
+│  │  │  └─ migration.sql
 │  │  └─ migration_lock.toml
 │  └─ schema.prisma
 ├─ public
@@ -122,8 +128,14 @@ riftea
 │  │  ├─ b846c7f6224c4f2fa16b911b728e1d03_thumb.webp
 │  │  ├─ bab06c9715e9453faa9db34188dcc3dd.webp
 │  │  ├─ bab06c9715e9453faa9db34188dcc3dd_thumb.webp
+│  │  ├─ bf5095f2bc27424cafe9bfadcd940fc8.webp
+│  │  ├─ bf5095f2bc27424cafe9bfadcd940fc8_thumb.webp
+│  │  ├─ c6251a04457e4a91a5ac4e4b8f3104db.webp
+│  │  ├─ c6251a04457e4a91a5ac4e4b8f3104db_thumb.webp
 │  │  ├─ c8724f1f575c4e71a144be367b279580.webp
 │  │  ├─ c8724f1f575c4e71a144be367b279580_thumb.webp
+│  │  ├─ cbfbaa4c5f244276a0c28f7176d16480.webp
+│  │  ├─ cbfbaa4c5f244276a0c28f7176d16480_thumb.webp
 │  │  ├─ d4af9d7230ec41fcb9dd53bc018a2299.webp
 │  │  ├─ d4af9d7230ec41fcb9dd53bc018a2299_thumb.webp
 │  │  ├─ d4efb0206bca4b8f8ef8bb7683a5c2cd.webp
@@ -132,6 +144,8 @@ riftea
 │  │  ├─ d519f6ce5b8c4b5ea0a90efe54c537bc_thumb.webp
 │  │  ├─ d6bb0b7d1951424cb0a7d613bee64848.webp
 │  │  ├─ d6bb0b7d1951424cb0a7d613bee64848_thumb.webp
+│  │  ├─ d71550724e0944ed88e8b3a3d862971d.webp
+│  │  ├─ d71550724e0944ed88e8b3a3d862971d_thumb.webp
 │  │  ├─ d80d1f1345ab4974b7c19ac9c9b10956.webp
 │  │  ├─ d80d1f1345ab4974b7c19ac9c9b10956_thumb.webp
 │  │  ├─ d8cde504b1dd408396cd82ee40b9cc1b.webp
@@ -157,6 +171,7 @@ riftea
 │  ├─ vercel.svg
 │  └─ window.svg
 ├─ scripts
+│  ├─ db-smoke.js
 │  ├─ listUsers.js
 │  ├─ updateImports.js
 │  └─ verifyTicket.js
@@ -205,6 +220,11 @@ riftea
 │  │  │  │  └─ route.js
 │  │  │  ├─ ping
 │  │  │  │  └─ route.js
+│  │  │  ├─ products
+│  │  │  │  ├─ create
+│  │  │  │  │  └─ route.js
+│  │  │  │  └─ [id]
+│  │  │  │     └─ route.js
 │  │  │  ├─ purchases
 │  │  │  │  ├─ my-sales
 │  │  │  │  │  └─ route.js
@@ -280,7 +300,9 @@ riftea
 │  │  ├─ terminos
 │  │  │  └─ page.js
 │  │  └─ ventas
-│  │     └─ page.js
+│  │     ├─ page.js
+│  │     └─ publicar
+│  │        └─ page.js
 │  ├─ components
 │  │  ├─ admin
 │  │  │  └─ AdminTicketGenerator.jsx

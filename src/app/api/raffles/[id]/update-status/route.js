@@ -1,5 +1,5 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/raffles/[id]/update-status/route.js
-export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 import prisma from '@/lib/prisma';

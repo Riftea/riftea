@@ -1,6 +1,5 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/tickets/verify/route.js
-export const runtime = "nodejs";
-
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { validateTicket } from "@/lib/crypto.server";
@@ -52,3 +51,4 @@ export async function POST(req) {
     );
   }
 }
+

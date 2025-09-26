@@ -1,6 +1,5 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/tickets/use/route.js
-export const runtime = "nodejs";
-
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
@@ -112,3 +111,4 @@ export async function POST(request) {
     );
   }
 }
+

@@ -1,6 +1,5 @@
+﻿export const runtime = 'nodejs';
 // app/api/tickets/route.js
-export const runtime = "nodejs";
-
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getServerSession } from "next-auth/next";
@@ -457,3 +456,4 @@ export async function DELETE(request) {
     );
   }
 }
+

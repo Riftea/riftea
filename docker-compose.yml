@@ -1,3 +1,4 @@
+version: "3.9"
 
 services:
   db:
@@ -8,15 +9,45 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: riftea
+      TZ: America/Argentina/Buenos_Aires
     ports:
-      - "5432:5432" # si choca, cambiá a "5433:5432"
+      - "5432:5432"        # si choca, cambiá a "5433:5432"
     volumes:
       - riftea_pg_data:/var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.max=10000
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - log_min_duration_statement=200     # loguea consultas >200ms en docker logs
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+      - -c
+      - track_io_timing=on
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d riftea || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # (Opcional) UI para inspeccionar la DB y las métricas
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: riftea-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
 
 volumes:
   riftea_pg_data:

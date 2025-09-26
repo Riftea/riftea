@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/raffles/favorites/route.js
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
@@ -56,3 +57,4 @@ export async function GET(req) {
     return NextResponse.json({ error: 'Error al listar favoritos' }, { status: 500 });
   }
 }
+

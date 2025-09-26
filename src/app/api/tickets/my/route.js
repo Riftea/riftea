@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/tickets/my/route.js
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
@@ -100,3 +101,4 @@ export async function GET(req) {
     );
   }
 }
+

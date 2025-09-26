@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/admin/init-crons/route.js
 import { initializeCronJobs } from '@/lib/cron-jobs';
 import { getServerSession } from 'next-auth';

@@ -1,5 +1,5 @@
-﻿// src/app/api/raffles/[id]/participate/route.js
-export const runtime = "nodejs";
+﻿export const runtime = 'nodejs';
+// src/app/api/raffles/[id]/participate/route.js
 export const dynamic = "force-dynamic";
 
 import { getServerSession } from "next-auth/next";

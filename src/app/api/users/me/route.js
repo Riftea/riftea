@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/users/me/route.js
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth';
@@ -256,3 +257,4 @@ function formatTimeAgo(date) {
   if (diffInSeconds < 86400) return `Hace ${Math.floor(diffInSeconds / 3600)} horas`;
   return `Hace ${Math.floor(diffInSeconds / 86400)} días`;
 }
+

@@ -1,5 +1,5 @@
+﻿export const runtime = 'nodejs';
 // app/api/raffles/route.js
-export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
@@ -61,11 +61,31 @@ function normalizePrizeValue(raw) {
   return n < 1000 ? n * 1000 : n;
 }
 
-// Aceptamos SOLO imágenes locales bajo /uploads
-function sanitizeLocalImageUrl(u) {
+/**
+ * Normaliza URLs de imagen permitidas.
+ * Acepta:
+ * - Local dev:            /uploads/...
+ * - Vercel Blob público:  *.public.blob.vercel-storage.com
+ * - Supabase Storage pub: /storage/v1/object/public/...
+ */
+function normalizeImageUrl(u) {
   if (!u) return null;
   const s = String(u).trim();
-  return s.startsWith("/uploads/") ? s : null;
+
+  // Local (desarrollo)
+  if (s.startsWith("/uploads/")) return s;
+
+  // Vercel Blob público
+  if (s.startsWith("https://") && s.includes(".public.blob.vercel-storage.com")) {
+    return s;
+  }
+
+  // Supabase Storage público (opcional)
+  if (s.startsWith("https://") && s.includes("/storage/v1/object/public/")) {
+    return s;
+  }
+
+  return null;
 }
 
 /* =======================
@@ -104,7 +124,7 @@ export async function POST(request) {
       participantGoal,   // opcional
       startsAt,          // opcional
       endsAt,            // opcional
-      imageUrl,          // opcional (solo local /uploads/*.webp)
+      imageUrl,          // opcional (local /uploads/*.webp, Vercel Blob o Supabase público)
 
       // nombres alternativos de categoría (front puede mandar prizeCategory)
       category,
@@ -195,8 +215,8 @@ export async function POST(request) {
       maxParticipants = goalInt;
     }
 
-    // Solo aceptar imágenes locales
-    const finalImageUrl = sanitizeLocalImageUrl(imageUrl);
+    // Aceptar imagen local/Vercel Blob/Supabase
+    const finalImageUrl = normalizeImageUrl(imageUrl);
 
     // Estado de sorteo
     const initialStatus = processedStartDate ? "PUBLISHED" : "ACTIVE";
@@ -806,9 +826,9 @@ export async function PUT(request) {
           updateObject.maxParticipants = mp;
         }
 
-        // Solo URLs locales
+        // Imagen: aceptar local/Blob/Supabase
         if (updateData.imageUrl !== undefined) {
-          updateObject.imageUrl = sanitizeLocalImageUrl(updateData.imageUrl);
+          updateObject.imageUrl = normalizeImageUrl(updateData.imageUrl);
         }
 
         // Aceptar category o prizeCategory

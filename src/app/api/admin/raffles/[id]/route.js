@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/admin/raffles/[id]/route.js
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";

@@ -19,6 +19,17 @@ const nextConfig = {
         hostname: 'oscarbarbieri.com',
         pathname: '/**',
       },
+      // Vercel Blob (guardar/cargar imágenes en producción)
+      {
+        protocol: 'https',
+        hostname: '**.vercel-storage.com',
+        pathname: '/**',
+      },
+      {
+        protocol: 'https',
+        hostname: '**.blob.vercel-storage.com',
+        pathname: '/**',
+      },
     ],
   },
 };

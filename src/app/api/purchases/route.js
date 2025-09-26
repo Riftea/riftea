@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // app/api/purchases/route.js - ALINEADO CON ticket.server.js (precio en .env)
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
@@ -585,3 +586,4 @@ export async function DELETE(request) {
     );
   }
 }
+

@@ -1,3 +1,4 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/products/[id]/route.js
 import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";

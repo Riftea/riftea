@@ -1,5 +1,5 @@
+﻿export const runtime = 'nodejs';
 // src/app/api/raffles/[id]/notify-participants/route.js
-export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { getServerSession } from "next-auth/next";
