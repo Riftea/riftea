@@ -44,10 +44,23 @@ function checkPermissions(session, operation, raffle = null) {
   }
 
   const role = String(session.user.role || "").toLowerCase();
+
+  // ✅ Permitir VIEW/EDIT si el usuario es el dueño del sorteo,
+  // aunque su rol no sea admin/superadmin (requiere tener la rifa).
+  if (
+    raffle &&
+    raffle.ownerId === session.user.id &&
+    (operation === "view" || operation === "edit")
+  ) {
+    return { allowed: true, role };
+  }
+
+  // Si no es owner, solo admin/superadmin
   if (!["admin", "superadmin"].includes(role)) {
     return { allowed: false, status: 403, error: "Permisos insuficientes" };
   }
 
+  // Un admin no puede operar sorteos de otros (salvo superadmin)
   if (raffle && role === "admin" && raffle.ownerId !== session.user.id) {
     const actionMap = { view: "ver", edit: "editar", delete: "eliminar" };
     return {
@@ -86,14 +99,8 @@ export async function GET(_request, { params }) {
   try {
     const { id } = params;
     const session = await getServerSession(authOptions);
-    const permissionCheck = checkPermissions(session, "view");
-    if (!permissionCheck.allowed) {
-      return NextResponse.json(
-        { error: permissionCheck.error },
-        { status: permissionCheck.status }
-      );
-    }
 
+    // ⚠️ Cargamos primero la rifa para poder saber si el viewer es el owner.
     const raffle = await prisma.raffle.findUnique({
       where: { id },
       include: {
@@ -107,6 +114,7 @@ export async function GET(_request, { params }) {
       return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
     }
 
+    // Ahora sí, chequeamos permisos con la rifa cargada (permite owner con rol usuario).
     const ownershipCheck = checkPermissions(session, "view", raffle);
     if (!ownershipCheck.allowed) {
       return NextResponse.json(
@@ -152,13 +160,7 @@ export async function PUT(request, { params }) {
     const { id } = params;
 
     const session = await getServerSession(authOptions);
-    const permissionCheck = checkPermissions(session, "edit");
-    if (!permissionCheck.allowed) {
-      return NextResponse.json(
-        { error: permissionCheck.error },
-        { status: permissionCheck.status }
-      );
-    }
+    // No pre-chequeamos acá: el permiso depende de si es owner.
 
     const currentRaffle = await prisma.raffle.findUnique({
       where: { id },
@@ -172,6 +174,7 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
     }
 
+    // Permitir editar si es owner (aunque sea usuario) o admin/superadmin.
     const ownershipCheck = checkPermissions(session, "edit", currentRaffle);
     if (!ownershipCheck.allowed) {
       return NextResponse.json(
@@ -431,8 +434,7 @@ export async function PUT(request, { params }) {
         finalPrizeValue / POT_CONTRIBUTION_PER_TICKET
       );
 
-      // Si hay obligatoriedad y un mínimo por usuario, este mínimo de usuarios podría relajarse
-      // en el front; acá mantenemos la regla financiera base: la capacidad no puede ser menor.
+      // Regla financiera base: la capacidad no puede ser menor.
       if (finalMaxTickets < minParticipants) {
         return NextResponse.json(
           {

@@ -54,13 +54,21 @@ export async function GET(_req, ctx) {
 
     const isOwner = viewerId && raffle.ownerId === viewerId;
 
-    // Visibilidad
-    if (raffle.isPrivate && !isOwner && !isAdmin) {
-      return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
-    }
+    // =======================
+    // Visibilidad (patch)
+    // =======================
     const publicStates = new Set(["PUBLISHED", "ACTIVE", "FINISHED"]);
-    if (!raffle.isPrivate && !publicStates.has(raffle.status)) {
-      if (!isOwner && !isAdmin) {
+
+    if (raffle.isPrivate) {
+      // "No listado": visible por link SIN requerir login si está en estado público
+      const canSeeByLink = publicStates.has(raffle.status);
+      const canModerate = isOwner || isAdmin;
+      if (!canSeeByLink && !canModerate) {
+        return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
+      }
+    } else {
+      // Público: sólo estados públicos para no dueños/admin
+      if (!publicStates.has(raffle.status) && !(isOwner || isAdmin)) {
         return NextResponse.json({ error: "Sorteo no disponible" }, { status: 404 });
       }
     }

@@ -1,3 +1,4 @@
+// src/app/(admin)/admin/publicaciones/page.jsx
 "use client";
 
 import { useEffect, useState, Suspense } from "react";
@@ -7,11 +8,161 @@ import { useRouter, useSearchParams } from "next/navigation";
 function classNames(...xs) { return xs.filter(Boolean).join(" "); }
 const STATUSES = ["PENDING", "APPROVED", "REJECTED"];
 
+// Motivos predefinidos de rechazo
+const PRESET_REASONS = [
+  { value: "MALA_IMAGEN", label: "Mala imagen" },
+  { value: "MALA_DESCRIPCION", label: "Descripción insuficiente" },
+  { value: "MALA_CATEGORIA", label: "Categoría incorrecta" },
+  { value: "NO_PERMITIDO", label: "Artículo no permitido" },
+  { value: "DUPLICADO", label: "Contenido duplicado" },
+  { value: "OTRO", label: "Otro (especificar)" },
+];
+
+// URL pública (o de preview) del sorteo
+function raffleUrl(id) {
+  // Si tu ruta pública es /sorteo/:id, dejalo así.
+  // Si usás /raffles/:id, cambiá esta línea por: return `/raffles/${id}`;
+  return `/sorteo/${id}`;
+}
+
 function fmtDate(d) {
   if (!d) return "-";
   const dt = new Date(d);
   if (Number.isNaN(dt.getTime())) return "-";
   return dt.toLocaleString("es-AR", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function RejectModal({ open, onClose, onSubmit, raffleTitle }) {
+  const [selected, setSelected] = useState(PRESET_REASONS[0].value);
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (open) {
+      setSelected(PRESET_REASONS[0].value);
+      setNote("");
+      setSubmitting(false);
+      setError("");
+    }
+  }, [open]);
+
+  if (!open) return null;
+
+  const handleConfirm = async () => {
+    try {
+      setSubmitting(true);
+      setError("");
+
+      const presetLabel = PRESET_REASONS.find(r => r.value === selected)?.label || "";
+      let reasonText = presetLabel;
+      if (selected === "OTRO") {
+        reasonText = note.trim();
+      } else if (note.trim()) {
+        // Adjuntamos nota opcional al motivo predefinido
+        reasonText = `${presetLabel} · Nota: ${note.trim()}`;
+      }
+
+      if (!reasonText) {
+        setError("Indicá un motivo o escribí una nota.");
+        setSubmitting(false);
+        return;
+      }
+
+      await onSubmit(reasonText);
+      onClose();
+    } catch (e) {
+      setError(e?.message || "Error al rechazar");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const isOther = selected === "OTRO";
+  const remaining = Math.max(0, 500 - note.length);
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-lg rounded-2xl border border-gray-700 bg-gray-900 text-gray-100 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="border-b border-gray-800 p-4">
+          <h3 className="text-lg font-semibold">Rechazar publicación</h3>
+          {raffleTitle && <p className="mt-1 text-sm text-gray-400 line-clamp-1">“{raffleTitle}”</p>}
+        </div>
+
+        <div className="p-4 space-y-4">
+          <div>
+            <p className="mb-2 text-sm text-gray-300">Elegí un motivo:</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {PRESET_REASONS.map((r) => (
+                <label
+                  key={r.value}
+                  className={classNames(
+                    "cursor-pointer rounded-lg border px-3 py-2 text-sm transition-colors",
+                    selected === r.value
+                      ? "border-red-500/60 bg-red-500/10"
+                      : "border-gray-700 bg-gray-800 hover:bg-gray-750"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="reject-reason"
+                    value={r.value}
+                    checked={selected === r.value}
+                    onChange={() => setSelected(r.value)}
+                    className="mr-2 accent-red-500"
+                  />
+                  {r.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm text-gray-300">
+              Nota (opcional){isOther ? " — requerido si elegís 'Otro'" : ""}
+            </label>
+            <textarea
+              value={note}
+              onChange={(e) => {
+                const v = e.target.value.slice(0, 500);
+                setNote(v);
+              }}
+              placeholder={isOther ? "Escribí el motivo…" : "Podés agregar un detalle si querés…"}
+              className="w-full rounded-lg border border-gray-700 bg-gray-800 p-2 text-sm outline-none focus:border-gray-500"
+              rows={3}
+            />
+            <div className="mt-1 text-right text-xs text-gray-500">{remaining} caracteres</div>
+          </div>
+
+          {error && (
+            <div className="rounded-lg border border-red-800 bg-red-900/30 p-2 text-sm text-red-200">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-gray-800 p-4">
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm hover:bg-gray-750 disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={submitting || (isOther && note.trim().length === 0)}
+            className="rounded-lg bg-red-600 px-3 py-2 text-sm hover:bg-red-700 disabled:opacity-50"
+          >
+            {submitting ? "Rechazando…" : "Rechazar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function AdminPublicacionesPendientesContent() {
@@ -30,6 +181,14 @@ function AdminPublicacionesPendientesContent() {
   const [totalPages, setTotalPages] = useState(1);
   const [refreshKey, setRefreshKey] = useState(0); // fuerza refetch al aprobar/rechazar/eliminar
   const [deletingId, setDeletingId] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);  // feedback “copiado”
+
+  // Modal de rechazo
+  const [rejectState, setRejectState] = useState({
+    open: false,
+    raffleId: null,
+    title: "",
+  });
 
   const isAuthLoading = status === "loading";
   const role = String(session?.user?.role || "").toUpperCase();
@@ -85,13 +244,15 @@ function AdminPublicacionesPendientesContent() {
   };
 
   // acciones
-  const approve = async (id) => {
+  const approve = async (id, opts = {}) => {
+    const body = { id, action: "approve_listing" };
+    if (opts.force) body.force = true; // por si el backend lo soporta
     try {
       const res = await fetch("/api/raffles", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ id, action: "approve_listing" }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || data?.message || "No se pudo aprobar");
@@ -101,24 +262,33 @@ function AdminPublicacionesPendientesContent() {
     }
   };
 
-  const reject = async (id) => {
-    const reason = prompt("Motivo del rechazo (opcional, máx. 500 caracteres):") || "";
-    try {
-      const res = await fetch("/api/raffles", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ id, action: "reject_listing", reason }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || data?.message || "No se pudo rechazar");
-      setRefreshKey((k) => k + 1);
-    } catch (e) {
-      alert(e.message || "Error rechazando publicación");
-    }
+  const openRejectModal = (id, title) => {
+    setRejectState({ open: true, raffleId: id, title });
   };
 
-  // NUEVO: eliminar (solo SUPERADMIN) — borra completamente la rifa
+  const closeRejectModal = () => {
+    setRejectState({ open: false, raffleId: null, title: "" });
+  };
+
+  const doReject = async (reasonText) => {
+    const id = rejectState.raffleId;
+    if (!id) return;
+    const reason = String(reasonText || "").slice(0, 500);
+    const body = { id, action: "reject_listing", reason };
+    const res = await fetch("/api/raffles", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || "No se pudo rechazar");
+    }
+    setRefreshKey((k) => k + 1);
+  };
+
+  // eliminar (solo SUPERADMIN) — borra completamente la rifa
   const removeRaffle = async (id, title) => {
     if (!isSuperAdmin) return;
     const ok = confirm(
@@ -138,6 +308,18 @@ function AdminPublicacionesPendientesContent() {
       alert(e.message || "Error eliminando publicación");
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  // copiar link (siempre disponible)
+  const copyLink = async (id) => {
+    try {
+      const link = new URL(raffleUrl(id), window.location.origin).toString();
+      await navigator.clipboard.writeText(link);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 1500);
+    } catch {
+      alert("No se pudo copiar el link");
     }
   };
 
@@ -229,7 +411,10 @@ function AdminPublicacionesPendientesContent() {
                     {" • "}
                     <span>Máx. participaciones: {r.maxParticipants}</span>
                     {" • "}
-                    <span>Mín. x participación: {r.minTicketsPerParticipant ?? 1}{r.minTicketsIsMandatory ? " (obligatorio)" : ""}</span>
+                    <span>
+                      Mín. x participación: {r.minTicketsPerParticipant ?? 1}
+                      {r.minTicketsIsMandatory ? " (obligatorio)" : ""}
+                    </span>
                   </div>
                   {r.listingReason && r.listingStatus === "REJECTED" && (
                     <div className="mt-1 text-xs text-red-300">
@@ -239,6 +424,32 @@ function AdminPublicacionesPendientesContent() {
                 </div>
 
                 <div className="flex flex-wrap gap-2">
+                  {/* Ver (siempre) */}
+                  <a
+                    href={raffleUrl(r.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-800 hover:bg-gray-750"
+                    title="Abrir sorteo en una nueva pestaña"
+                  >
+                    Ver
+                  </a>
+
+                  {/* Copiar link (siempre) */}
+                  <button
+                    onClick={() => copyLink(r.id)}
+                    className={classNames(
+                      "px-3 py-2 rounded-lg border",
+                      copiedId === r.id
+                        ? "bg-green-700 border-green-600"
+                        : "bg-transparent border-gray-600 text-gray-300 hover:bg-gray-700/40"
+                    )}
+                    title="Copiar enlace público del sorteo"
+                  >
+                    {copiedId === r.id ? "¡Link copiado!" : "Copiar link"}
+                  </button>
+
+                  {/* Aprobar / Rechazar: solo PENDING y solo si no es 'No listado' */}
                   {r.listingStatus === "PENDING" && !r.isPrivate && (
                     <>
                       <button
@@ -250,7 +461,7 @@ function AdminPublicacionesPendientesContent() {
                         Aprobar
                       </button>
                       <button
-                        onClick={() => reject(r.id)}
+                        onClick={() => openRejectModal(r.id, r.title)}
                         className="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700"
                         title="Rechazar publicación"
                         disabled={deletingId === r.id}
@@ -260,7 +471,19 @@ function AdminPublicacionesPendientesContent() {
                     </>
                   )}
 
-                  {/* NUEVO: botón eliminar definitivo (solo SUPERADMIN) en PENDING/REJECTED */}
+                  {/* REJECTED -> Aprobar (solo SUPERADMIN) */}
+                  {r.listingStatus === "REJECTED" && isSuperAdmin && !r.isPrivate && (
+                    <button
+                      onClick={() => approve(r.id, { force: true })}
+                      className="px-3 py-2 rounded-lg bg-green-600 hover:bg-green-700"
+                      title="Aprobar (SUPERADMIN)"
+                      disabled={deletingId === r.id}
+                    >
+                      Aprobar (SUPERADMIN)
+                    </button>
+                  )}
+
+                  {/* Eliminar definitivo (solo SUPERADMIN) en PENDING/REJECTED */}
                   {isSuperAdmin && (r.listingStatus === "PENDING" || r.listingStatus === "REJECTED") && (
                     <button
                       onClick={() => removeRaffle(r.id, r.title)}
@@ -277,6 +500,7 @@ function AdminPublicacionesPendientesContent() {
                     </button>
                   )}
 
+                  {/* Leyenda para no listados */}
                   {r.isPrivate && (
                     <span className="self-center text-xs text-gray-400">
                       (No listado: no requiere aprobación)
@@ -309,6 +533,14 @@ function AdminPublicacionesPendientesContent() {
           </button>
         </div>
       </div>
+
+      {/* Modal de rechazo */}
+      <RejectModal
+        open={rejectState.open}
+        onClose={closeRejectModal}
+        onSubmit={doReject}
+        raffleTitle={rejectState.title}
+      />
     </div>
   );
 }

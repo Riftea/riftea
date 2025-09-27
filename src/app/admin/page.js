@@ -1,5 +1,4 @@
-﻿// src/app/admin/page.js
-"use client";
+﻿"use client";
 
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
@@ -47,6 +46,84 @@ async function safeJson(res) {
 }
 
 /* ============================================================
+   UI: Tarjeta de botón unificada (mismo alto y centrado)
+   ============================================================ */
+
+function ButtonCard({
+  onClick,
+  disabled = false,
+  gradientFrom = "from-gray-500/10",
+  gradientTo = "to-gray-600/10",
+  ring = "focus:ring-gray-500/40",
+  hoverShadow = "hover:shadow-[0_0_25px_rgba(255,255,255,0.08)]",
+  iconClass = "text-gray-300",
+  iconBg = "bg-gray-500/10",
+  iconBorder = "border-gray-500/20",
+  title,
+  subtitle,
+  badgeCount = 0,
+  badgeTitle = "",
+  loading = false,
+  childrenIcon, // SVG
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={[
+        "group relative overflow-hidden rounded-xl p-0.5 transition-all duration-300 transform",
+        "focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900",
+        ring,
+        hoverShadow,
+        disabled ? "cursor-not-allowed opacity-80" : `bg-gradient-to-br ${gradientFrom} ${gradientTo} hover:-translate-y-0.5`,
+        "h-full",
+      ].join(" ")}
+    >
+      <div
+        className={[
+          "h-full",
+          "flex items-center justify-center gap-3",
+          "bg-gray-800/70 border border-gray-700/50 rounded-xl",
+          "p-5 text-left transition-all duration-300",
+          disabled ? "bg-gray-700/50 border-gray-700/50" : "group-hover:bg-gray-700/70 group-hover:border-gray-600/50",
+          "min-h-[116px]",
+        ].join(" ")}
+      >
+        <div className="relative">
+          <div className={`grid place-content-center ${iconBg} rounded-lg border ${iconBorder} w-11 h-11`}>
+            {loading ? (
+              <svg className="animate-spin h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            ) : (
+              <span className={`block ${iconClass}`}>
+                {/* ICON SLOT */}
+                {childrenIcon}
+              </span>
+            )}
+          </div>
+
+          {badgeCount > 0 && (
+            <span
+              title={badgeTitle || `${badgeCount} pendientes`}
+              className="absolute -top-2 -right-2 inline-flex items-center justify-center text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-gray-900 border border-amber-300 shadow"
+            >
+              {badgeCount > 99 ? "99+" : badgeCount}
+            </span>
+          )}
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <p className="text-[15px] leading-5 font-semibold text-white truncate">{title}</p>
+          {subtitle ? <p className="text-sm text-gray-400 mt-0.5 line-clamp-1">{subtitle}</p> : null}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+/* ============================================================
    Componente principal del Panel de Administración
    ============================================================ */
 
@@ -81,14 +158,6 @@ export default function AdminPage() {
     clearMsgRef.current = setTimeout(() => setMessage(""), 5000);
   };
 
-  /** ================================
-   *  🔎 Carga del contador de pendientes
-   *  — Ejecuta SÓLO en:
-   *    • Montaje del panel (si es admin/superadmin)
-   *    • Cuando la ventana recupera el foco / visibilidad (al volver de publicaciones)
-   *    • Post-acciones locales (p.ej. al generar un ticket)
-   *  No hay intervalos ni polling periódico.
-   *  ================================ */
   const fetchPendingCount = async () => {
     if (!isAdminish(userRole)) return;
     try {
@@ -96,7 +165,6 @@ export default function AdminPage() {
       abortRef.current = new AbortController();
       setPendingLoading(true);
 
-      // limit=1 para cargar rapidísimo; usamos el total del paginado
       const url = new URL("/api/raffles", window.location.origin);
       url.searchParams.set("listingStatus", "PENDING");
       url.searchParams.set("limit", "1");
@@ -107,22 +175,17 @@ export default function AdminPage() {
         signal: abortRef.current.signal,
       });
       const data = await safeJson(res);
-      // Aunque no sea 200, intentamos leer por si devuelve {error, total}
       const total = pickTotalFromPagination(data);
       if (Number.isFinite(total) && total >= 0) {
         setPendingCount(total);
-      } else if (!res.ok) {
-        // Si falla y no hay dato, dejamos el valor anterior
-        // (No spameamos errores en UI)
       }
     } catch {
-      // Silencioso: no queremos ruido si el usuario navega muy rápido
+      // silencioso
     } finally {
       setPendingLoading(false);
     }
   };
 
-  // Montaje: si es admin/superadmin, traer contador una vez
   useEffect(() => {
     if (status === "authenticated" && isAdminish(userRole)) {
       fetchPendingCount();
@@ -130,7 +193,6 @@ export default function AdminPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, userRole]);
 
-  // Refetch cuando se vuelve a enfocar la pestaña o cambia visibilidad
   useEffect(() => {
     if (!isAdminish(userRole)) return;
 
@@ -148,7 +210,6 @@ export default function AdminPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userRole]);
 
-  // Redirecciones de seguridad
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/");
@@ -159,11 +220,7 @@ export default function AdminPage() {
     }
   }, [status, isAdmin, isSuperAdmin, router]);
 
-  /* =======================
-     Acciones del panel
-     ======================= */
-
-  // ✅ Generar 1 ticket genérico para el usuario actual (vía /api/admin/tickets/issue)
+  // ✅ Generar 1 ticket genérico para el usuario actual
   const generateDirectTicket = async () => {
     if (!session?.user?.id) {
       setAutoClearMessage("❌ Error: No se puede identificar el usuario");
@@ -189,7 +246,6 @@ export default function AdminPage() {
       if (!res.ok || data?.ok === false) {
         const errMsg = data?.error || "Operación fallida";
         setAutoClearMessage(`❌ Error: ${errMsg}`);
-        // Tras una operación fallida no hace falta refrescar contador
         return;
       }
 
@@ -199,8 +255,6 @@ export default function AdminPage() {
 
       setAutoClearMessage(`✅ Ticket generado. CODE: ${code} • UUID: ${uuid}`);
 
-      // No es estrictamente necesario, pero si querés refrescar el contador cuando “tocás algo”
-      // (aunque esta acción no afecta publicaciones), lo dejamos.
       fetchPendingCount();
     } catch (err) {
       console.error("Error generating ticket:", err);
@@ -209,10 +263,6 @@ export default function AdminPage() {
       setGenerating(false);
     }
   };
-
-  /* =======================
-     UI
-     ======================= */
 
   if (status === "loading") {
     return (
@@ -295,188 +345,176 @@ export default function AdminPage() {
           )}
 
           <div className="p-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 items-stretch">
               {/* Crear sorteo */}
-              <button
+              <ButtonCard
                 onClick={() => router.push("/admin/crear-sorteo")}
-                className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-orange-500/10 to-orange-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(249,115,22,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500/50 focus:ring-offset-gray-900"
-              >
-                <div className="flex items-center justify-center gap-3 bg-gray-800/70 border border-gray-700/50 rounded-xl p-5 text-left transition-all duration-300 group-hover:bg-gray-700/70 group-hover:border-gray-600/50">
-                  <div className="bg-orange-500/10 p-3 rounded-lg border border-orange-500/20">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-lg font-semibold text-white">Crear Sorteo</p>
-                    <p className="text-sm text-gray-400">Configura un nuevo sorteo</p>
-                  </div>
-                </div>
-              </button>
+                gradientFrom="from-orange-500/10"
+                gradientTo="to-orange-600/10"
+                ring="focus:ring-orange-500/50"
+                hoverShadow="hover:shadow-[0_0_25px_rgba(249,115,22,0.2)]"
+                iconClass="text-orange-400"
+                iconBg="bg-orange-500/10"
+                iconBorder="border-orange-500/20"
+                title="Crear Sorteo"
+                subtitle="Configura un nuevo sorteo"
+                childrenIcon={
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                }
+              />
 
               {/* Mis sorteos */}
-              <button
+              <ButtonCard
                 onClick={() => router.push("/mis-sorteos")}
-                className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-indigo-500/10 to-indigo-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(79,70,229,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500/50 focus:ring-offset-gray-900"
-              >
-                <div className="flex items-center justify-center gap-3 bg-gray-800/70 border border-gray-700/50 rounded-xl p-5 text-left transition-all duration-300 group-hover:bg-gray-700/70 group-hover:border-gray-600/50">
-                  <div className="bg-indigo-500/10 p-3 rounded-lg border border-indigo-500/20">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-lg font-semibold text-white">Mis Sorteos</p>
-                    <p className="text-sm text-gray-400">Gestiona tus sorteos activos</p>
-                  </div>
-                </div>
-              </button>
+                gradientFrom="from-indigo-500/10"
+                gradientTo="to-indigo-600/10"
+                ring="focus:ring-indigo-500/50"
+                hoverShadow="hover:shadow-[0_0_25px_rgba(79,70,229,0.2)]"
+                iconClass="text-indigo-400"
+                iconBg="bg-indigo-500/10"
+                iconBorder="border-indigo-500/20"
+                title="Mis Sorteos"
+                subtitle="Gestiona tus sorteos activos"
+                childrenIcon={
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                }
+              />
 
               {/* Mis tickets */}
-              <button
+              <ButtonCard
                 onClick={() => router.push("/mis-tickets")}
-                className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-emerald-500/10 to-emerald-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(16,185,129,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500/50 focus:ring-offset-gray-900"
-              >
-                <div className="flex items-center justify-center gap-3 bg-gray-800/70 border border-gray-700/50 rounded-xl p-5 text-left transition-all duration-300 group-hover:bg-gray-700/70 group-hover:border-gray-600/50">
-                  <div className="bg-emerald-500/10 p-3 rounded-lg border border-emerald-500/20">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-lg font-semibold text-white">Mis Tickets</p>
-                    <p className="text-sm text-gray-400">Revisa tus tickets generados</p>
-                  </div>
-                </div>
-              </button>
+                gradientFrom="from-emerald-500/10"
+                gradientTo="to-emerald-600/10"
+                ring="focus:ring-emerald-500/50"
+                hoverShadow="hover:shadow-[0_0_25px_rgba(16,185,129,0.2)]"
+                iconClass="text-emerald-400"
+                iconBg="bg-emerald-500/10"
+                iconBorder="border-emerald-500/20"
+                title="Mis Tickets"
+                subtitle="Revisa tus tickets generados"
+                childrenIcon={
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                  </svg>
+                }
+              />
 
               {/* Mis Favoritos */}
-              <button
+              <ButtonCard
                 onClick={() => router.push("/mis-favoritos")}
-                className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-pink-500/10 to-pink-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(236,72,153,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-pink-500/50 focus:ring-offset-gray-900"
-              >
-                <div className="flex items-center justify-center gap-3 bg-gray-800/70 border border-gray-700/50 rounded-xl p-5 text-left transition-all duration-300 group-hover:bg-gray-700/70 group-hover:border-gray-600/50">
-                  <div className="bg-pink-500/10 p-3 rounded-lg border border-pink-500/20">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-pink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 016.364 0L12 7.636l1.318-1.318a4.5 4.5 0 116.364 6.364L12 21l-7.682-7.682a4.5 4.5 0 010-6.364z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-lg font-semibold text-white">Mis Favoritos</p>
-                    <p className="text-sm text-gray-400">Accede a tus rifas marcadas</p>
-                  </div>
-                </div>
-              </button>
+                gradientFrom="from-pink-500/10"
+                gradientTo="to-pink-600/10"
+                ring="focus:ring-pink-500/50"
+                hoverShadow="hover:shadow-[0_0_25px_rgba(236,72,153,0.2)]"
+                iconClass="text-pink-400"
+                iconBg="bg-pink-500/10"
+                iconBorder="border-pink-500/20"
+                title="Mis Favoritos"
+                subtitle="Accede a tus rifas marcadas"
+                childrenIcon={
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 016.364 0L12 7.636l1.318-1.318a4.5 4.5 0 116.364 6.364L12 21l-7.682-7.682a4.5 4.5 0 010-6.364z" />
+                  </svg>
+                }
+              />
 
-              {/* Publicaciones pendientes (solo ADMIN/SUPERADMIN) */}
+              {/* Publicaciones pendientes */}
               {isAdminish(userRole) && (
-                <button
+                <ButtonCard
                   onClick={() => router.push("/admin/publicaciones-pendientes")}
-                  className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-amber-500/10 to-amber-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(245,158,11,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500/50 focus:ring-offset-gray-900"
-                >
-                  <div className="flex items-center justify-center gap-3 bg-gray-800/70 border border-gray-700/50 rounded-xl p-5 text-left transition-all duration-300 group-hover:bg-gray-700/70 group-hover:border-gray-600/50">
-                    <div className="relative">
-                      <div className="bg-amber-500/10 p-3 rounded-lg border border-amber-500/20">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                        </svg>
-                      </div>
-                      {/* Badge numérico (se oculta si 0) */}
-                      {pendingCount > 0 && (
-                        <span
-                          title={pendingLoading ? "Actualizando…" : `${pendingCount} pendientes`}
-                          className="absolute -top-2 -right-2 inline-flex items-center justify-center text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-gray-900 border border-amber-300 shadow"
-                        >
-                          {pendingCount > 99 ? "99+" : pendingCount}
-                        </span>
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-lg font-semibold text-white">Publicaciones pendientes</p>
-                      <p className="text-sm text-gray-400">
-                        {pendingLoading ? "Comprobando…" : pendingCount > 0 ? "Hay publicaciones por revisar" : "Al día"}
-                      </p>
-                    </div>
-                  </div>
-                </button>
+                  gradientFrom="from-amber-500/10"
+                  gradientTo="to-amber-600/10"
+                  ring="focus:ring-amber-500/50"
+                  hoverShadow="hover:shadow-[0_0_25px_rgba(245,158,11,0.2)]"
+                  iconClass="text-amber-400"
+                  iconBg="bg-amber-500/10"
+                  iconBorder="border-amber-500/20"
+                  title="Publicaciones pendientes"
+                  subtitle={pendingLoading ? "Comprobando…" : pendingCount > 0 ? "Hay publicaciones por revisar" : "Al día"}
+                  badgeCount={pendingCount}
+                  badgeTitle={pendingLoading ? "Actualizando…" : `${pendingCount} pendientes`}
+                  childrenIcon={
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    </svg>
+                  }
+                />
               )}
 
               {/* SuperAdmin: generar 1 ticket */}
               {isSuperAdmin && (
-                <button
+                <ButtonCard
                   onClick={generateDirectTicket}
                   disabled={generating}
-                  className={`group relative overflow-hidden rounded-xl p-0.5 hover:shadow-[0_0_25px_rgba(239,68,68,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 ${
-                    generating ? "bg-gray-700/50 cursor-not-allowed" : "bg-gradient-to-br from-rose-500/10 to-rose-600/10"
-                  } focus:ring-rose-500/50 focus:ring-offset-gray-900`}
-                >
-                  <div
-                    className={`flex items-center justify-center gap-3 bg-gray-800/70 border border-gray-700/50 rounded-xl p-5 text-left transition-all duration-300 ${
-                      generating ? "bg-gray-700/50 border-gray-700/50" : "group-hover:bg-gray-700/70 group-hover:border-gray-600/50"
-                    }`}
-                  >
-                    <div
-                      className={`p-3 rounded-lg border ${
-                        generating ? "bg-gray-700/50 border-gray-700/50" : "bg-rose-500/10 border-rose-500/20"
-                      }`}
-                    >
-                      {generating ? (
-                        <svg className="animate-spin h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                      ) : (
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-rose-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                        </svg>
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-lg font-semibold text-white">{generating ? "Generando..." : "Generar Ticket"}</p>
-                      <p className="text-sm text-gray-400">{generating ? "Espere un momento..." : "Crea un ticket de prueba"}</p>
-                    </div>
-                  </div>
-                </button>
+                  loading={generating}
+                  gradientFrom="from-rose-500/10"
+                  gradientTo="to-rose-600/10"
+                  ring="focus:ring-rose-500/50"
+                  hoverShadow="hover:shadow-[0_0_25px_rgba(239,68,68,0.2)]"
+                  iconClass={generating ? "text-gray-400" : "text-rose-400"}
+                  iconBg={generating ? "bg-gray-700/50" : "bg-rose-500/10"}
+                  iconBorder={generating ? "border-gray-700/50" : "border-rose-500/20"}
+                  title={generating ? "Generando..." : "Generar Ticket"}
+                  subtitle={generating ? "Espere un momento..." : "Crea un ticket de prueba"}
+                  childrenIcon={
+                    generating ? (
+                      <svg className="animate-spin h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                    )
+                  }
+                />
               )}
 
               {/* SuperAdmin: generar múltiples */}
               {isSuperAdmin && (
-                <button
+                <ButtonCard
                   onClick={() => router.push("/admin/generar-tickets")}
-                  className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-purple-500/10 to-purple-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(168,85,247,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500/50 focus:ring-offset-gray-900"
-                >
-                  <div className="flex items-center justify-center gap-3 bg-gray-800/70 border border-gray-700/50 rounded-xl p-5 text-left transition-all duration-300 group-hover:bg-gray-700/70 group-hover:border-gray-600/50">
-                    <div className="bg-purple-500/10 p-3 rounded-lg border border-purple-500/20">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-                      </svg>
-                    </div>
-                    <div>
-                      <p className="text-lg font-semibold text-white">Generar Múltiples</p>
-                      <p className="text-sm text-gray-400">Crea tickets para usuarios</p>
-                    </div>
-                  </div>
-                </button>
+                  gradientFrom="from-purple-500/10"
+                  gradientTo="to-purple-600/10"
+                  ring="focus:ring-purple-500/50"
+                  hoverShadow="hover:shadow-[0_0_25px_rgba(168,85,247,0.2)]"
+                  iconClass="text-purple-400"
+                  iconBg="bg-purple-500/10"
+                  iconBorder="border-purple-500/20"
+                  title="Generar Múltiples"
+                  subtitle="Crea tickets para usuarios"
+                  childrenIcon={
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                    </svg>
+                  }
+                />
               )}
 
-              {/* SuperAdmin: Usuarios (perfiles / verificación) */}
+              {/* SuperAdmin: Usuarios y verificación */}
               {isSuperAdmin && (
-                <button
+                <ButtonCard
                   onClick={() => router.push("/admin/usuarios")}
-                  className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-blue-500/10 to-blue-600/10 p-0.5 hover:shadow-[0_0_25px_rgba(59,130,246,0.2)] transition-all duration-300 transform hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500/50 focus:ring-offset-gray-900"
-                >
-                  <div className="flex items-center justify-center gap-3 bg-gray-800/70 border border-gray-700/50 rounded-xl p-5 text-left transition-all duration-300 group-hover:bg-gray-700/70 group-hover:border-gray-600/50">
-                    <div className="bg-blue-500/10 p-3 rounded-lg border border-blue-500/20">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
-                      </svg>
-                    </div>
-                    <div>
-                      <p className="text-lg font-semibold text-white">Usuarios (perfiles / verificación)</p>
-                      <p className="text-sm text-gray-400">Ver perfiles, roles y verificar cuentas</p>
-                    </div>
-                  </div>
-                </button>
+                  gradientFrom="from-blue-500/10"
+                  gradientTo="to-blue-600/10"
+                  ring="focus:ring-blue-500/50"
+                  hoverShadow="hover:shadow-[0_0_25px_rgba(59,130,246,0.2)]"
+                  iconClass="text-blue-400"
+                  iconBg="bg-blue-500/10"
+                  iconBorder="border-blue-500/20"
+                  title="Usuarios y verificación"
+                  subtitle="Ver perfiles, roles y verificar cuentas"
+                  childrenIcon={
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
+                    </svg>
+                  }
+                />
               )}
             </div>
 

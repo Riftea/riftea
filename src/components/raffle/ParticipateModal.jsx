@@ -80,7 +80,7 @@ export default function ParticipateModal({
   isOpen,
   onClose,
   raffle,     // { id, title, status, ... }
-  onSuccess,  // ({ successes, failures }) => void
+  onSuccess,  // (payload) => void   -> AHORA se llama solo si no hubo fallas
   // Reglas de mínimo
   minTicketsRequired = 1,
   minTicketsIsMandatory = false,
@@ -101,6 +101,9 @@ export default function ParticipateModal({
   const [error, setError] = useState(null);
   const [results, setResults] = useState(null); // { successes: [...], failures: [{ticketId, message}] }
   const [showSummary, setShowSummary] = useState(true);
+
+  // ⚠️ Aviso especial: alcanzaste el 50% del cupo permitido
+  const [capAlert, setCapAlert] = useState(null);
 
   // Cancelación de fetch al cerrar
   const abortRef = useRef(null);
@@ -140,6 +143,7 @@ export default function ParticipateModal({
     try {
       setLoading(true);
       setError(null);
+      // no borramos capAlert para mantener el aviso si volvió USER_CAP
       setResults(null);
       setSelectedIds(new Set());
 
@@ -182,6 +186,7 @@ export default function ParticipateModal({
   const toggleSelect = (ticketId) => {
     setResults(null);
     setError(null);
+    setCapAlert(null);
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(ticketId)) next.delete(ticketId);
@@ -198,6 +203,7 @@ export default function ParticipateModal({
   const toggleSelectAll = () => {
     setResults(null);
     setError(null);
+    setCapAlert(null);
     if (allSelected) {
       setSelectedIds(new Set());
     } else {
@@ -285,6 +291,7 @@ export default function ParticipateModal({
 
       setParticipating(true);
       setError(null);
+      setCapAlert(null);
       setResults(null);
       setShowSummary(true);
 
@@ -309,6 +316,15 @@ export default function ParticipateModal({
       if (!res.ok) {
         const msg = data?.error || data?.raw || res.statusText || "No se pudo procesar la participación";
         setError(msg);
+
+        // ⚠️ Aviso explícito si se alcanzó el 50% del cupo
+        if (data?.error === "USER_CAP") {
+          setCapAlert(
+            data?.message ||
+              "Alcanzaste el máximo permitido para este sorteo (50% del cupo total)."
+          );
+        }
+
         failures = ids.map((ticketId) => ({ ticketId, message: msg }));
       } else {
         const normalized = normalizeParticipateResponse(data, ids);
@@ -325,6 +341,18 @@ export default function ParticipateModal({
                 data: r.participation || null,
               });
             } else {
+              // Detectar mensajes del cap del 50% en el resultado normalizado
+              if (
+                typeof r.error === "string" &&
+                (r.error.includes("50%") ||
+                  r.error.toUpperCase().includes("USER_CAP"))
+              ) {
+                setCapAlert(
+                  r.error.includes("50%")
+                    ? r.error
+                    : "Alcanzaste el máximo permitido para este sorteo (50% del cupo total)."
+                );
+              }
               failures.push({
                 ticketId: r.ticketId || "desconocido",
                 message: r.error || "No se pudo participar con este ticket",
@@ -347,21 +375,22 @@ export default function ParticipateModal({
       setResults({ successes, failures });
       setProgress({ total: ids.length, done: ids.length });
 
-      if (typeof onSuccess === "function") {
-        try {
-          onSuccess({ successes, failures });
-        } catch {
-          /* ignore */
-        }
-      }
-
-      // Refrescar tickets disponibles
-      await loadUserTickets(abortRef.current?.signal);
-
-      // Si todos OK, limpiar selección y cerrar modal
+      // 👉 SOLO cerramos y llamamos onSuccess si NO hubo fallas
       if (failures.length === 0) {
+        if (typeof onSuccess === "function") {
+          try {
+            onSuccess({ successes, failures });
+          } catch {
+            /* ignore */
+          }
+        }
+        // Refrescar tickets (opcional) y cerrar
+        await loadUserTickets(abortRef.current?.signal);
         setSelectedIds(new Set());
         onClose();
+      } else {
+        // Hubo fallas → mantenemos el modal abierto, refrescamos tickets pero no cerramos ni llamamos onSuccess
+        await loadUserTickets(abortRef.current?.signal);
       }
     } catch (err) {
       setError(err?.message || "Error inesperado al participar");
@@ -381,6 +410,7 @@ export default function ParticipateModal({
     if (participating) return;
     setError(null);
     setResults(null);
+    setCapAlert(null);
     setSelectedIds(new Set());
     onClose();
   }
@@ -442,6 +472,21 @@ export default function ParticipateModal({
                   <h4 className="text-yellow-300 font-bold mb-1">Participación deshabilitada</h4>
                   <p className="text-yellow-200/80 text-sm">
                     Este sorteo ya fue programado o finalizado. No se pueden agregar más participaciones.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ⚠️ Aviso: alcanzaste el 50% del cupo */}
+          {!isDrawLocked && capAlert && (
+            <div className="bg-amber-500/20 border border-amber-400/40 rounded-2xl p-4">
+              <div className="flex items-start gap-3">
+                <span className="text-2xl">⚠️</span>
+                <div>
+                  <h4 className="text-amber-200 font-bold mb-1">Límite alcanzado</h4>
+                  <p className="text-amber-100/90 text-sm">
+                    {capAlert}
                   </p>
                 </div>
               </div>
@@ -541,9 +586,9 @@ export default function ParticipateModal({
 
                       {minTicketsIsMandatory ? (
                         <p className="text-blue-100/90">
-                          Se requieren {" "}
-                          <b>{minTicketsRequired}</b> {pluralize("ticket", minTicketsRequired)} y
-                          {" "}<b>tenés {minTicketsRequired} {pluralize("chance", minTicketsRequired)}</b> de ganar.
+                          Se requieren{" "}
+                          <b>{minTicketsRequired}</b> {pluralize("ticket", minTicketsRequired)} y{" "}
+                          <b>tenés {minTicketsRequired} {pluralize("chance", minTicketsRequired)}</b> de ganar.
                         </p>
                       ) : (
                         <p className="text-yellow-200/90">

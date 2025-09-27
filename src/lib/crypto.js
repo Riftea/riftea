@@ -296,6 +296,7 @@ export function formatIntegerPrice(price, currency = "ARS") {
 export function generateTicketCode() {
   return generateDisplayCode();
 }
+
 export function createTicketHash(
   ticketUUID,
   userId,
@@ -304,4 +305,28 @@ export function createTicketHash(
 ) {
   // alias que respeta la nueva firma endurecida (incluye displayCode)
   return createTicketHMAC(ticketUUID, userId, timestamp, displayCode);
+}
+
+/**
+ * Compat: algunos módulos antiguos importan 'computeTicketHash' y/o 'verifyTicketHash'
+ * - computeTicketHash: wrapper del createTicketHMAC (misma firma flexible)
+ * - verifyTicketHash: wrapper del verifyTicketHMAC
+ */
+export function computeTicketHash(
+  ticketUUID,
+  userId,
+  timestamp = Date.now(),
+  displayCode = ""
+) {
+  return createTicketHMAC(ticketUUID, userId, timestamp, displayCode);
+}
+
+export function verifyTicketHash(
+  ticketUUID,
+  userId,
+  hmac,
+  timestamp,
+  displayCode = ""
+) {
+  return verifyTicketHMAC(ticketUUID, userId, hmac, timestamp, displayCode);
 }

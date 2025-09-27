@@ -683,7 +683,7 @@ export default function AdminRaffleEditPage() {
                   <svg className="h-5 w-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                     <path
                       fillRule="evenodd"
-                      d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
+                      d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1H9z"
                       clipRule="evenodd"
                     />
                   </svg>
@@ -1077,19 +1077,19 @@ export default function AdminRaffleEditPage() {
                 <div className="absolute inset-0">
                   {/* Imagen con transform segun zoom y desplazamiento */}
                   {cropSrc && (
-                    <img
+                    <NextImage
                       src={cropSrc}
                       alt="Crop source"
+                      fill
+                      unoptimized
                       className="absolute left-1/2 top-1/2 will-change-transform select-none pointer-events-none"
                       style={{
                         transform: `translate(-50%, -50%) translate(${cropX * 25}%, ${cropY * 25}%) scale(${cropZoom})`,
                         transformOrigin: "center center",
-                        width: "100%",
-                        height: "100%",
                         objectFit: "cover",
                         userSelect: "none",
-                        WebkitUserDrag: "none",
                       }}
+                      sizes="(max-width: 768px) 100vw, 512px"
                     />
                   )}
                 </div>

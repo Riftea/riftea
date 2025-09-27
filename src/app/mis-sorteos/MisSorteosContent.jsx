@@ -31,6 +31,22 @@ export default function MisSorteosContent() {
   const [copying, setCopying] = useState(false);
   const qrWrapRef = useRef(null);
 
+  // Tabs de estado
+  const estadoParam = (searchParams?.get("estado") || "todos").toLowerCase();
+  const [estado, setEstado] = useState(["todos", "activos", "finalizados"].includes(estadoParam) ? estadoParam : "todos");
+  useEffect(() => {
+    const spEstado = (searchParams?.get("estado") || "todos").toLowerCase();
+    if (["todos", "activos", "finalizados"].includes(spEstado)) {
+      setEstado(spEstado);
+    }
+  }, [searchParams]);
+
+  function setEstadoAndURL(next) {
+    const usp = new URLSearchParams(Array.from(searchParams.entries()));
+    usp.set("estado", next);
+    router.push(`${pathname}?${usp.toString()}`, { scroll: false });
+  }
+
   // Normalización de rol (SUPER_ADMIN, super-admin, etc.)
   const normRole = useMemo(() => {
     const raw = (session?.user?.role ?? "user").toString();
@@ -46,6 +62,14 @@ export default function MisSorteosContent() {
     const raw = (searchParams?.get("asUser") || "").trim();
     return raw;
   }, [searchParams, isSuperAdmin]);
+
+  // Si el listado es "mío" (mine=1) o estoy impersonando?
+  // mineMode = true cuando NO estoy impersonando a otro usuario.
+  const mineMode = useMemo(() => {
+    // superadmin + asUser => NO es "mío"
+    if (isSuperAdmin && asUser) return false;
+    return true;
+  }, [isSuperAdmin, asUser]);
 
   // Si viene includePrivate desde la URL, lo respetamos; si sos SUPERADMIN forzamos includePrivate=1 por defecto
   const includePrivateFlag = useMemo(() => {
@@ -169,6 +193,20 @@ export default function MisSorteosContent() {
     };
   }, [status, isSuperAdmin, asUser, includePrivateFlag]);
 
+  // --- Clasificación por estado
+  const ACTIVE_STATES = useMemo(() => new Set(["PUBLISHED", "ACTIVE", "READY_TO_DRAW"]), []);
+  const FINISHED_STATES = useMemo(() => new Set(["FINISHED", "COMPLETED", "CANCELLED"]), []);
+
+  const rafflesFiltradas = useMemo(() => {
+    if (estado === "activos") {
+      return raffles.filter((r) => ACTIVE_STATES.has(String(r?.status || "").toUpperCase()));
+    }
+    if (estado === "finalizados") {
+      return raffles.filter((r) => FINISHED_STATES.has(String(r?.status || "").toUpperCase()));
+    }
+    return raffles;
+  }, [raffles, estado, ACTIVE_STATES, FINISHED_STATES]);
+
   // --- QR
   useEffect(() => {
     let cancelled = false;
@@ -224,6 +262,7 @@ export default function MisSorteosContent() {
     return !!sid && (r.ownerId === sid || r.owner?.id === sid);
   };
 
+  // Importante: si es tu listado (mine=1 y no impersonás), habilitamos edición aunque no venga ownerId
   const canDelete = (r) => {
     if (isSuperAdmin) return true;
     if (isOwnerByRecord(r)) {
@@ -236,7 +275,8 @@ export default function MisSorteosContent() {
   };
 
   const canEdit = (r) => {
-    if (isAdmin) return true;
+    if (isAdmin) return true; // incluye superadmin
+    if (mineMode) return true; // listado "Mis sorteos": permitimos editar aunque no haya ownerId en el payload
     return isOwnerByRecord(r);
   };
 
@@ -288,7 +328,7 @@ export default function MisSorteosContent() {
         const c = incCopyCount(r.id);
         setCopyCount(c);
         noti("¡Enlace compartido!", "success");
-        // Si no querés abrir el modal después del share nativo, borrá la línea siguiente:
+        // si no querés abrir el modal después del share nativo, podés quitar la línea siguiente
         openShareModal(r, url);
         return;
       }
@@ -447,6 +487,30 @@ export default function MisSorteosContent() {
             </div>
           </div>
 
+          {/* Filtros por estado */}
+          <div className="mb-6">
+            <div className="inline-flex bg-white/80 backdrop-blur-lg rounded-xl shadow border border-white/20 overflow-hidden">
+              {[
+                { key: "todos", label: "Todos" },
+                { key: "activos", label: "Activos" },
+                { key: "finalizados", label: "Finalizados" },
+              ].map((t, i) => {
+                const active = estado === t.key;
+                return (
+                  <button
+                    key={t.key}
+                    onClick={() => setEstadoAndURL(t.key)}
+                    className={`px-4 py-2 text-sm font-medium transition-colors ${
+                      active ? "bg-indigo-600 text-white" : "text-gray-700 hover:bg-gray-100"
+                    } ${i !== 0 ? "border-l border-gray-200/70" : ""}`}
+                  >
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Banner de impersonación */}
           {isSuperAdmin && asUser && (
             <div className="mb-6 p-4 bg-blue-50 border border-blue-200 text-blue-800 rounded-xl flex items-center justify-between">
@@ -484,7 +548,7 @@ export default function MisSorteosContent() {
           )}
 
           {/* Lista */}
-          {raffles.length === 0 ? (
+          {rafflesFiltradas.length === 0 ? (
             <div className="text-center py-12 bg-white/80 backdrop-blur-sm rounded-2xl shadow-lg border border-white/20">
               <div className="text-gray-400 mb-4">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -512,13 +576,23 @@ export default function MisSorteosContent() {
             </div>
           ) : (
             <div className="space-y-5">
-              {raffles.map((r) => {
+              {rafflesFiltradas.map((r) => {
                 const derivedUnitPrice =
                   typeof r?.unitPrice === "number"
                     ? r.unitPrice
                     : typeof r?.ticketPrice === "number"
                     ? r.ticketPrice
                     : undefined;
+
+                const status = String(r?.status || "").toUpperCase();
+                const statusChip =
+                  ACTIVE_STATES.has(status)
+                    ? { text: "Activo", cls: "bg-emerald-50 text-emerald-700" }
+                    : FINISHED_STATES.has(status)
+                    ? { text: "Finalizado", cls: "bg-amber-50 text-amber-700" }
+                    : status === "DRAFT"
+                    ? { text: "Borrador", cls: "bg-gray-100 text-gray-700" }
+                    : { text: status, cls: "bg-indigo-50 text-indigo-700" };
 
                 return (
                   <div
@@ -529,7 +603,7 @@ export default function MisSorteosContent() {
                     <div className="relative p-6">
                       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <h3 className="text-lg font-bold text-gray-900 truncate group-hover:text-indigo-600 transition-colors">
                               {r.title}
                             </h3>
@@ -545,6 +619,10 @@ export default function MisSorteosContent() {
                                 Destacado
                               </span>
                             )}
+
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${statusChip.cls}`}>
+                              {statusChip.text}
+                            </span>
                           </div>
 
                           <p className="mt-1 text-gray-600 text-sm line-clamp-2">{r.description}</p>
