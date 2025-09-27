@@ -1,32 +1,38 @@
 // src/components/raffle/ProgressBar.js
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 
 /**
- * Barra de progreso reutilizable.
- * Soporta dos modos:
- *  - mode="count": muestra cantidades (p.ej. participantes) → sin $.
- *  - mode="money": muestra dinero con formato moneda.
- *
- * También puede renderizar un botón de CTA opcional (showCta + onCtaClick).
+ * Barra de progreso con "olita" interna animada:
+ * - La barra crece sólo cuando cambia `current` (como ahora).
+ * - La olita se mueve de izq→der dentro del área pintada (visual).
+ * - Clamp 0..100, globito centrado y sin desbordes en 0%/100%.
  */
 const ProgressBar = ({
   current = 0,
   target = 100,
   title = "Progreso",
-  mode = "count",              // "count" | "money"
+  mode = "count",
   currency = "ARS",
   animated = true,
-  raffleStatus = "ACTIVE",     // para el badge
-  showCta = false,             // mostrar/ocultar CTA
-  onCtaClick = null,           // handler del CTA (ej: abrir modal)
+  raffleStatus = "ACTIVE",
+  showCta = false,
+  onCtaClick = null,
+  // Opcionales:
+  wave = true,           // activar/desactivar olita
+  waveSpeed = "2.8s",    // velocidad de la olita (CSS duration)
 }) => {
+  const safeTarget = Math.max(1, Number(target) || 1);
+  const safeCurrent = Math.max(0, Number(current) || 0);
+
+  // % real (clamp 0..100)
+  const actualPercent = useMemo(() => {
+    const raw = (safeCurrent / safeTarget) * 100;
+    return Math.max(0, Math.min(100, raw));
+  }, [safeCurrent, safeTarget]);
+
   const [displayPercent, setDisplayPercent] = useState(0);
   const [isComplete, setIsComplete] = useState(false);
   const [justCompleted, setJustCompleted] = useState(false);
-
-  const safeTarget = Math.max(1, Number(target) || 1);
-  const safeCurrent = Math.max(0, Number(current) || 0);
-  const actualPercent = Math.min((safeCurrent / safeTarget) * 100, 100);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -35,6 +41,8 @@ const ProgressBar = ({
         setIsComplete(true);
         setJustCompleted(true);
         setTimeout(() => setJustCompleted(false), 3000);
+      } else if (actualPercent < 100 && isComplete) {
+        setIsComplete(false);
       }
     }, 120);
     return () => clearTimeout(t);
@@ -49,7 +57,6 @@ const ProgressBar = ({
       maximumFractionDigits: 0,
     }).format(n);
 
-  // Etiquetas según modo
   const labelLeft = mode === "money" ? "Recaudado" : "Aplicados";
   const labelRight = mode === "money" ? "Objetivo" : "Máximo";
 
@@ -82,12 +89,18 @@ const ProgressBar = ({
     ? "from-blue-400 via-purple-500 to-pink-500"
     : "from-cyan-400 via-blue-500 to-indigo-600";
 
+  // Redondeo del relleno
+  const fillRadius = displayPercent >= 99.5 ? "rounded-full" : "rounded-r-full";
+
+  // Globito centrado y limitado a bordes (no se sale)
+  const bubbleLeft = `min(max(${displayPercent}%, 6%), 94%)`;
+
   return (
     <div className="w-full max-w-2xl mx-auto p-6 bg-white/10 backdrop-blur-lg rounded-3xl border border-white/20 shadow-2xl relative overflow-hidden">
       {/* Título + badge */}
       <div className="flex items-center justify-between mb-6">
-        <h3 className="text-2xl font-bold text-white">{title}</h3>
-        <div className={`px-3 py-1 rounded-full text-sm font-bold ${getBadgeClasses()}`}>
+        <h3 className="text-2xl font-bold text-white truncate">{title}</h3>
+        <div className={`px-3 py-1 rounded-full text-sm font-bold ${getBadgeClasses()} whitespace-nowrap`}>
           {getBadgeText()}
         </div>
       </div>
@@ -111,19 +124,26 @@ const ProgressBar = ({
       {/* Barra principal */}
       <div className="relative mb-4">
         <div className="h-8 bg-white/10 rounded-full overflow-hidden shadow-inner">
+          {/* Relleno */}
           <div
-            className={`h-full bg-gradient-to-r ${barGradient} relative transition-all duration-900 ease-out shadow-lg`}
+            className={`h-full bg-gradient-to-r ${barGradient} ${fillRadius} relative transition-[width] duration-700 ease-out shadow-lg`}
             style={{ width: `${animated ? displayPercent : actualPercent}%` }}
           >
-            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-pulse" />
+            {/* OLITA animada (sólo visual, dentro del relleno) */}
+            {wave && (
+              <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
+                <div className="wave-layer" />
+              </div>
+            )}
           </div>
 
+          {/* Globito de % posicionado dentro SIN salirse */}
           {displayPercent > 5 && (
             <div
-              className="absolute top-0 h-full flex items-center transition-all duration-900 ease-out"
-              style={{ left: `${Math.max(displayPercent - 5, 0)}%` }}
+              className="absolute top-0 h-full flex items-center transition-[left] duration-700 ease-out pointer-events-none"
+              style={{ left: bubbleLeft }}
             >
-              <div className="bg-white text-gray-800 px-2 py-1 rounded-full text-xs font-bold shadow-lg transform -translate-y-10">
+              <div className="bg-white text-gray-800 px-2 py-1 rounded-full text-xs font-bold shadow-lg transform -translate-x-1/2 -translate-y-10 whitespace-nowrap">
                 {displayPercent.toFixed(1)}%
               </div>
             </div>
@@ -154,6 +174,39 @@ const ProgressBar = ({
           </button>
         </div>
       )}
+
+      {/* Keyframes locales para la olita */}
+      <style jsx>{`
+        .wave-layer {
+          position: absolute;
+          inset: 0;
+          /* patrón diagonal sutil */
+          background-image: repeating-linear-gradient(
+            -45deg,
+            rgba(255, 255, 255, 0.12) 0px,
+            rgba(255, 255, 255, 0.12) 14px,
+            rgba(255, 255, 255, 0.02) 14px,
+            rgba(255, 255, 255, 0.02) 28px
+          );
+          background-size: 200% 100%;
+          /* mezcla sutil para integrarse con el gradiente base */
+          mix-blend-mode: soft-light;
+          will-change: background-position, opacity;
+          animation:
+            waveSlide ${waveSpeed} linear infinite,
+            wavePulse ${waveSpeed} ease-in-out infinite;
+        }
+
+        @keyframes waveSlide {
+          from { background-position: 0% 0; }
+          to   { background-position: 100% 0; }
+        }
+
+        @keyframes wavePulse {
+          0%, 100% { opacity: 0.35; }
+          50%      { opacity: 0.6; }
+        }
+      `}</style>
     </div>
   );
 };
