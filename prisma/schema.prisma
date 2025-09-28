@@ -70,12 +70,12 @@ model User {
   image      String?
   role       Role    @default(USER)
   isActive   Boolean @default(true) @map("is_active")
-  // ✅ Nuevo: verificación de usuario
+  // ✅ Verificación de usuario
   isVerified Boolean @default(false) @map("is_verified")
-  // ⭐ NUEVO: Campo para controlar primer login
+  // ⭐ Control de primer login
   firstLogin Boolean @default(true) @map("first_login")
-  
-  // ✅ Nuevos campos para el perfil
+
+  // ✅ Campos de perfil
   whatsapp       String?    // Número de WhatsApp
   lastNameChange DateTime?  @map("last_name_change") // Fecha del último cambio de nombre
 
@@ -86,8 +86,10 @@ model User {
   notifications Notification[]
   auditLogs     AuditLog[]
   wonRaffles    Raffle[]       @relation("RaffleWinner")
-  // ✅ Favoritos
   favorites     Favorite[]
+
+  // 👇 NUEVO: lado inverso de la relación vendedor→productos
+  products      Product[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
@@ -142,7 +144,7 @@ model Raffle {
 
   // Participación
   maxParticipants Int     @map("max_participants")
-  isPrivate       Boolean @default(false) @map("is_private") // Reusado: true = UNLISTED, false = LISTED
+  isPrivate       Boolean @default(false) @map("is_private") // true = UNLISTED, false = LISTED
 
   // ✅ Moderación de visibilidad pública (mínimos agregados)
   listingStatus     ListingStatus @default(APPROVED) @map("listing_status")
@@ -150,7 +152,7 @@ model Raffle {
   listingReviewedAt DateTime?     @map("listing_reviewed_at")
   listingReason     String?       @map("listing_reason")
 
-  // ✅ NUEVOS CAMPOS: mínimo por participación + obligatoriedad
+  // ✅ Mínimo por participación + obligatoriedad
   minTicketsPerParticipant Int?    @map("min_tickets_per_participant")
   minTicketsIsMandatory    Boolean @default(false) @map("min_tickets_is_mandatory")
 
@@ -340,7 +342,7 @@ model Favorite {
 }
 
 // ==============================
-// === NUEVO PARA PRODUCTOS DIGITALES ===
+// === PRODUCTOS DIGITALES ===
 // ==============================
 
 model Product {
@@ -350,16 +352,23 @@ model Product {
   description String?
   priceCents  Int
   currency    String   @default("ARS")
+
   // Almacenamiento privado en Supabase (bucket privado)
-  filePath        String?  // archivo principal (entrega principal)
-  bonusFilePath   String?  // regalo digital adicional (opcional)
-  isActive        Boolean  @default(true)
+  filePath      String?  // archivo principal (entrega principal)
+  bonusFilePath String?  // regalo digital adicional (opcional)
+  isActive      Boolean  @default(true)
+
+  // 👇 Relación opcional a User (vendedor)
+  sellerId  String? @map("seller_id")
+  seller    User?   @relation(fields: [sellerId], references: [id], onDelete: SetNull)
 
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
 
   items       PurchaseItem[]
 
+  @@index([sellerId])             // filtrar por vendedor
+  @@index([isActive, createdAt])  // listados públicos
   @@map("products")
 }
 

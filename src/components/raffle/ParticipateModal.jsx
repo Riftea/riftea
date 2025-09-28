@@ -568,7 +568,6 @@ export default function ParticipateModal({
           {/* Selección de tickets */}
           {!isDrawLocked && !loading && userTickets.length > 0 && (
             <>
-              {/* Info mínima requerida/sugerida */}
               {(minTicketsIsMandatory || minTicketsRequired > 1) && (
                 <div
                   className={`rounded-2xl p-4 border ${
@@ -597,7 +596,6 @@ export default function ParticipateModal({
                         </p>
                       )}
 
-                      {/* Si faltan tickets para llegar al mínimo, mostramos CTA a tienda */}
                       {lacksTicketsToMeetMinimum && (
                         <div className="mt-2">
                           <p className="text-blue-100/80 mb-2">
@@ -798,7 +796,6 @@ export default function ParticipateModal({
                           Limpiar resumen
                         </button>
 
-                        {/* Si hubo fallas por falta de tickets, da acceso rápido a la tienda */}
                         <Link
                           href={shopHref}
                           className="px-4 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 text-sm"
@@ -815,6 +812,7 @@ export default function ParticipateModal({
 
           {/* Footer acciones */}
           <div className="flex flex-col sm:flex-row gap-3">
+            {/* ⬇️ Oculto en mobile; visible en >=sm */}
             <button
               type="button"
               onClick={(e) => {
@@ -822,10 +820,12 @@ export default function ParticipateModal({
                 handleClose();
               }}
               disabled={participating}
-              className="flex-1 py-3 bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white font-bold rounded-xl transition-colors"
+              className="hidden sm:flex sm:flex-1 py-3 bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white font-bold rounded-xl transition-colors"
             >
               Cerrar
             </button>
+
+            {/* ⬇️ En mobile ocupa todo el ancho; en desktop se comporta como antes */}
             <button
               type="button"
               onClick={(e) => {
@@ -838,7 +838,7 @@ export default function ParticipateModal({
                 isDrawLocked ||
                 (needsMinimumOverOne && (selectedCount < minTicketsRequired || lacksTicketsToMeetMinimum))
               }
-              className="flex-1 py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+              className="w-full sm:flex-1 py-3 bg-gradient-to-r from-green-500 to-teal-500 hover:from-green-600 hover:to-teal-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
             >
               {participating ? (
                 <div className="flex items-center justify-center gap-2">

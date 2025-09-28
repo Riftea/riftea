@@ -403,24 +403,64 @@ export default function AdminPage() {
                 }
               />
 
-              {/* Mis Favoritos */}
+              {/* NUEVO: Marketplace */}
               <ButtonCard
-                onClick={() => router.push("/mis-favoritos")}
-                gradientFrom="from-pink-500/10"
-                gradientTo="to-pink-600/10"
-                ring="focus:ring-pink-500/50"
-                hoverShadow="hover:shadow-[0_0_25px_rgba(236,72,153,0.2)]"
-                iconClass="text-pink-400"
-                iconBg="bg-pink-500/10"
-                iconBorder="border-pink-500/20"
-                title="Mis Favoritos"
-                subtitle="Accede a tus rifas marcadas"
+                onClick={() => router.push("/marketplace")}
+                gradientFrom="from-cyan-500/10"
+                gradientTo="to-cyan-600/10"
+                ring="focus:ring-cyan-500/50"
+                hoverShadow="hover:shadow-[0_0_25px_rgba(6,182,212,0.2)]"
+                iconClass="text-cyan-400"
+                iconBg="bg-cyan-500/10"
+                iconBorder="border-cyan-500/20"
+                title="Marketplace"
+                subtitle="Ver todas las publicaciones"
                 childrenIcon={
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 016.364 0L12 7.636l1.318-1.318a4.5 4.5 0 116.364 6.364L12 21l-7.682-7.682a4.5 4.5 0 010-6.364z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h4l2 4h6l2-4h4a1 1 0 011 1v1H3V4zM3 8h18v12a1 1 0 01-1 1H4a1 1 0 01-1-1V8z"/>
                   </svg>
                 }
               />
+
+              {/* NUEVO: Crear publicación */}
+              <ButtonCard
+                onClick={() => router.push("/admin/products/new")}
+                gradientFrom="from-emerald-500/10"
+                gradientTo="to-emerald-600/10"
+                ring="focus:ring-emerald-500/50"
+                hoverShadow="hover:shadow-[0_0_25px_rgba(16,185,129,0.2)]"
+                iconClass="text-emerald-400"
+                iconBg="bg-emerald-500/10"
+                iconBorder="border-emerald-500/20"
+                title="Crear publicación"
+                subtitle="Agregá un producto digital"
+                childrenIcon={
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                  </svg>
+                }
+              />
+
+              {/* NUEVO: Administrar productos (lista) */}
+              {isAdminish(userRole) && (
+                <ButtonCard
+                  onClick={() => router.push("/admin/products")}
+                  gradientFrom="from-teal-500/10"
+                  gradientTo="to-teal-600/10"
+                  ring="focus:ring-teal-500/50"
+                  hoverShadow="hover:shadow-[0_0_25px_rgba(20,184,166,0.2)]"
+                  iconClass="text-teal-400"
+                  iconBg="bg-teal-500/10"
+                  iconBorder="border-teal-500/20"
+                  title="Administrar productos"
+                  subtitle="Listar, editar y aprobar"
+                  childrenIcon={
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 10h16M4 14h10M4 18h6" />
+                    </svg>
+                  }
+                />
+              )}
 
               {/* Publicaciones pendientes */}
               {isAdminish(userRole) && (

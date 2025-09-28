@@ -49,6 +49,8 @@ riftea
 │  │  │  └─ migration.sql
 │  │  ├─ 20250925_reconcile
 │  │  │  └─ migration.sql
+│  │  ├─ 20250927224946_add_seller
+│  │  │  └─ migration.sql
 │  │  └─ migration_lock.toml
 │  └─ schema.prisma
 ├─ public
@@ -116,6 +118,8 @@ riftea
 │  │  ├─ 93b18c4ea82444448853b5d90ccf611b_thumb.webp
 │  │  ├─ 9cb6886d9f5842f7bfc74a06f69cb5c8.webp
 │  │  ├─ 9cb6886d9f5842f7bfc74a06f69cb5c8_thumb.webp
+│  │  ├─ 9db1ac0d7c5940b7a9b3eec4b67b8f7f.webp
+│  │  ├─ 9db1ac0d7c5940b7a9b3eec4b67b8f7f_thumb.webp
 │  │  ├─ 9eded9db9dac4b8787eb5335b018d455.webp
 │  │  ├─ 9eded9db9dac4b8787eb5335b018d455_thumb.webp
 │  │  ├─ a458c28e313d4d40a019748736c29330.webp
@@ -195,6 +199,16 @@ riftea
 │  │  │  ├─ generar-tickets
 │  │  │  │  └─ page.js
 │  │  │  ├─ page.js
+│  │  │  ├─ products
+│  │  │  │  ├─ new
+│  │  │  │  │  └─ page.jsx
+│  │  │  │  ├─ page.jsx
+│  │  │  │  ├─ [id]
+│  │  │  │  │  ├─ edit
+│  │  │  │  │  │  └─ page.js
+│  │  │  │  │  └─ page.js
+│  │  │  │  └─ _components
+│  │  │  │     └─ UploadField.js
 │  │  │  ├─ publicaciones-pendientes
 │  │  │  │  └─ page.js
 │  │  │  ├─ raffles
@@ -204,6 +218,9 @@ riftea
 │  │  │     └─ page.js
 │  │  ├─ api
 │  │  │  ├─ admin
+│  │  │  │  ├─ deliveries
+│  │  │  │  │  └─ generate
+│  │  │  │  │     └─ route.js
 │  │  │  │  ├─ generar-tickets
 │  │  │  │  │  └─ route.js
 │  │  │  │  ├─ init-crons
@@ -218,6 +235,8 @@ riftea
 │  │  │  │  │  │  └─ route.js
 │  │  │  │  │  └─ [id]
 │  │  │  │  │     └─ route.js
+│  │  │  │  ├─ upload
+│  │  │  │  │  └─ route.js
 │  │  │  │  └─ usuarios
 │  │  │  │     └─ route.js
 │  │  │  ├─ auth
@@ -225,9 +244,16 @@ riftea
 │  │  │  │     └─ route.js
 │  │  │  ├─ canary
 │  │  │  │  └─ route.js
+│  │  │  ├─ chekout
+│  │  │  │  └─ route.js
 │  │  │  ├─ health
 │  │  │  │  └─ db
 │  │  │  │     └─ route.js
+│  │  │  ├─ me
+│  │  │  │  └─ purchases
+│  │  │  │     └─ [id]
+│  │  │  │        └─ delivery
+│  │  │  │           └─ route.js
 │  │  │  ├─ notifications
 │  │  │  │  └─ route.js
 │  │  │  ├─ ping
@@ -235,6 +261,11 @@ riftea
 │  │  │  ├─ products
 │  │  │  │  ├─ create
 │  │  │  │  │  └─ route.js
+│  │  │  │  ├─ new
+│  │  │  │  │  └─ page.jsx
+│  │  │  │  ├─ public
+│  │  │  │  │  └─ route.js
+│  │  │  │  ├─ route.js
 │  │  │  │  └─ [id]
 │  │  │  │     └─ route.js
 │  │  │  ├─ purchases
@@ -271,7 +302,9 @@ riftea
 │  │  │  │  ├─ route.js
 │  │  │  │  ├─ use
 │  │  │  │  │  └─ route.js
-│  │  │  │  └─ verify
+│  │  │  │  ├─ verify
+│  │  │  │  │  └─ route.js
+│  │  │  │  └─ [id]
 │  │  │  │     └─ route.js
 │  │  │  ├─ uploads
 │  │  │  │  └─ route.js
@@ -284,11 +317,19 @@ riftea
 │  │  │  │     └─ route.js
 │  │  │  └─ whoami
 │  │  │     └─ route.js
+│  │  ├─ auth
+│  │  │  └─ signin
+│  │  │     └─ page.js
 │  │  ├─ estadisticas
 │  │  │  └─ page.js
 │  │  ├─ favicon.ico
 │  │  ├─ globals.css
 │  │  ├─ layout.js
+│  │  ├─ marketplace
+│  │  │  ├─ page.js
+│  │  │  └─ [id]
+│  │  ├─ mis-compras
+│  │  │  └─ page.jsx
 │  │  ├─ mis-sorteos
 │  │  │  ├─ MisSorteosContent.jsx
 │  │  │  └─ page.js
@@ -308,6 +349,7 @@ riftea
 │  │  │     │  └─ page.js
 │  │  │     └─ page.js
 │  │  ├─ sorteos
+│  │  │  ├─ loading.js
 │  │  │  └─ page.js
 │  │  ├─ terminos
 │  │  │  └─ page.js
@@ -323,12 +365,15 @@ riftea
 │  │  ├─ header
 │  │  │  └─ Header.jsx
 │  │  ├─ layout
+│  │  ├─ providers
+│  │  │  └─ RouteSplashProvider.jsx
 │  │  ├─ raffle
 │  │  │  ├─ ParticipateModal.jsx
 │  │  │  └─ ProgressBar.js
 │  │  ├─ tickets
 │  │  │  └─ UserTicketsDisplay.jsx
 │  │  ├─ ui
+│  │  │  ├─ CircleSplash.jsx
 │  │  │  ├─ CountdownTimer.jsx
 │  │  │  ├─ FadeIn.jsx
 │  │  │  ├─ ShareButton.jsx
@@ -355,6 +400,7 @@ riftea
 │  │  ├─ prisma.js
 │  │  ├─ queue.js
 │  │  ├─ roles.js
+│  │  ├─ supabaseServer.js
 │  │  └─ ticket.server.js
 │  ├─ server
 │  │  └─ tickets.js
