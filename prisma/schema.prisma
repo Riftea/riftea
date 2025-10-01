@@ -76,8 +76,8 @@ model User {
   firstLogin Boolean @default(true) @map("first_login")
 
   // ✅ Campos de perfil
-  whatsapp       String?    // Número de WhatsApp
-  lastNameChange DateTime?  @map("last_name_change") // Fecha del último cambio de nombre
+  whatsapp       String? // Número de WhatsApp
+  lastNameChange DateTime? @map("last_name_change") // Fecha del último cambio de nombre
 
   // Relaciones
   tickets       Ticket[]
@@ -89,7 +89,7 @@ model User {
   favorites     Favorite[]
 
   // 👇 NUEVO: lado inverso de la relación vendedor→productos
-  products      Product[]
+  products Product[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
@@ -186,10 +186,10 @@ model Purchase {
 
   status String @default("pending")
 
-  tickets   Ticket[]
+  tickets  Ticket[]
   // === NUEVO PARA PRODUCTOS DIGITALES ===
-  items     PurchaseItem[]
-  delivery  DeliveryDigital?
+  items    PurchaseItem[]
+  delivery DeliveryDigital?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
@@ -270,14 +270,31 @@ model Notification {
   userId String @map("user_id")
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  type    NotificationType @default(SYSTEM_ALERT)
+  // Tipo macro existente (se mantiene tal cual)
+  type NotificationType @default(SYSTEM_ALERT)
+
+  // 🔹 NUEVO: intención fina opcional para no pelearte con enums (ej: "TICKET_GIFT_RECEIVED", "YOU_WON", "PAYMENT_APPROVED")
+  subtype String? @map("subtype")
+
   title   String
   message String
+
+  // 🔹 NUEVO: URL de acción definida por backend (el Header la prioriza)
+  actionUrl String? @map("action_url")
+
+  // 🔹 NUEVO: si cuenta en badge/“(n)” del título (bienvenida = false; ganador/compra = true)
+  isActionable Boolean @default(true) @map("is_actionable")
+
+  // 🔹 NUEVO: payload flexible para IDs relacionados (raffleId, ticketId, orderId, etc.)
+  targets Json? @map("targets")
+
+  // 🔹 NUEVO: metadatos (quantity, amountCents, reasonCode, etc.)
+  meta Json? @map("meta")
 
   read   Boolean   @default(false)
   readAt DateTime? @map("read_at")
 
-  // Datos relacionados opcionales
+  // Datos relacionados opcionales (se mantienen)
   raffleId String? @map("raffle_id")
   ticketId String? @map("ticket_id")
 
@@ -346,43 +363,43 @@ model Favorite {
 // ==============================
 
 model Product {
-  id          String   @id @default(cuid())
-  type        String   // 'PHOTO' | 'FILE' | 'COURSE' | 'TICKET'
+  id          String  @id @default(cuid())
+  type        String // 'PHOTO' | 'FILE' | 'COURSE' | 'TICKET'
   title       String
   description String?
   priceCents  Int
-  currency    String   @default("ARS")
+  currency    String  @default("ARS")
 
   // Almacenamiento privado en Supabase (bucket privado)
-  filePath      String?  // archivo principal (entrega principal)
-  bonusFilePath String?  // regalo digital adicional (opcional)
-  isActive      Boolean  @default(true)
+  filePath      String? // archivo principal (entrega principal)
+  bonusFilePath String? // regalo digital adicional (opcional)
+  isActive      Boolean @default(true)
 
   // 👇 Relación opcional a User (vendedor)
-  sellerId  String? @map("seller_id")
-  seller    User?   @relation(fields: [sellerId], references: [id], onDelete: SetNull)
+  sellerId String? @map("seller_id")
+  seller   User?   @relation(fields: [sellerId], references: [id], onDelete: SetNull)
 
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  items       PurchaseItem[]
+  items PurchaseItem[]
 
-  @@index([sellerId])             // filtrar por vendedor
-  @@index([isActive, createdAt])  // listados públicos
+  @@index([sellerId]) // filtrar por vendedor
+  @@index([isActive, createdAt]) // listados públicos
   @@map("products")
 }
 
 model PurchaseItem {
-  id          String   @id @default(cuid())
-  purchase    Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
-  purchaseId  String   @map("purchase_id")
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
-  productId   String   @map("product_id")
-  quantity    Int      @default(1)
-  unitPrice   Int      // copia de priceCents al momento de compra
-  currency    String   @default("ARS")
+  id         String   @id @default(cuid())
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  purchaseId String   @map("purchase_id")
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId  String   @map("product_id")
+  quantity   Int      @default(1)
+  unitPrice  Int // copia de priceCents al momento de compra
+  currency   String   @default("ARS")
 
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@index([purchaseId])
   @@index([productId])
@@ -390,20 +407,20 @@ model PurchaseItem {
 }
 
 model DeliveryDigital {
-  id             String   @id @default(cuid())
-  purchase       Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
-  purchaseId     String   @unique @map("purchase_id")
+  id         String   @id @default(cuid())
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  purchaseId String   @unique @map("purchase_id")
 
   // Enlaces firmados (nunca publiques links directos)
-  mainSignedUrl  String?  @map("main_signed_url")
-  bonusSignedUrl String?  @map("bonus_signed_url")
+  mainSignedUrl  String? @map("main_signed_url")
+  bonusSignedUrl String? @map("bonus_signed_url")
 
   // Control de re-generación / límite de descargas (opcional)
-  downloads      Int      @default(0)
-  maxDownloads   Int      @default(5)
+  downloads    Int @default(0)
+  maxDownloads Int @default(5)
 
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@map("deliveries_digital")
 }

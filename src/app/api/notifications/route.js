@@ -5,100 +5,186 @@ import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 
 /**
- * GET -> devuelve notificaciones del usuario logueado (no accesible para otros usuarios)
- * POST -> crear notificación: solo ADMIN puede crear notificaciones para cualquier user
- * PUT -> marcar notificación como leída (user debe ser dueño)
- * DELETE -> eliminar notificación (user debe ser dueño)
+ * GET    -> lista notificaciones del usuario logueado (con filtros opcionales)
+ * POST   -> crear notificación (ADMIN o SUPERADMIN)
+ * PUT    -> marcar como leída (1, varias o todas, sólo dueñx)
+ * DELETE -> eliminar (1, varias o todas, sólo dueñx)
+ *
+ * Campos soportados en Notification (según tu schema):
+ * - id, userId, type, title, message, read, readAt, raffleId, ticketId, createdAt, expiresAt
+ * - actionUrl (opcional), isActionable (opcional)
  */
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function roleIsAdminish(role) {
+  const r = String(role || "").toUpperCase();
+  return r === "ADMIN" || r === "SUPERADMIN";
+}
 
 export async function GET(req) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401 });
+    if (!session) return json({ error: "No autorizado" }, 401);
 
-    const userId = session.user.id;
+    const { searchParams } = new URL(req.url);
+    const unread = searchParams.get("unread");        // "true"/"1"
+    const actionable = searchParams.get("actionable"); // "true"/"1"
+    const takeParam = parseInt(searchParams.get("take") || "100", 10);
+    const take = Number.isFinite(takeParam) ? Math.min(Math.max(takeParam, 1), 500) : 100;
+
+    const where = { userId: session.user.id };
+    if (unread === "true" || unread === "1") where.read = false;
+    if (actionable === "true" || actionable === "1") where.isActionable = true;
+
     const items = await prisma.notification.findMany({
-      where: { userId },
+      where,
       orderBy: { createdAt: "desc" },
+      take,
     });
-    return new Response(JSON.stringify(items), { status: 200 });
+
+    return json(items, 200);
   } catch (err) {
     console.error("GET /api/notifications error:", err);
-    return new Response(JSON.stringify({ error: "Error" }), { status: 500 });
+    return json({ error: "Error" }, 500);
   }
 }
 
 export async function POST(req) {
-  // Crear notificación (admin)
+  // Crear notificación (admin/superadmin)
   try {
     const session = await getServerSession(authOptions);
-    if (!session || session.user.role !== "admin") {
-      return new Response(JSON.stringify({ error: "No autorizado" }), { status: 403 });
+    if (!session || !roleIsAdminish(session.user.role)) {
+      return json({ error: "No autorizado" }, 403);
     }
 
-    const body = await req.json();
-    const { userId, message } = body;
-    if (!userId || !message) return new Response(JSON.stringify({ error: "Campos faltan" }), { status: 400 });
+    const body = await req.json().catch(() => ({}));
+    const {
+      userId,
+      type = "SYSTEM_ALERT",
+      title = "",
+      message,
+      actionUrl = null,
+      isActionable = true,
+      raffleId = null,
+      ticketId = null,
+      expiresAt = null,
+    } = body || {};
 
-    const note = await prisma.notification.create({
-      data: { userId, message },
-    });
-    return new Response(JSON.stringify(note), { status: 201 });
+    if (!userId || !message) {
+      return json({ error: "Campos faltan: userId, message" }, 400);
+    }
+
+    const data = {
+      userId,
+      type,
+      title,
+      message,
+      actionUrl,
+      isActionable,
+      raffleId,
+      ticketId,
+      // si viene expiresAt en string/fecha la normalizamos
+      ...(expiresAt ? { expiresAt: new Date(expiresAt) } : {}),
+    };
+
+    const note = await prisma.notification.create({ data });
+    return json(note, 201);
   } catch (err) {
     console.error("POST /api/notifications error:", err);
-    return new Response(JSON.stringify({ error: "Error" }), { status: 500 });
+    return json({ error: "Error" }, 500);
   }
 }
 
 export async function PUT(req) {
-  // marcar notificación leída por su dueño
+  // Marcar como leída: una, varias o todas (dueñx)
   try {
     const session = await getServerSession(authOptions);
-    if (!session) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401 });
+    if (!session) return json({ error: "No autorizado" }, 401);
 
-    const body = await req.json();
-    const { id } = body;
-    if (!id) return new Response(JSON.stringify({ error: "id requerido" }), { status: 400 });
+    const body = await req.json().catch(() => ({}));
+    const { id, ids, all } = body || {};
 
-    // verificar propiedad
+    // === ALL: marcar todas como leídas
+    if (all === true) {
+      const result = await prisma.notification.updateMany({
+        where: { userId: session.user.id, read: false },
+        data: { read: true, readAt: new Date() },
+      });
+      return json({ success: true, count: result.count }, 200);
+    }
+
+    // === VARIAS: por ids[]
+    if (Array.isArray(ids) && ids.length > 0) {
+      // Sólo las del usuario
+      const result = await prisma.notification.updateMany({
+        where: { userId: session.user.id, id: { in: ids } },
+        data: { read: true, readAt: new Date() },
+      });
+      return json({ success: true, count: result.count }, 200);
+    }
+
+    // === UNA: por id
+    if (!id) return json({ error: "id requerido" }, 400);
+
+    // Verificar propiedad
     const notif = await prisma.notification.findUnique({ where: { id } });
-    if (!notif) return new Response(JSON.stringify({ error: "No encontrado" }), { status: 404 });
-    if (notif.userId !== session.user.id) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 403 });
+    if (!notif) return json({ error: "No encontrado" }, 404);
+    if (notif.userId !== session.user.id) return json({ error: "No autorizado" }, 403);
 
     const updated = await prisma.notification.update({
       where: { id },
-      data: { read: true },
+      data: { read: true, readAt: new Date() },
     });
-    return new Response(JSON.stringify(updated), { status: 200 });
+    return json(updated, 200);
   } catch (err) {
     console.error("PUT /api/notifications error:", err);
-    return new Response(JSON.stringify({ error: "Error" }), { status: 500 });
+    return json({ error: "Error" }, 500);
   }
 }
 
 export async function DELETE(req) {
-  // Eliminar notificación (user debe ser dueño)
+  // Eliminar: una, varias o todas (dueñx)
   try {
     const session = await getServerSession(authOptions);
-    if (!session) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 401 });
+    if (!session) return json({ error: "No autorizado" }, 401);
 
-    const body = await req.json();
-    const { id } = body;
-    if (!id) return new Response(JSON.stringify({ error: "id requerido" }), { status: 400 });
+    const body = await req.json().catch(() => ({}));
+    const { id, ids, all } = body || {};
 
-    // verificar propiedad antes de eliminar
+    // === ALL: eliminar todas del usuario
+    if (all === true) {
+      const result = await prisma.notification.deleteMany({
+        where: { userId: session.user.id },
+      });
+      return json({ success: true, count: result.count }, 200);
+    }
+
+    // === VARIAS: por ids[]
+    if (Array.isArray(ids) && ids.length > 0) {
+      const result = await prisma.notification.deleteMany({
+        where: { userId: session.user.id, id: { in: ids } },
+      });
+      return json({ success: true, count: result.count }, 200);
+    }
+
+    // === UNA: por id
+    if (!id) return json({ error: "id requerido" }, 400);
+
+    // Verificar propiedad
     const notif = await prisma.notification.findUnique({ where: { id } });
-    if (!notif) return new Response(JSON.stringify({ error: "No encontrado" }), { status: 404 });
-    if (notif.userId !== session.user.id) return new Response(JSON.stringify({ error: "No autorizado" }), { status: 403 });
+    if (!notif) return json({ error: "No encontrado" }, 404);
+    if (notif.userId !== session.user.id) return json({ error: "No autorizado" }, 403);
 
-    // Eliminar la notificación
-    await prisma.notification.delete({
-      where: { id }
-    });
-    
-    return new Response(JSON.stringify({ success: true, message: "Notificación eliminada" }), { status: 200 });
+    await prisma.notification.delete({ where: { id } });
+    return json({ success: true, message: "Notificación eliminada" }, 200);
   } catch (err) {
     console.error("DELETE /api/notifications error:", err);
-    return new Response(JSON.stringify({ error: "Error interno del servidor" }), { status: 500 });
+    return json({ error: "Error interno del servidor" }, 500);
   }
 }

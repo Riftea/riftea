@@ -1,9 +1,9 @@
 // src/app/sorteo/[id]/page.js
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import ProgressBar from "@/components/raffle/ProgressBar";
@@ -189,6 +189,7 @@ export default function SorteoPage() {
   const { id } = useParams();
   const { data: session } = useSession();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [raffle, setRaffle] = useState(null);
   const [participants, setParticipants] = useState([]);
@@ -201,6 +202,13 @@ export default function SorteoPage() {
 
   const [descOpen, setDescOpen] = useState(false);
   const [ticketIdx, setTicketIdx] = useState({});
+
+  // === NUEVO: control por query params (tab/resultado y highlight) ===
+  const [activeTab, setActiveTab] = useState("Participantes");
+  const [focusWinner, setFocusWinner] = useState(false);
+  const [highlightKey, setHighlightKey] = useState(null);
+  const [tempGlowId, setTempGlowId] = useState(null);
+  const winnerCardRef = useRef(null);
 
   /* =================== Carga base =================== */
 
@@ -307,6 +315,18 @@ export default function SorteoPage() {
     const t = setInterval(() => loadParticipants(raffle.id), 30000);
     return () => clearInterval(t);
   }, [raffle?.id, raffle?.status, loadParticipants]);
+
+  // === NUEVO: leer ?tab=... y ?highlight=... de la URL ===
+  useEffect(() => {
+    const t = (searchParams.get("tab") || "").toLowerCase();
+    if (t === "detalles") setActiveTab("Detalles");
+    if (t === "resultado") {
+      setActiveTab("Participantes");
+      setFocusWinner(true);
+    }
+    const hl = (searchParams.get("highlight") || "").trim();
+    if (hl) setHighlightKey(hl.toLowerCase());
+  }, [searchParams]);
 
   /* =================== Estado derivado =================== */
 
@@ -437,6 +457,48 @@ export default function SorteoPage() {
     [participants]
   );
 
+  // === NUEVO: saber si el usuario actual es el ganador (para banner) ===
+  const isUserWinner = useMemo(() => {
+    if (!winnerParticipation || !session?.user?.id) return false;
+    return (
+      winnerParticipation.user?.id === session.user.id ||
+      winnerParticipation.userId === session.user.id
+    );
+  }, [winnerParticipation, session?.user?.id]);
+
+  // === NUEVO: enfocar/scroll al ganador cuando venís con ?tab=resultado ===
+  useEffect(() => {
+    if (!focusWinner) return;
+    if (participantsLoading) return;
+    if (!winnerParticipation) return;
+    const el = winnerCardRef.current || document.querySelector('[data-winner-card="true"]');
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      const idAttr = el.getAttribute("id") || "winner-card";
+      setTempGlowId(idAttr);
+      setTimeout(() => setTempGlowId(null), 3000);
+    }
+    setFocusWinner(false);
+  }, [focusWinner, winnerParticipation, participantsLoading]);
+
+  // === NUEVO: highlight de un participante/ticket por query ?highlight=... ===
+  useEffect(() => {
+    if (!highlightKey || groupedParticipants.length === 0) return;
+    const idx = groupedParticipants.findIndex((g) =>
+      g.tickets.some((t) => String(t.code || "").toLowerCase().includes(highlightKey)) ||
+      String(g.userId || g.key || "").toLowerCase() === highlightKey
+    );
+    if (idx >= 0) {
+      setActiveTab("Participantes");
+      const el = document.getElementById(`p-${idx}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        setTempGlowId(el.id);
+        setTimeout(() => setTempGlowId(null), 3000);
+      }
+    }
+  }, [highlightKey, groupedParticipants]);
+
   const getOwnerImage = () => {
     if (raffle?.ownerImage) return raffle.ownerImage;
     if (raffle?.owner?.image) return raffle.owner.image;
@@ -525,8 +587,6 @@ export default function SorteoPage() {
   /* ======================= UI ======================= */
 
   const TABS = ["Participantes", "Detalles"];
-  const [activeTab, setActiveTab] = useState(TABS[0]);
-
   const isLongDesc = (raffle?.description?.length || 0) > 240;
 
   if (loading) {
@@ -604,16 +664,17 @@ export default function SorteoPage() {
     </span>
   );
 
+  const winnerParticipationObj = winnerParticipation;
   const winnerBlock =
-    raffle?.status === "FINISHED" && winnerParticipation ? (
+    raffle?.status === "FINISHED" && winnerParticipationObj ? (
       <div className="bg-amber-500/20 border border-amber-500/40 rounded-lg px-2 py-1 text-center">
         <p className="text-white text-xs font-semibold flex items-center justify-center gap-1">
-          <span>🏆</span> Ganador: {winnerParticipation.user?.name || "Usuario"}{" "}
+          <span>🏆</span> Ganador: {winnerParticipationObj.user?.name || "Usuario"}{" "}
           <span className="font-mono">
             #
-            {winnerParticipation.ticket?.code ||
-              winnerParticipation.ticketCode ||
-              winnerParticipation.id?.slice(0, 6)}
+            {winnerParticipationObj.ticket?.code ||
+              winnerParticipationObj.ticketCode ||
+              winnerParticipationObj.id?.slice(0, 6)}
           </span>
         </p>
       </div>
@@ -644,6 +705,13 @@ export default function SorteoPage() {
               )}
             </div>
           </div>
+
+          {/* NUEVO: Banner cuando venís a ver resultado y sos ganador */}
+          {focusWinner && isUserWinner && (
+            <div className="mb-3 rounded-lg border border-emerald-500/40 bg-emerald-500/20 px-3 py-2 text-emerald-50 text-sm">
+              🎉 <b>¡Felicidades!</b> Este sorteo te tiene como ganador/a. Abajo resaltamos tu tarjeta.
+            </div>
+          )}
 
           {/* HERO */}
           <div className="grid grid-cols-12 gap-5 mb-6">
@@ -857,7 +925,7 @@ export default function SorteoPage() {
           {/* TABS */}
           <div className="bg-white/10 backdrop-blur-lg rounded-xl border border-white/20">
             <div className="flex gap-1 p-1">
-              {["Participantes", "Detalles"].map((t) => (
+              {TABS.map((t) => (
                 <button
                   key={t}
                   onClick={() => setActiveTab(t)}
@@ -894,7 +962,7 @@ export default function SorteoPage() {
                 ) : groupedParticipants.length > 0 ? (
                   <FadeIn delay={60}>
                     <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-8 gap-3">
-                      {groupedParticipants.map((g) => {
+                      {groupedParticipants.map((g, i) => {
                         const total = g.tickets.length;
                         const idx = Math.min(ticketIdx[g.key] ?? 0, Math.max(0, total - 1));
                         const current = g.tickets[idx] || g.tickets[0];
@@ -902,7 +970,15 @@ export default function SorteoPage() {
                         return (
                           <div
                             key={g.key}
-                            className="group bg-white/5 hover:bg-white/10 transition rounded-xl p-2 ring-1 ring-white/10"
+                            id={`p-${i}`}
+                            ref={g.isWinner ? winnerCardRef : null}
+                            data-winner-card={g.isWinner ? "true" : "false"}
+                            className={`group bg-white/5 hover:bg-white/10 transition rounded-xl p-2 ring-1 ring-white/10
+                              ${
+                                (tempGlowId === `p-${i}` || (g.isWinner && tempGlowId === "winner-card"))
+                                  ? "ring-2 ring-amber-300 animate-pulse"
+                                  : ""
+                              }`}
                           >
                             <div className="relative w-full aspect-square rounded-lg overflow-hidden bg-gradient-to-br from-fuchsia-700/30 to-sky-700/30 flex items-center justify-center">
                               {g.avatar ? (
@@ -934,7 +1010,10 @@ export default function SorteoPage() {
                             </div>
 
                             <div className="mt-1.5">
-                              <p className="text-white text-[12px] font-semibold truncate drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]" title={g.name}>
+                              <p
+                                className="text-white text-[12px] font-semibold truncate drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]"
+                                title={g.name}
+                              >
                                 {g.name}
                               </p>
 

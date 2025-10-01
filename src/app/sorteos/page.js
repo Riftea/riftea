@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import ProgressBar from "@/components/raffle/ProgressBar";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 const PER_PAGE = 12;
 
@@ -26,7 +27,7 @@ function isDataUrl(u) {
   return typeof u === "string" && u.trim().startsWith("data:");
 }
 
-/** Imagen segura usando next/image (sin necesidad de configurar domains).
+/** Imagen segura usando next/image (sin need de domains).
  *  - Si la URL no es válida, usa fallback.
  *  - Para contenedores con aspect-ratio usa fill.
  *  - Para avatares u otros tamaños fijos, pasá width/height.
@@ -77,6 +78,10 @@ function SafeImage({
 /* ===================== Página ===================== */
 
 export default function SorteosPublicosPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
   const [q, setQ] = useState("");
   // showMode: "all" | "available" | "finalized" | "favorites"
   const [showMode, setShowMode] = useState("available"); // por defecto disponibles
@@ -95,26 +100,25 @@ export default function SorteosPublicosPage() {
   const [favorites, setFavorites] = useState([]);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
 
-  // Lee ?selectTicket de la URL (si venimos desde Mis tickets)
+  // Lee ?selectTicket de la URL (si venimos desde Mis tickets) — solo una vez
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const sp = new URLSearchParams(window.location.search);
-      const tid = sp.get("selectTicket");
-      if (tid) setSelectedTicketId(tid);
-    }
-  }, []);
+    const tid = searchParams.get("selectTicket");
+    if (tid) setSelectedTicketId(tid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // lo mantenemos one-shot; si querés que reaccione a cambios, agregá [searchParams]
 
-  // Lee ?filter=favorites (u otros) para presetear el filtro desde el menú
+  // ✅ Lee y SINCRONIZA ?filter= (o ?show=) SIEMPRE que cambie el querystring
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const sp = new URLSearchParams(window.location.search);
-      const filter = (sp.get("filter") || sp.get("show") || "").trim().toLowerCase();
-      if (["all", "available", "finalized", "favorites"].includes(filter)) {
-        setShowMode(filter);
-        setPage(1);
-      }
+    const raw =
+      (searchParams.get("filter") || searchParams.get("show") || "").trim().toLowerCase();
+    const valid = ["all", "available", "finalized", "favorites"];
+    if (valid.includes(raw)) {
+      setShowMode(raw);
+    } else {
+      setShowMode("available"); // default si no viene nada
     }
-  }, []);
+    setPage(1);
+  }, [searchParams]);
 
   // Lee favoritos de localStorage
   useEffect(() => {
@@ -144,7 +148,8 @@ export default function SorteosPublicosPage() {
       setLoading(true);
       setError(null);
 
-      // Para el backend: el campo (sin dirección) – si pedimos timeLeft, lo mapeamos a createdAt y ordenamos en cliente.
+      // Para el backend: el campo (sin dirección).
+      // Si pedimos timeLeft, lo mapeamos a createdAt y ordenamos en cliente.
       const [field, dir] = sortKey.split("_"); // p.ej. "createdAt", "desc"
       const serverSortBy = field === "timeLeft" ? "createdAt" : field;
       const order = dir; // "asc" | "desc"
@@ -200,7 +205,7 @@ export default function SorteosPublicosPage() {
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, sortKey, page, showMode]); // 👈 FIX: agrega showMode
+  }, [q, sortKey, page, showMode]); // 👈 ahora showMode sí cambia cuando cambia ?filter=
 
   // Filtro por estado + favoritos (cliente)
   const filteredItems = useMemo(() => {
@@ -273,6 +278,26 @@ export default function SorteosPublicosPage() {
     }
   };
 
+  // ✅ Cuando el usuario cambia el select "Mostrar", además de setShowMode, actualizamos la URL (?filter=...)
+  const handleChangeShowMode = (value) => {
+    setPage(1);
+    setShowMode(value);
+
+    const params = new URLSearchParams(searchParams.toString());
+    if (value === "available") {
+      params.set("filter", "available");
+    } else if (value === "finalized") {
+      params.set("filter", "finalized");
+    } else if (value === "favorites") {
+      params.set("filter", "favorites");
+    } else {
+      // "all"
+      params.set("filter", "all");
+    }
+
+    router.push(`${pathname}?${params.toString()}`);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 text-slate-50">
       {/* Header */}
@@ -280,7 +305,7 @@ export default function SorteosPublicosPage() {
         <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="min-w-0">
             <h1 className="text-2xl md:text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400 truncate">
-              Sorteos públicos
+              Elegi Premios
             </h1>
             <p className="text-slate-400 text-sm">Descubrí sorteos activos de toda la comunidad</p>
           </div>
@@ -324,10 +349,7 @@ export default function SorteosPublicosPage() {
           {/* Mostrar (estado + favoritos en el mismo select) */}
           <select
             value={showMode}
-            onChange={(e) => {
-              setPage(1);
-              setShowMode(e.target.value);
-            }}
+            onChange={(e) => handleChangeShowMode(e.target.value)}
             className="px-3 py-3 rounded-xl bg-slate-900/60 border border-slate-700/50 text-slate-200 min-w-[220px]"
             title="Mostrar"
           >

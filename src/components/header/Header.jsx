@@ -1,10 +1,14 @@
 // app/components/header/Header.jsx
 "use client";
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useRouter, usePathname } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
+
+/* ========================= Constantes ========================= */
+
+const BASE_TITLE = "Riftea";
 
 /* ========================= Helpers ========================= */
 
@@ -26,51 +30,113 @@ function isModerationNotification(n) {
   );
 }
 
+// Extrae un id de rifa desde varias posibles ubicaciones
+function getRaffleIdFrom(n) {
+  const targets = (n && typeof n.targets === "object" && n.targets) || {};
+  return (
+    n?.raffleId ||
+    targets?.raffleId ||
+    targets?.raffle?.id ||
+    n?.targetId ||
+    targets?.id ||
+    null
+  );
+}
+
+function getSlugFrom(n) {
+  const targets = (n && typeof n.targets === "object" && n.targets) || {};
+  return n?.slug || targets?.slug || null;
+}
+
+/**
+ * Ruteo “fino”:
+ *  1) Si viene actionUrl desde backend, se usa tal cual.
+ *  2) Se prioriza subtype (ej: TICKET_GIFT_RECEIVED, PURCHASE_CONFIRMED).
+ *  3) Si no hay subtype, se usa type.
+ *  4) Fallbacks seguros a rutas existentes (/sorteo/[id], /mis-tickets, /notificaciones).
+ */
 function routeForNotification(n, { isAdmin, isSuper }) {
   // 1) actionUrl directa del backend
   if (n?.actionUrl) return n.actionUrl;
 
-  // 2) por tipo conocido
+  const subtype = String(n?.subtype || "").toUpperCase();
   const type = String(n?.type || "").toUpperCase();
-  const id = n?.raffleId || n?.targetId || n?.id;
-  const slug = n?.slug;
+  const raffleId = getRaffleIdFrom(n);
+  const slug = getSlugFrom(n);
 
+  // 2) Subtypes que definen destino claro (sin 404)
+  switch (subtype) {
+    case "TICKET_GIFT_RECEIVED":
+    case "PURCHASE_CONFIRMED":
+    case "PURCHASE_APPROVED":
+    case "TICKET_PURCHASED":
+    case "PURCHASE_CONFIRMATION":
+      return "/mis-tickets";
+
+    case "YOU_WON":
+    case "WINNER_NOTIFICATION":
+      return raffleId ? `/sorteo/${raffleId}` : "/mis-tickets";
+
+    case "STARTING_SOON":
+      return raffleId ? `/sorteo/${raffleId}` : "/sorteos";
+
+    case "PUBLICACION_PENDIENTE":
+    case "APPROVAL_REQUIRED":
+    case "NEEDS_APPROVAL":
+      if (isAdmin || isSuper) {
+        return raffleId
+          ? `/admin/publicaciones-pendientes?raffleId=${raffleId}`
+          : "/admin/publicaciones-pendientes";
+      }
+      return "/";
+    default:
+      break;
+  }
+
+  // 3) Tipos “macro” (compatibilidad)
   switch (type) {
     case "RAFFLE_CREATED":
     case "CREATED_PUBLICATION":
     case "PUBLICACION_CREADA":
-      return id ? `/raffles/${id}` : slug ? `/raffles/${slug}` : "/mis-sorteos";
+      // En creación solemos querer ir a mis sorteos o a la rifa si existe id
+      return raffleId ? `/sorteo/${raffleId}` : "/mis-sorteos";
 
     case "NEW_PARTICIPANT":
     case "USER_JOINED":
+      // Actividad de rifa: llevamos a la rifa en pestaña participantes
+      return raffleId ? `/sorteo/${raffleId}` : "/ventas";
+
     case "TICKET_PURCHASED":
-      return id ? `/raffles/${id}?tab=participantes` : "/ventas";
+    case "PURCHASE_CONFIRMATION":
+      // ✅ Tickets y compras llevan a "Mis Tickets"
+      return "/mis-tickets";
 
     case "YOU_WON":
+    case "RAFFLE_WINNER":
     case "WINNER":
     case "GANASTE":
-      return id ? `/sorteo/${id}` : "/mis-tickets";
+      return raffleId ? `/sorteo/${raffleId}` : "/mis-tickets";
 
     case "STARTING_SOON":
     case "PROXIMO_SORTEO":
-      return id ? `/sorteo/${id}` : "/sorteos";
+      return raffleId ? `/sorteo/${raffleId}` : "/sorteos";
 
     case "APPROVAL_REQUIRED":
     case "NEEDS_APPROVAL":
     case "PUBLICACION_PENDIENTE":
       if (isAdmin || isSuper) {
-        return id
-          ? `/admin/publicaciones-pendientes?raffleId=${id}`
+        return raffleId
+          ? `/admin/publicaciones-pendientes?raffleId=${raffleId}`
           : "/admin/publicaciones-pendientes";
       }
       return "/";
-
     default:
       break;
   }
 
-  // 3) fallback por campos
-  if (id) return `/raffles/${id}`;
+  // 4) Fallbacks seguros:
+  if (raffleId) return `/sorteo/${raffleId}`;
+  if (slug) return `/sorteo/${slug}`;
   if (isModerationNotification(n) && (isAdmin || isSuper)) {
     return "/admin/publicaciones-pendientes";
   }
@@ -283,9 +349,7 @@ function NotificationItem({
             >
               <div className="flex-1 min-w-0">
                 <div
-                  className={`${
-                    !notification.read ? "font-medium" : ""
-                  } break-words`}
+                  className={`${!notification.read ? "font-medium" : ""} break-words`}
                 >
                   {notification.message}
                 </div>
@@ -337,6 +401,10 @@ export default function Header() {
   const notifRef = useRef(null);
   const menuRef = useRef(null);
   const headerRef = useRef(null);
+
+  // Favicon handling
+  const faviconLinkRef = useRef(null);
+  const originalFaviconHrefRef = useRef(null);
 
   /* Posición dropdowns (mobile fija + desktop absoluta) */
   useEffect(() => {
@@ -475,11 +543,140 @@ export default function Header() {
 
   /* Contadores y roles */
   const unreadCount = notifications.filter((n) => !n.read).length;
+  const unreadActionableCount = useMemo(
+    () =>
+      notifications.filter(
+        (n) => !n.read && (n.isActionable === undefined || n.isActionable === true)
+      ).length,
+    [notifications]
+  );
+
   const role = (session?.user?.role || "user").toString().toLowerCase();
   const isAdmin = role === "admin";
   const isSuper = role === "superadmin";
   const moderationCount = notifications.filter(isModerationNotification).length;
   const showModerationBadge = (isAdmin || isSuper) && moderationCount > 0;
+
+  /* ======= Título y Favicon con badge ======= */
+
+  // Asegura que tengamos un <link rel="icon"> y recordá el href original
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (!faviconLinkRef.current) {
+      let link =
+        document.querySelector('link[rel="icon"]') ||
+        document.querySelector('link[rel="shortcut icon"]');
+      if (!link) {
+        link = document.createElement("link");
+        link.rel = "icon";
+        document.head.appendChild(link);
+      }
+      faviconLinkRef.current = link;
+      originalFaviconHrefRef.current = link.href || "/favicon.ico";
+    }
+  }, []);
+
+  // Dibuja un favicon con badge (99+ cap)
+  async function generateFaviconWithBadge(baseHref, count) {
+    const c = document.createElement("canvas");
+    const size = 64;
+    c.width = size;
+    c.height = size;
+    const ctx = c.getContext("2d");
+
+    // 1) base: intentamos cargar el favicon original
+    await new Promise((resolve) => {
+      try {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          try {
+            ctx.drawImage(img, 0, 0, size, size);
+          } catch {}
+          resolve();
+        };
+        img.onerror = () => resolve();
+        img.src = baseHref || "/favicon.ico";
+      } catch {
+        resolve();
+      }
+    });
+
+    // 2) badge
+    const n = Math.min(999, Math.max(1, Number(count) || 0));
+    const text = n > 99 ? "99+" : String(n);
+
+    // círculo
+    const r = 18;
+    const cx = size - 16;
+    const cy = 16;
+    ctx.beginPath();
+    ctx.fillStyle = "#E11D48"; // rose-600
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // texto
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 28px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, cx, cy + 1);
+
+    return c.toDataURL("image/png");
+  }
+
+  // Actualiza título y favicon cuando cambia el contador o el estado del dropdown
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const count = notifOpen ? 0 : unreadActionableCount;
+
+    // Título de la pestaña
+    document.title = count > 0 ? `(${count}) ${BASE_TITLE}` : BASE_TITLE;
+
+    // Favicon
+    const link = faviconLinkRef.current;
+    const original = originalFaviconHrefRef.current;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        if (!link) return;
+        if (count <= 0) {
+          // restaurar
+          if (original) link.href = original;
+          return;
+        }
+        const dataUrl = await generateFaviconWithBadge(original, count);
+        if (!cancelled && dataUrl) {
+          link.href = dataUrl;
+        }
+      } catch {
+        // si algo falla, restaurar
+        if (link && original) link.href = original;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [unreadActionableCount, notifOpen]);
+
+  // Restaurar favicon si el componente se desmonta
+  useEffect(() => {
+    return () => {
+      const link = faviconLinkRef.current;
+      const original = originalFaviconHrefRef.current;
+      if (link && original) {
+        try {
+          link.href = original;
+        } catch {}
+      }
+      if (typeof document !== "undefined") {
+        document.title = BASE_TITLE;
+      }
+    };
+  }, []);
 
   /* Cerrar sesión: en página de sorteo quedate en la misma URL */
   const handleSignOut = async () => {
@@ -547,11 +744,11 @@ export default function Header() {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth={1.5}
-                    d="M15 17h5l-1.405-1.405A2 2 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
+                    d="M15 17h5l-1.405-1.405A2 2 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0 0v-1m6 0H9"
                   />
                 </svg>
 
-                {/* Badge total no leídas */}
+                {/* Badge total no leídas (visual en campana) */}
                 {unreadCount > 0 && (
                   <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center px-1.5 py-0.5 text-xs font-bold leading-none text-orange-500 bg-white rounded-full">
                     {unreadCount}

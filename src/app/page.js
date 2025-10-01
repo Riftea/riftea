@@ -134,7 +134,7 @@ export default function HomePage() {
             <div className="relative bg-white rounded-2xl p-1 shadow-xl border border-gray-100">
               <div className="p-8 rounded-2xl bg-gradient-to-br from-white to-indigo-50/50">
                 <h1 className="text-4xl md:text-5xl font-extrabold leading-tight">
-                  Comprá digital. <span className="animate-shimmer bg-clip-text text-transparent">Ganá con tus tickets.</span>
+                  Comprá digital. <span className="animate-shimmer bg-clip-text text-transparent">Ganá premios con tus tickets.</span>
                 </h1>
                 <p className="mt-4 text-lg text-gray-700">
                   Fotos, cursos, beats, juegos y más. Cada compra te da tickets para sorteos transparentes.
