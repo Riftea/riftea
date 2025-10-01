@@ -48,12 +48,25 @@ function getSlugFrom(n) {
   return n?.slug || targets?.slug || null;
 }
 
+// 👇 NUEVO: extrae ticketId desde varios posibles lugares
+function getTicketIdFrom(n) {
+  const targets = (n && typeof n.targets === "object" && n.targets) || {};
+  return (
+    n?.ticketId ||
+    targets?.ticketId ||
+    targets?.ticket_id ||
+    targets?.ticketID ||
+    null
+  );
+}
+
 /**
  * Ruteo “fino”:
  *  1) Si viene actionUrl desde backend, se usa tal cual.
  *  2) Se prioriza subtype (ej: TICKET_GIFT_RECEIVED, PURCHASE_CONFIRMED).
- *  3) Si no hay subtype, se usa type.
- *  4) Fallbacks seguros a rutas existentes (/sorteo/[id], /mis-tickets, /notificaciones).
+ *  3) Heurística: si detectamos evento de "ticket" (por ticketId o texto), vamos a /mis-tickets.
+ *  4) Tipos macro como fallback.
+ *  5) Fallback final seguro.
  */
 function routeForNotification(n, { isAdmin, isSuper }) {
   // 1) actionUrl directa del backend
@@ -62,7 +75,25 @@ function routeForNotification(n, { isAdmin, isSuper }) {
   const subtype = String(n?.subtype || "").toUpperCase();
   const type = String(n?.type || "").toUpperCase();
   const raffleId = getRaffleIdFrom(n);
+  const ticketId = getTicketIdFrom(n);
   const slug = getSlugFrom(n);
+
+  const title = String(n?.title || "").toLowerCase();
+  const message = String(n?.message || "").toLowerCase();
+
+  // Heurísticas de intención
+  const isTicketEvent =
+    !!ticketId ||
+    subtype.includes("TICKET") ||
+    subtype.includes("GIFT") ||
+    type.includes("PURCHASE") ||
+    type.includes("TICKET") ||
+    title.includes("ticket") ||
+    message.includes("ticket") ||
+    title.includes("regalo") ||
+    message.includes("regalo") ||
+    title.includes("obsequio") ||
+    message.includes("obsequio");
 
   // 2) Subtypes que definen destino claro (sin 404)
   switch (subtype) {
@@ -93,7 +124,12 @@ function routeForNotification(n, { isAdmin, isSuper }) {
       break;
   }
 
-  // 3) Tipos “macro” (compatibilidad)
+  // 3) Heurística fuerte: cualquier evento de ticket → Mis tickets
+  if (isTicketEvent) {
+    return "/mis-tickets";
+  }
+
+  // 4) Tipos “macro” (compatibilidad)
   switch (type) {
     case "RAFFLE_CREATED":
     case "CREATED_PUBLICATION":
@@ -103,7 +139,7 @@ function routeForNotification(n, { isAdmin, isSuper }) {
 
     case "NEW_PARTICIPANT":
     case "USER_JOINED":
-      // Actividad de rifa: llevamos a la rifa en pestaña participantes
+      // Actividad de rifa: llevamos a la rifa
       return raffleId ? `/sorteo/${raffleId}` : "/ventas";
 
     case "TICKET_PURCHASED":
@@ -134,7 +170,7 @@ function routeForNotification(n, { isAdmin, isSuper }) {
       break;
   }
 
-  // 4) Fallbacks seguros:
+  // 5) Fallbacks seguros:
   if (raffleId) return `/sorteo/${raffleId}`;
   if (slug) return `/sorteo/${slug}`;
   if (isModerationNotification(n) && (isAdmin || isSuper)) {
@@ -744,7 +780,7 @@ export default function Header() {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth={1.5}
-                    d="M15 17h5l-1.405-1.405A2 2 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0 0v-1m6 0H9"
+                    d="M15 17h5l-1.405-1.405A2 2 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
                   />
                 </svg>
 
