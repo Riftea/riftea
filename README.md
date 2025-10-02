@@ -51,6 +51,8 @@ riftea
 │  │  │  └─ migration.sql
 │  │  ├─ 20250927224946_add_seller
 │  │  │  └─ migration.sql
+│  │  ├─ 20251001020957_add_notification_routing_fields
+│  │  │  └─ migration.sql
 │  │  └─ migration_lock.toml
 │  └─ schema.prisma
 ├─ public

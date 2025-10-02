@@ -256,4 +256,102 @@ export const TicketsService = {
 
     return part;
   },
+
+  /**
+   * === NUEVO ===
+   * Emite 1 ticket de obsequio por una Purchase aprobada (idempotente por purchaseId).
+   * @param {{ userId: string, purchaseId: string, notify?: boolean, force?: boolean }}
+   * @returns {Promise<{created:boolean, ticketId?:string, reason?:string}>}
+   */
+  async issueGiftTicketForPurchase({ userId, purchaseId, notify = true, force = false }) {
+    if (!userId || !purchaseId) throw new Error("userId y purchaseId son requeridos");
+
+    // Traemos la purchase para validar pertenencia y (opcional) estado
+    const purchase = await prisma.purchase.findUnique({
+      where: { id: purchaseId },
+      select: { id: true, userId: true, status: true },
+    });
+    if (!purchase) return { created: false, reason: "Purchase no encontrada" };
+    if (purchase.userId !== userId) return { created: false, reason: "Purchase no pertenece al usuario" };
+
+    // Estado de compra (tu schema usa string "libre")
+    const st = String(purchase.status || "").toLowerCase();
+    if (!force && st && st !== "approved" && st !== "aprobado") {
+      return { created: false, reason: `Purchase no aprobada (status="${purchase.status}")` };
+    }
+
+    // Idempotencia: ¿ya hay ticket GIFT para esta compra?
+    const existing = await prisma.ticket.findFirst({
+      where: { purchaseId, metodoPago: "GIFT" },
+      select: { id: true },
+    });
+    if (existing) {
+      return { created: false, ticketId: existing.id, reason: "Ya existe ticket de obsequio para esta compra" };
+    }
+
+    // Generación (una sola vez) usando tu helper actual
+    const t = generateTicketData(userId); // { uuid, displayCode, hmac, generatedAt }
+
+    // Creamos ticket
+    const created = await prisma.ticket.create({
+      data: {
+        uuid: t.uuid,
+        code: t.displayCode,
+        hash: t.hmac,
+        generatedAt: t.generatedAt,
+        userId,
+        purchaseId,
+        raffleId: null,
+        status: "AVAILABLE",
+        metodoPago: "GIFT",
+      },
+      select: { id: true, code: true, uuid: true },
+    });
+
+    // Notificación amistosa (best-effort)
+    if (notify) {
+      try {
+        await this.notifyGiftTicket({ userId, purchaseId, ticketId: created.id });
+      } catch (e) {
+        // no romper el flujo por notificación
+        console.error("notifyGiftTicket failed (non-blocking)", e);
+      }
+    }
+
+    // Auditoría (best-effort)
+    try {
+      await prisma.auditLog.create({
+        data: {
+          action: "GIFT_TICKET_ISSUED",
+          userId,
+          targetType: "purchase",
+          targetId: purchaseId,
+          newValues: { ticketId: created.id, purchaseId },
+        },
+      });
+    } catch (_) {}
+
+    return { created: true, ticketId: created.id };
+  },
+
+  /**
+   * === NUEVO ===
+   * Notificación por ticket de obsequio.
+   * @param {{ userId:string, purchaseId:string, ticketId:string }}
+   */
+  async notifyGiftTicket({ userId, purchaseId, ticketId }) {
+    await prisma.notification.create({
+      data: {
+        userId,
+        type: "PURCHASE_CONFIRMATION",
+        subtype: "TICKET_GIFT_RECEIVED",
+        title: "🎁 ¡Tenés un ticket de obsequio!",
+        message: "Usalo cuando quieras para participar en cualquier sorteo disponible.",
+        actionUrl: "/mis-tickets",
+        isActionable: true,
+        targets: { purchaseId, ticketId },
+        meta: { reason: "DigitalProductPurchaseApproved", quantity: 1 },
+      },
+    });
+  },
 };
