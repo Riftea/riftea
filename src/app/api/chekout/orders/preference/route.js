@@ -1,4 +1,3 @@
-// src/app/api/chekout/preference/route.js
 export const runtime = "nodejs";
 
 import prisma from "@/lib/prisma";
@@ -7,7 +6,7 @@ import prisma from "@/lib/prisma";
  * Crea una Purchase y una Preference de Mercado Pago (Checkout Pro / Wallet).
  * Devuelve { init_point, preferenceId, external_reference } para redirigir al usuario.
  *
- * Body esperado:
+ * Body:
  * { productId: string, quantity?: number, buyer?: { email?: string, dni?: string } }
  *
  * Requiere:
@@ -34,7 +33,7 @@ export async function POST(req) {
       return Response.json({ error: "Producto no disponible" }, { status: 404 });
     }
 
-    // Usuario (si estás usando NextAuth, tratamos de sacar el userId)
+    // Usuario (si usás NextAuth, obtenemos userId)
     let userId = null;
     try {
       const { getServerSession } = await import("next-auth");
@@ -54,12 +53,14 @@ export async function POST(req) {
         currency,
         status: "pending",
         items: {
-          create: [{
-            productId: product.id,
-            quantity: qty,
-            unitPrice: product.priceCents,
-            currency
-          }],
+          create: [
+            {
+              productId: product.id,
+              quantity: qty,
+              unitPrice: product.priceCents,
+              currency,
+            },
+          ],
         },
       },
       select: { id: true, userId: true },
@@ -74,19 +75,21 @@ export async function POST(req) {
     const failureUrl = `${origin}/marketplace?pay=failure&ref=${external_reference}`;
     const pendingUrl = `${origin}/marketplace?pay=pending&ref=${external_reference}`;
 
-    // notification_url → tu webhook público
-    // Si desplegás en Vercel: https://<tu-app>.vercel.app/api/mercadopago/webhook
+    // Webhook público (asegurate de configurarlo en MP)
     const notificationUrl = `${origin}/api/mercadopago/webhook`;
 
-    // Crear Preference (Checkout Pro)
+    // Preference (Checkout Pro / Wallet)
     const prefPayload = {
-      items: [{
-        id: product.id,
-        title: product.title || "Producto",
-        quantity: qty,
-        currency_id: currency,
-        unit_price: Number((product.priceCents / 100).toFixed(2)),
-      }],
+      items: [
+        {
+          id: product.id,
+          title: product.title || "Producto",
+          quantity: qty,
+          currency_id: currency,
+          // MP acepta number con 2 decimales; convertimos de centavos a ARS
+          unit_price: Number((product.priceCents / 100).toFixed(2)),
+        },
+      ],
       payer: {
         email: buyer?.email || undefined,
         identification: buyer?.dni ? { type: "DNI", number: buyer.dni } : undefined,
@@ -114,7 +117,6 @@ export async function POST(req) {
     const pref = await resPref.json().catch(() => ({}));
     if (!resPref.ok) {
       console.error("MP preference error:", pref);
-      // si falla la pref, rechazo la purchase
       await prisma.purchase.update({
         where: { id: purchase.id },
         data: { status: "rejected" },
@@ -125,18 +127,18 @@ export async function POST(req) {
       );
     }
 
-    // Guardamos referencia básica (útil para debugging)
+    // Guardamos algo de trazabilidad
     await prisma.purchase.update({
       where: { id: purchase.id },
       data: {
-        paymentId: String(pref?.id || ""), // guardo el id de la preferencia
+        paymentId: String(pref?.id || ""), // id de la preferencia
         paymentMethod: "checkout_pro",
         status: "pending",
       },
     });
 
     return Response.json({
-      init_point: pref.init_point,          // Redirección para desktop
+      init_point: pref.init_point, // URL para redirigir (desktop)
       sandbox_init_point: pref.sandbox_init_point,
       preferenceId: pref.id,
       external_reference,
@@ -150,7 +152,10 @@ export async function POST(req) {
 async function ensureGuestUser(email) {
   let finalEmail = email;
   if (!finalEmail) finalEmail = `guest_${Date.now()}@riftea.local`;
-  const existing = await prisma.user.findUnique({ where: { email: finalEmail }, select: { id: true } });
+  const existing = await prisma.user.findUnique({
+    where: { email: finalEmail },
+    select: { id: true },
+  });
   if (existing?.id) return existing.id;
   const created = await prisma.user.create({
     data: { email: finalEmail, isActive: true },

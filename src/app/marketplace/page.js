@@ -1,4 +1,3 @@
-// src/app/marketplace/page.js
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
@@ -8,8 +7,8 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { formatARS } from "@/lib/commerce";
 
 /**
- * La página en sí NO usa useSearchParams.
- * Solo pone el <Suspense> que exige Next para los hooks de navegación.
+ * La página raíz envuelve el contenido en <Suspense> para poder usar
+ * hooks de navegación en el subcomponente sin warnings.
  */
 export default function MarketplacePage() {
   return (
@@ -25,7 +24,7 @@ function MarketplaceContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Controles de querystring
+  // Querystring
   const qParam = searchParams.get("q") || "";
   const pageParam = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
   const limitParam = Math.min(
@@ -45,15 +44,16 @@ function MarketplaceContent() {
     totalPages: 1,
   });
 
-  // Carrito simple en memoria
-  const [cart, setCart] = useState([]); // { id, title, unitPrice (cents), quantity }
+  // Carrito en memoria: { id, title, unitPrice (centavos), quantity }
+  const [cart, setCart] = useState([]);
 
-  // Cargar productos desde /api/products/public
+  // Cargar productos
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
         setError("");
+
         const url = new URL("/api/products/public", window.location.origin);
         if (qParam) url.searchParams.set("q", qParam);
         url.searchParams.set("page", String(pageParam));
@@ -61,8 +61,7 @@ function MarketplaceContent() {
 
         const res = await fetch(url, { cache: "no-store" });
         const data = await res.json();
-        if (!res.ok)
-          throw new Error(data?.error || "No se pudieron cargar productos");
+        if (!res.ok) throw new Error(data?.error || "No se pudieron cargar productos");
 
         setItems(Array.isArray(data?.items) ? data.items : []);
         setPagination(
@@ -103,17 +102,12 @@ function MarketplaceContent() {
         next[idx] = { ...next[idx], quantity: next[idx].quantity + 1 };
         return next;
       }
-      return [
-        ...prev,
-        { id: p.id, title: p.title, unitPrice: p.priceCents, quantity: 1 },
-      ];
+      return [...prev, { id: p.id, title: p.title, unitPrice: p.priceCents, quantity: 1 }];
     });
   }
   function updateQty(id, q) {
     setCart((prev) =>
-      prev.map((x) =>
-        x.id === id ? { ...x, quantity: Math.max(1, q) } : x
-      )
+      prev.map((x) => (x.id === id ? { ...x, quantity: Math.max(1, parseInt(q || "1", 10)) } : x))
     );
   }
   function removeFromCart(id) {
@@ -124,13 +118,14 @@ function MarketplaceContent() {
     () => cart.reduce((acc, it) => acc + it.unitPrice * it.quantity, 0),
     [cart]
   );
-  // Preview de tickets: 1 ticket cada ARS 1000 (100000 centavos)
-  const ticketsPreview = useMemo(
-    () => Math.floor(totalCents / 100000),
-    [totalCents]
-  );
+  const ticketsPreview = useMemo(() => Math.floor(totalCents / 100000), [totalCents]); // 1 ticket c/ $1000
 
-  // Checkout: redirige al flujo de Mercado Pago Wallet
+  /**
+   * Checkout con Wallet (saldo de MP, débito, etc.) vía preferencia.
+   * Llama a /api/checkout/preference y redirige según lo que devuelva.
+   * Además parsea defensivamente la respuesta para evitar
+   * "Unexpected end of JSON input".
+   */
   async function checkout() {
     try {
       if (!isAuthed) {
@@ -139,24 +134,48 @@ function MarketplaceContent() {
       }
       if (cart.length === 0) return;
 
-      const res = await fetch("/api/checkout/orders", {
+      // Hoy procesamos el primer ítem (backend espera productId/quantity)
+      const first = cart[0];
+
+      const res = await fetch("/api/checkout/preference", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          items: cart.map((it) => ({
-            productId: it.id,
-            quantity: it.quantity,
-          })),
+          productId: first.id,
+          quantity: first.quantity,
+          buyer: { email: session?.user?.email || undefined },
         }),
       });
 
-      const data = await res.json();
-      if (!res.ok || !data?.initPoint) {
-        throw new Error(data?.error || "No se pudo iniciar el pago");
+      // Parse defensivo (algunos errores pueden venir como HTML del edge/proxy)
+      const text = await res.text();
+      let data = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`Respuesta inválida (${res.status}): ${text.slice(0, 200)}`);
       }
 
-      // Redirige al flujo de MP (saldo, débito, crédito, etc.)
-      window.location.href = data.initPoint;
+      if (!res.ok) throw new Error(data?.error || "No se pudo iniciar el pago");
+
+      // MP puede devolver init_point o preferenceId; también soportamos redirectUrl si lo usás.
+      if (data.redirectUrl) {
+        window.location.href = data.redirectUrl;
+        return;
+      }
+      if (data.init_point) {
+        window.location.href = data.init_point; // desktop
+        return;
+      }
+      if (data.preferenceId) {
+        const url = `https://www.mercadopago.com/checkout/v1/redirect?pref_id=${encodeURIComponent(
+          data.preferenceId
+        )}`;
+        window.location.href = url;
+        return;
+      }
+
+      throw new Error("El servidor no devolvió redirectUrl / init_point / preferenceId");
     } catch (e) {
       console.error(e);
       alert(e?.message || "Error en el checkout");
@@ -169,10 +188,7 @@ function MarketplaceContent() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <h1 className="text-3xl font-extrabold">Marketplace de digitales</h1>
-          <Link
-            href="/sorteos"
-            className="text-sm px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20"
-          >
+          <Link href="/sorteos" className="text-sm px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20">
             ↩ Volver a sorteos
           </Link>
         </div>
@@ -182,7 +198,7 @@ function MarketplaceContent() {
           className="flex items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            goTo({ q, page: 1 }); // reset page al buscar
+            goTo({ q, page: 1 });
           }}
         >
           <input
@@ -191,10 +207,7 @@ function MarketplaceContent() {
             placeholder="Buscar (título o descripción)…"
             className="flex-1 rounded-xl bg-white/10 px-3 py-2 outline-none focus:bg-white/15"
           />
-          <button
-            type="submit"
-            className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 font-semibold"
-          >
+          <button type="submit" className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 font-semibold">
             Buscar
           </button>
         </form>
@@ -210,27 +223,14 @@ function MarketplaceContent() {
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {items.map((p) => (
-                <div
-                  key={p.id}
-                  className="rounded-2xl border border-white/10 bg-white/5 p-4 flex flex-col"
-                >
-                  <div className="text-[10px] uppercase opacity-70 mb-1">
-                    {p.type}
-                  </div>
+                <div key={p.id} className="rounded-2xl border border-white/10 bg-white/5 p-4 flex flex-col">
+                  <div className="text-[10px] uppercase opacity-70 mb-1">{p.type}</div>
                   <Link href={`/marketplace/${p.id}`} className="group">
-                    <h3 className="text-lg font-bold group-hover:underline">
-                      {p.title}
-                    </h3>
+                    <h3 className="text-lg font-bold group-hover:underline">{p.title}</h3>
                   </Link>
-                  {p.description && (
-                    <p className="text-sm opacity-80 mt-1 line-clamp-3">
-                      {p.description}
-                    </p>
-                  )}
+                  {p.description && <p className="text-sm opacity-80 mt-1 line-clamp-3">{p.description}</p>}
                   <div className="mt-auto pt-4 flex items-center justify-between">
-                    <div className="font-mono font-semibold">
-                      {formatARS(p.priceCents)}
-                    </div>
+                    <div className="font-mono font-semibold">{formatARS(p.priceCents)}</div>
                     <button
                       onClick={() => addToCart(p)}
                       className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100 text-sm"
@@ -275,24 +275,17 @@ function MarketplaceContent() {
           ) : (
             <div className="space-y-3">
               {cart.map((it) => (
-                <div
-                  key={it.id}
-                  className="flex items-center justify-between gap-4"
-                >
+                <div key={it.id} className="flex items-center justify-between gap-4">
                   <div className="flex-1">
                     <div className="font-semibold">{it.title}</div>
-                    <div className="text-sm opacity-80">
-                      {formatARS(it.unitPrice)} c/u
-                    </div>
+                    <div className="text-sm opacity-80">{formatARS(it.unitPrice)} c/u</div>
                   </div>
                   <div className="flex items-center gap-2">
                     <input
                       type="number"
                       min={1}
                       value={it.quantity}
-                      onChange={(e) =>
-                        updateQty(it.id, parseInt(e.target.value || "1", 10))
-                      }
+                      onChange={(e) => updateQty(it.id, e.target.value)}
                       className="w-16 rounded bg-white/10 px-2 py-1"
                     />
                     <button
@@ -302,21 +295,16 @@ function MarketplaceContent() {
                       Quitar
                     </button>
                   </div>
-                  <div className="w-28 text-right font-mono">
-                    {formatARS(it.unitPrice * it.quantity)}
-                  </div>
+                  <div className="w-28 text-right font-mono">{formatARS(it.unitPrice * it.quantity)}</div>
                 </div>
               ))}
               <hr className="border-white/10" />
               <div className="flex items-center justify-between">
                 <div className="text-sm opacity-90">
-                  Con esta compra vas a recibir <b>{ticketsPreview}</b>{" "}
-                  {ticketsPreview === 1 ? "ticket" : "tickets"} para usar en
-                  sorteos.
+                  Con esta compra vas a recibir <b>{ticketsPreview}</b> {ticketsPreview === 1 ? "ticket" : "tickets"} para
+                  usar en sorteos.
                 </div>
-                <div className="text-lg font-extrabold">
-                  Total: {formatARS(totalCents)}
-                </div>
+                <div className="text-lg font-extrabold">Total: {formatARS(totalCents)}</div>
               </div>
               <div className="flex items-center justify-end gap-3">
                 <button
@@ -331,8 +319,7 @@ function MarketplaceContent() {
         </section>
 
         <p className="text-sm opacity-80">
-          Tip: este marketplace emite tickets genéricos al completar la compra.
-          Usalos en cualquier rifa.
+          Tip: este marketplace emite tickets genéricos al completar la compra. Usalos en cualquier rifa.
         </p>
       </div>
     </div>
