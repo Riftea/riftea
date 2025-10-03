@@ -7,8 +7,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { formatARS } from "@/lib/commerce";
 
 /**
- * La página raíz envuelve con <Suspense> para poder usar useSearchParams
- * dentro del subcomponente sin warnings de Next.js.
+ * La página raíz envuelve con <Suspense> para poder usar useSearchParams.
  */
 export default function MarketplacePage() {
   return (
@@ -18,10 +17,6 @@ export default function MarketplacePage() {
   );
 }
 
-/**
- * Contenido del marketplace (listado, carrito y checkout vía
- * Mercado Pago Wallet / Checkout Pro).
- */
 function MarketplaceContent() {
   const { data: session, status } = useSession();
   const isAuthed = status === "authenticated";
@@ -45,10 +40,10 @@ function MarketplaceContent() {
     totalPages: 1,
   });
 
-  // Carrito simple en memoria
+  // Carrito
   const [cart, setCart] = useState([]); // { id, title, unitPrice(cents), quantity }
 
-  // Cargar productos desde /api/products/public
+  // Cargar productos desde /api/products/public (parseo defensivo)
   useEffect(() => {
     (async () => {
       try {
@@ -66,7 +61,7 @@ function MarketplaceContent() {
         try {
           data = JSON.parse(text);
         } catch {
-          throw new Error(`Respuesta inválida del servidor (${res.status}).`);
+          throw new Error(`Respuesta inválida del servidor al listar productos (${res.status}).`);
         }
         if (!res.ok) throw new Error(data?.error || "No se pudieron cargar productos");
 
@@ -112,11 +107,9 @@ function MarketplaceContent() {
       return [...prev, { id: p.id, title: p.title, unitPrice: p.priceCents, quantity: 1 }];
     });
   }
-
   function updateQty(id, q) {
     setCart((prev) => prev.map((x) => (x.id === id ? { ...x, quantity: Math.max(1, q) } : x)));
   }
-
   function removeFromCart(id) {
     setCart((prev) => prev.filter((x) => x.id !== id));
   }
@@ -125,15 +118,9 @@ function MarketplaceContent() {
     () => cart.reduce((acc, it) => acc + it.unitPrice * it.quantity, 0),
     [cart]
   );
-
-  // Preview de tickets: 1 ticket cada $1000 ARS (100000 centavos)
   const ticketsPreview = useMemo(() => Math.floor(totalCents / 100000), [totalCents]);
 
-  /**
-   * Checkout con **Mercado Pago Wallet / Checkout Pro** (redirige a MP).
-   * Importante: por compatibilidad con el backend actual, se manda SOLO el
-   * primer ítem del carrito (productId + quantity).
-   */
+  // Checkout: redirige al flujo de MP Wallet / Checkout Pro
   async function checkout() {
     try {
       if (!isAuthed) {
@@ -145,9 +132,10 @@ function MarketplaceContent() {
         return;
       }
 
-      // Compatibilidad con el backend: un único ítem
+      // Por compatibilidad con el backend actual: un solo ítem
       const first = cart[0];
 
+      // 🚨 OJO: la ruta correcta es /api/checkout/preference (con “ck”)
       const res = await fetch("/api/checkout/preference", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -158,29 +146,26 @@ function MarketplaceContent() {
         }),
       });
 
-      // Parse defensivo (evita “Unexpected end of JSON input” si el server devuelve vacío/HTML)
+      // Parse defensivo
       const text = await res.text();
       let data = {};
       try {
         data = JSON.parse(text);
       } catch {
-        throw new Error(`Respuesta inválida del servidor (${res.status}).`);
+        throw new Error(`Respuesta inválida del servidor al iniciar pago (${res.status}).`);
       }
-
       if (!res.ok) throw new Error(data?.error || "No se pudo iniciar el pago");
 
-      // Preferimos init_point; si no viene, usamos id para redirect estándar
       if (data.init_point) {
         window.location.href = data.init_point;
         return;
       }
       if (data.preferenceId) {
-        window.location.href = `https://www.mercadopago.com/checkout/v1/redirect?pref_id=${encodeURIComponent(
-          data.preferenceId
-        )}`;
+        window.location.href =
+          `https://www.mercadopago.com/checkout/v1/redirect?pref_id=` +
+          encodeURIComponent(data.preferenceId);
         return;
       }
-
       throw new Error("El servidor no devolvió datos de redirección de pago.");
     } catch (e) {
       console.error(e);
@@ -204,7 +189,7 @@ function MarketplaceContent() {
           className="flex items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            goTo({ q, page: 1 }); // reset page al buscar
+            goTo({ q, page: 1 });
           }}
         >
           <input
@@ -294,7 +279,10 @@ function MarketplaceContent() {
                       onChange={(e) => updateQty(it.id, parseInt(e.target.value || "1", 10))}
                       className="w-16 rounded bg-white/10 px-2 py-1"
                     />
-                    <button onClick={() => removeFromCart(it.id)} className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/20">
+                    <button
+                      onClick={() => removeFromCart(it.id)}
+                      className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/20"
+                    >
                       Quitar
                     </button>
                   </div>
@@ -304,12 +292,16 @@ function MarketplaceContent() {
               <hr className="border-white/10" />
               <div className="flex items-center justify-between">
                 <div className="text-sm opacity-90">
-                  Con esta compra vas a recibir <b>{ticketsPreview}</b> {ticketsPreview === 1 ? "ticket" : "tickets"} para usar en sorteos.
+                  Con esta compra vas a recibir <b>{ticketsPreview}</b>{" "}
+                  {ticketsPreview === 1 ? "ticket" : "tickets"} para usar en sorteos.
                 </div>
                 <div className="text-lg font-extrabold">Total: {formatARS(totalCents)}</div>
               </div>
               <div className="flex items-center justify-end gap-3">
-                <button onClick={checkout} className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 font-bold">
+                <button
+                  onClick={checkout}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 font-bold"
+                >
                   Comprar ahora
                 </button>
               </div>
