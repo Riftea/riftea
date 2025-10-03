@@ -3,15 +3,10 @@ export const runtime = "nodejs";
 import prisma from "@/lib/prisma";
 
 /**
- * Crea una Purchase y una Preference de Mercado Pago (Checkout Pro / Wallet).
- * Devuelve { init_point, preferenceId, external_reference } para redirigir al usuario.
+ * POST /api/checkout/preference
  *
- * Body:
- * { productId: string, quantity?: number, buyer?: { email?: string, dni?: string } }
- *
- * Requiere:
- * - MP_ACCESS_TOKEN (privada, en Vercel)
- * - Opcional: FRONT_BASE_URL (para back_urls). Si no está, uso origin del request.
+ * Crea una Purchase en tu DB y una Preference en Mercado Pago.
+ * Devuelve { init_point, preferenceId, external_reference }.
  */
 export async function POST(req) {
   try {
@@ -27,13 +22,13 @@ export async function POST(req) {
       return Response.json({ error: "Parámetros inválidos" }, { status: 400 });
     }
 
-    // Producto
+    // Buscar producto
     const product = await prisma.product.findUnique({ where: { id: productId } });
     if (!product || !product.isActive) {
       return Response.json({ error: "Producto no disponible" }, { status: 404 });
     }
 
-    // Usuario (si usás NextAuth, obtenemos userId)
+    // Usuario (si usás NextAuth)
     let userId = null;
     try {
       const { getServerSession } = await import("next-auth");
@@ -42,7 +37,7 @@ export async function POST(req) {
       userId = session?.user?.id || null;
     } catch {}
 
-    // Crear Purchase + Item
+    // Crear Purchase en DB
     const amountCents = product.priceCents * qty;
     const currency = product.currency || "ARS";
 
@@ -68,17 +63,15 @@ export async function POST(req) {
 
     const external_reference = `riftea_${purchase.id}`;
 
-    // back_urls
+    // Construcción de URLs
     const url = new URL(req.url);
     const origin = process.env.FRONT_BASE_URL || `${url.protocol}//${url.host}`;
     const successUrl = `${origin}/marketplace?pay=success&ref=${external_reference}`;
     const failureUrl = `${origin}/marketplace?pay=failure&ref=${external_reference}`;
     const pendingUrl = `${origin}/marketplace?pay=pending&ref=${external_reference}`;
-
-    // Webhook público (asegurate de configurarlo en MP)
     const notificationUrl = `${origin}/api/mercadopago/webhook`;
 
-    // Preference (Checkout Pro / Wallet)
+    // Crear preferencia
     const prefPayload = {
       items: [
         {
@@ -86,13 +79,14 @@ export async function POST(req) {
           title: product.title || "Producto",
           quantity: qty,
           currency_id: currency,
-          // MP acepta number con 2 decimales; convertimos de centavos a ARS
           unit_price: Number((product.priceCents / 100).toFixed(2)),
         },
       ],
       payer: {
         email: buyer?.email || undefined,
-        identification: buyer?.dni ? { type: "DNI", number: buyer.dni } : undefined,
+        identification: buyer?.dni
+          ? { type: "DNI", number: buyer.dni }
+          : undefined,
       },
       external_reference,
       back_urls: {
@@ -105,14 +99,17 @@ export async function POST(req) {
       statement_descriptor: "RIFTEA",
     };
 
-    const resPref = await fetch("https://api.mercadopago.com/checkout/preferences", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(prefPayload),
-    });
+    const resPref = await fetch(
+      "https://api.mercadopago.com/checkout/preferences",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(prefPayload),
+      }
+    );
 
     const pref = await resPref.json().catch(() => ({}));
     if (!resPref.ok) {
@@ -122,30 +119,33 @@ export async function POST(req) {
         data: { status: "rejected" },
       });
       return Response.json(
-        { error: pref?.message || "No se pudo crear la preferencia de pago" },
+        { error: pref?.message || "No se pudo crear la preferencia" },
         { status: 502 }
       );
     }
 
-    // Guardamos algo de trazabilidad
+    // Guardamos datos mínimos
     await prisma.purchase.update({
       where: { id: purchase.id },
       data: {
-        paymentId: String(pref?.id || ""), // id de la preferencia
+        paymentId: String(pref?.id || ""),
         paymentMethod: "checkout_pro",
         status: "pending",
       },
     });
 
     return Response.json({
-      init_point: pref.init_point, // URL para redirigir (desktop)
+      init_point: pref.init_point,
       sandbox_init_point: pref.sandbox_init_point,
       preferenceId: pref.id,
       external_reference,
     });
   } catch (e) {
     console.error("preference error:", e);
-    return Response.json({ error: e?.message || "Error inesperado" }, { status: 500 });
+    return Response.json(
+      { error: e?.message || "Error inesperado" },
+      { status: 500 }
+    );
   }
 }
 
