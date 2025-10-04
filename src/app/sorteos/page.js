@@ -1,10 +1,9 @@
 // src/app/sorteos/page.js
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import ProgressBar from "@/components/raffle/ProgressBar";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 const PER_PAGE = 12;
@@ -27,11 +26,7 @@ function isDataUrl(u) {
   return typeof u === "string" && u.trim().startsWith("data:");
 }
 
-/** Imagen segura usando next/image (sin need de domains).
- *  - Si la URL no es válida, usa fallback.
- *  - Para contenedores con aspect-ratio usa fill.
- *  - Para avatares u otros tamaños fijos, pasá width/height.
- */
+/** Imagen segura usando next/image (sin need de domains). */
 function SafeImage({
   src,
   alt,
@@ -44,8 +39,6 @@ function SafeImage({
 }) {
   const ok = isHttpUrl(src) || isDataUrl(src) || String(src || "").startsWith("/");
   const finalSrc = ok ? src : fallback;
-
-  // Loader passthrough para evitar domains y usar la URL tal cual
   const passthroughLoader = ({ src }) => src;
 
   if (fill) {
@@ -75,6 +68,20 @@ function SafeImage({
   );
 }
 
+/** Barra de progreso finita y sutil (solo para en curso) */
+function SlimBar({ current = 0, target = 1 }) {
+  const pct = Math.max(0, Math.min(100, Math.round((current / target) * 100) || 0));
+  return (
+    <div className="mt-2 h-1.5 rounded-full bg-slate-800/70 overflow-hidden">
+      <div
+        className="h-full bg-gradient-to-r from-indigo-400 to-purple-400"
+        style={{ width: `${pct}%` }}
+        aria-label={`Progreso ${pct}%`}
+      />
+    </div>
+  );
+}
+
 /* ===================== Página ===================== */
 
 export default function SorteosPublicosPage() {
@@ -85,29 +92,41 @@ export default function SorteosPublicosPage() {
   const [q, setQ] = useState("");
   // showMode: "all" | "available" | "finalized" | "favorites"
   const [showMode, setShowMode] = useState("available"); // por defecto disponibles
-
   // sortKey: createdAt_desc / createdAt_asc / participants_desc / participants_asc / timeLeft_asc / timeLeft_desc
   const [sortKey, setSortKey] = useState("createdAt_desc");
-
   const [page, setPage] = useState(1);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [items, setItems] = useState([]);
-  const [total, setTotal] = useState(0); // viene del server (solo referencia)
-  const [ticketPrice, setTicketPrice] = useState(null);
+  const [total, setTotal] = useState(0);
 
   const [favorites, setFavorites] = useState([]);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
+
+  // UI sutil: buscador y filtros en popovers
+  const [showSearch, setShowSearch] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const filtersRef = useRef(null);
+
+  // Cerrar panel de filtros al clickear afuera
+  useEffect(() => {
+    function onDocClick(e) {
+      if (!filtersRef.current) return;
+      if (!filtersRef.current.contains(e.target)) setShowFilters(false);
+    }
+    if (showFilters) document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [showFilters]);
 
   // Lee ?selectTicket de la URL (si venimos desde Mis tickets) — solo una vez
   useEffect(() => {
     const tid = searchParams.get("selectTicket");
     if (tid) setSelectedTicketId(tid);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // lo mantenemos one-shot; si querés que reaccione a cambios, agregá [searchParams]
+  }, []);
 
-  // ✅ Lee y SINCRONIZA ?filter= (o ?show=) SIEMPRE que cambie el querystring
+  // ✅ sincroniza ?filter= (o ?show=) con estado
   useEffect(() => {
     const raw =
       (searchParams.get("filter") || searchParams.get("show") || "").trim().toLowerCase();
@@ -115,12 +134,12 @@ export default function SorteosPublicosPage() {
     if (valid.includes(raw)) {
       setShowMode(raw);
     } else {
-      setShowMode("available"); // default si no viene nada
+      setShowMode("available");
     }
     setPage(1);
   }, [searchParams]);
 
-  // Lee favoritos de localStorage
+  // Favoritos
   useEffect(() => {
     try {
       const stored = JSON.parse(localStorage.getItem("favRaffles") || "[]");
@@ -135,9 +154,7 @@ export default function SorteosPublicosPage() {
       const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
       try {
         localStorage.setItem("favRaffles", JSON.stringify(next));
-      } catch {
-        /* ignore */
-      }
+      } catch {}
       return next;
     });
   };
@@ -148,11 +165,9 @@ export default function SorteosPublicosPage() {
       setLoading(true);
       setError(null);
 
-      // Para el backend: el campo (sin dirección).
-      // Si pedimos timeLeft, lo mapeamos a createdAt y ordenamos en cliente.
-      const [field, dir] = sortKey.split("_"); // p.ej. "createdAt", "desc"
+      const [field, dir] = sortKey.split("_");
       const serverSortBy = field === "timeLeft" ? "createdAt" : field;
-      const order = dir; // "asc" | "desc"
+      const order = dir;
 
       const params = new URLSearchParams({
         q,
@@ -167,14 +182,10 @@ export default function SorteosPublicosPage() {
         credentials: "include",
       });
       const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(data?.error || `Error ${res.status}`);
-      }
+      if (!res.ok) throw new Error(data?.error || `Error ${res.status}`);
 
       let list = Array.isArray(data.items) ? data.items : [];
 
-      // Orden especial por tiempo restante en el cliente
       if (field === "timeLeft") {
         list = [...list].sort((a, b) => {
           const now = Date.now();
@@ -186,12 +197,6 @@ export default function SorteosPublicosPage() {
 
       setItems(list);
       setTotal(Number.isFinite(data.total) ? data.total : list.length);
-
-      // Precio (informativo) desde meta o primer item (unitPrice)
-      const price =
-        data?.meta?.ticketPrice ??
-        (list.length > 0 ? list[0]?.unitPrice ?? list[0]?.derivedTicketPrice ?? null : null);
-      setTicketPrice(price);
     } catch (err) {
       console.error("Error cargando sorteos públicos:", err);
       setError(err.message || "No se pudieron cargar los sorteos públicos");
@@ -205,13 +210,12 @@ export default function SorteosPublicosPage() {
   useEffect(() => {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, sortKey, page, showMode]); // 👈 ahora showMode sí cambia cuando cambia ?filter=
+  }, [q, sortKey, page, showMode]);
 
   // Filtro por estado + favoritos (cliente)
   const filteredItems = useMemo(() => {
     let list = items;
 
-    // texto
     const query = q.trim().toLowerCase();
     if (query) {
       list = list.filter((it) => {
@@ -221,14 +225,11 @@ export default function SorteosPublicosPage() {
       });
     }
 
-    // estado
     if (showMode === "available") {
       list = list.filter((it) => ["ACTIVE", "PUBLISHED"].includes(it?.status));
     } else if (showMode === "finalized") {
       list = list.filter((it) => ["FINISHED", "COMPLETED"].includes(it?.status));
     }
-
-    // favoritos
     if (showMode === "favorites") {
       list = list.filter((it) => favorites.includes(it.id));
     }
@@ -236,11 +237,11 @@ export default function SorteosPublicosPage() {
     return list;
   }, [items, q, showMode, favorites]);
 
-  // Paginación local sobre lo filtrado (coherente visualmente)
-  const totalPages = useMemo(() => {
-    return Math.max(1, Math.ceil(filteredItems.length / PER_PAGE));
-  }, [filteredItems.length]);
-
+  // Paginación local
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredItems.length / PER_PAGE)),
+    [filteredItems.length],
+  );
   const pagedItems = useMemo(() => {
     const start = (page - 1) * PER_PAGE;
     return filteredItems.slice(start, start + PER_PAGE);
@@ -278,112 +279,162 @@ export default function SorteosPublicosPage() {
     }
   };
 
-  // ✅ Cuando el usuario cambia el select "Mostrar", además de setShowMode, actualizamos la URL (?filter=...)
+  // URL sync del filtro "Mostrar"
   const handleChangeShowMode = (value) => {
     setPage(1);
     setShowMode(value);
 
     const params = new URLSearchParams(searchParams.toString());
-    if (value === "available") {
-      params.set("filter", "available");
-    } else if (value === "finalized") {
-      params.set("filter", "finalized");
-    } else if (value === "favorites") {
-      params.set("filter", "favorites");
-    } else {
-      // "all"
-      params.set("filter", "all");
-    }
-
+    params.set("filter", value);
     router.push(`${pathname}?${params.toString()}`);
   };
+
+  // HREF detalle
+  const makeDetailHref = (id) =>
+    `/sorteo/${id}${selectedTicketId ? `?use=${encodeURIComponent(selectedTicketId)}` : ""}`;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 text-slate-50">
       {/* Header */}
-      <div className="sticky top-0 z-10 backdrop-blur-md bg-slate-950/70 border-b border-slate-800">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="min-w-0">
-            <h1 className="text-2xl md:text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400 truncate">
-              Elegi Premios
-            </h1>
-            <p className="text-slate-400 text-sm">Descubrí sorteos activos de toda la comunidad</p>
+      <div className="sticky top-0 z-20 backdrop-blur-md bg-slate-950/70 border-b border-slate-800">
+        <div className="max-w-6xl mx-auto px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="text-2xl md:text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400 truncate">
+                Elegí Premios
+              </h1>
+              <p className="text-slate-400 text-xs md:text-sm">
+                Descubrí sorteos activos de toda la comunidad
+              </p>
+            </div>
+
+            {/* Barra compacta: Mis tickets + acciones sutiles */}
+            <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+              <Link
+                href="/mis-tickets"
+                className="px-3 py-2 rounded-lg border border-slate-700/40 text-slate-300 hover:bg-slate-800/40 transition text-sm"
+                title="Ver mis tickets"
+              >
+                Mis tickets
+              </Link>
+
+              {/* Buscar (icono) */}
+              <button
+                onClick={() => {
+                  setShowSearch((v) => !v);
+                  setShowFilters(false);
+                }}
+                className="px-3 py-2 rounded-lg border border-slate-700/40 text-slate-300 hover:bg-slate-800/40 transition text-sm"
+                title="Buscar"
+                type="button"
+                aria-expanded={showSearch}
+                aria-controls="search-pop"
+              >
+                🔎
+              </button>
+
+              {/* Filtros (icono) */}
+              <div className="relative" ref={filtersRef}>
+                <button
+                  onClick={() => {
+                    setShowFilters((v) => !v);
+                    setShowSearch(false);
+                  }}
+                  className="px-3 py-2 rounded-lg border border-slate-700/40 text-slate-300 hover:bg-slate-800/40 transition text-sm"
+                  title="Filtros"
+                  type="button"
+                  aria-expanded={showFilters}
+                  aria-controls="filters-pop"
+                >
+                  ⚙️
+                </button>
+
+                {/* Panel flotante de filtros */}
+                {showFilters && (
+                  <div
+                    id="filters-pop"
+                    className="absolute right-0 mt-2 w-[min(88vw,360px)] rounded-xl border border-slate-700/60 bg-slate-900/95 shadow-2xl p-3 backdrop-blur-md"
+                  >
+                    <div className="text-slate-300 text-sm mb-2">Filtros</div>
+
+                    <div className="grid grid-cols-1 gap-2">
+                      {/* Mostrar */}
+                      <label className="text-xs text-slate-400">Mostrar</label>
+                      <select
+                        value={showMode}
+                        onChange={(e) => {
+                          handleChangeShowMode(e.target.value);
+                          setShowFilters(false);
+                        }}
+                        className="px-3 py-2 rounded-lg bg-slate-950/60 border border-slate-700/60 text-slate-200"
+                        title="Mostrar"
+                      >
+                        <option value="all">Todos</option>
+                        <option value="available">Disponibles</option>
+                        <option value="finalized">Finalizados</option>
+                        <option value="favorites">Solo favoritos</option>
+                      </select>
+
+                      {/* Ordenar */}
+                      <label className="text-xs text-slate-400 mt-2">Ordenar por</label>
+                      <select
+                        value={sortKey}
+                        onChange={(e) => {
+                          setPage(1);
+                          setSortKey(e.target.value);
+                          setShowFilters(false);
+                        }}
+                        className="px-3 py-2 rounded-lg bg-slate-950/60 border border-slate-700/60 text-slate-200"
+                        title="Ordenar por"
+                      >
+                        <optgroup label="Fecha de creación">
+                          <option value="createdAt_desc">Más nuevo</option>
+                          <option value="createdAt_asc">Más viejo</option>
+                        </optgroup>
+                        <optgroup label="Participantes">
+                          <option value="participants_desc">Mayor a menor</option>
+                          <option value="participants_asc">Menor a mayor</option>
+                        </optgroup>
+                        <optgroup label="Tiempo restante">
+                          <option value="timeLeft_asc">Menos a más</option>
+                          <option value="timeLeft_desc">Más a menos</option>
+                        </optgroup>
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
-          <div className="flex gap-2 shrink-0">
-            <Link
-              href="/mis-tickets"
-              className="px-4 py-2 rounded-lg border border-slate-700/50 text-slate-300 hover:bg-slate-800/40 transition"
-            >
-              Mis tickets
-            </Link>
-          </div>
+          {/* Buscador flotante (pill) */}
+          {showSearch && (
+            <div id="search-pop" className="mt-3 relative">
+              <input
+                autoFocus
+                value={q}
+                onChange={(e) => {
+                  setPage(1);
+                  setQ(e.target.value);
+                }}
+                placeholder="Buscar por título o descripción…"
+                className="w-full px-4 py-3 rounded-full bg-slate-900/70 border border-slate-700/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 text-slate-200 shadow-lg"
+                onBlur={() => setShowSearch(false)}
+              />
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Banner si venimos con un ticket a usar */}
+      {/* Banner ticket pre-seleccionado */}
       {selectedTicketId && (
         <div className="max-w-6xl mx-auto px-4 pt-4">
-          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-amber-200 text-sm">
-            <span className="mr-2">🎫</span>
-            Elegí un sorteo para usar tu ticket{" "}
-            <strong>#{String(selectedTicketId).slice(-6)}</strong>. Al entrar al sorteo, presioná “Participar con ticket”.
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-amber-200 text-sm">
+            🎫 Elegí un sorteo para usar tu ticket{" "}
+            <strong>#{String(selectedTicketId).slice(-6)}</strong>. Al entrar, usá “Participar con ticket”.
           </div>
         </div>
       )}
-
-      {/* Filtros */}
-      <div className="max-w-6xl mx-auto px-4 py-4">
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_auto] gap-3 items-stretch">
-          {/* Buscador */}
-          <input
-            value={q}
-            onChange={(e) => {
-              setPage(1);
-              setQ(e.target.value);
-            }}
-            placeholder="Buscar por título o descripción..."
-            className="w-full px-4 py-3 rounded-xl bg-slate-900/60 border border-slate-700/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 text-slate-200"
-          />
-
-          {/* Mostrar (estado + favoritos en el mismo select) */}
-          <select
-            value={showMode}
-            onChange={(e) => handleChangeShowMode(e.target.value)}
-            className="px-3 py-3 rounded-xl bg-slate-900/60 border border-slate-700/50 text-slate-200 min-w-[220px]"
-            title="Mostrar"
-          >
-            <option value="all">Mostrar: Todos</option>
-            <option value="available">Mostrar: Disponibles</option>
-            <option value="finalized">Mostrar: Finalizados</option>
-            <option value="favorites">Mostrar: Solo favoritos</option>
-          </select>
-
-          {/* Orden (campo + dirección combinado) */}
-          <select
-            value={sortKey}
-            onChange={(e) => {
-              setPage(1);
-              setSortKey(e.target.value);
-            }}
-            className="px-3 py-3 rounded-xl bg-slate-900/60 border border-slate-700/50 text-slate-200 min-w-[260px]"
-            title="Ordenar por"
-          >
-            <optgroup label="Fecha de creación">
-              <option value="createdAt_desc">Fecha de creación (más nuevo)</option>
-              <option value="createdAt_asc">Fecha de creación (más viejo)</option>
-            </optgroup>
-            <optgroup label="Participantes">
-              <option value="participants_desc">Participantes (mayor a menor)</option>
-              <option value="participants_asc">Participantes (menor a mayor)</option>
-            </optgroup>
-            <optgroup label="Tiempo restante">
-              <option value="timeLeft_asc">Tiempo restante (menos a más)</option>
-              <option value="timeLeft_desc">Tiempo restante (más a menos)</option>
-            </optgroup>
-          </select>
-        </div>
-      </div>
 
       {/* Contenido */}
       <div className="max-w-6xl mx-auto px-4 pb-12">
@@ -410,18 +461,31 @@ export default function SorteosPublicosPage() {
                   r?._count?.participations ?? r?.stats?.totalParticipations ?? 0;
                 const max = r?.maxParticipants ?? r?.stats?.maxParticipants ?? null;
                 const timeLeft = timeLeftText(r?.endsAt);
+                const detailHref = makeDetailHref(r.id);
+
+                const remaining = max != null ? Math.max(0, max - participants) : null;
+                const isFull =
+                  (max && participants >= max) ||
+                  ["FINISHED", "COMPLETED", "READY_TO_DRAW"].includes(r?.status);
+                const isLastSpots = !isFull && remaining != null && remaining <= 3;
 
                 return (
                   <div
                     key={r.id}
                     className="group h-full flex flex-col rounded-2xl border border-slate-800 bg-slate-900/50 overflow-hidden transition-transform duration-200 ease-out hover:-translate-y-0.5 hover:shadow-xl hover:border-slate-700/60"
                   >
-                    <div className="relative aspect-[16/9] bg-slate-800 overflow-hidden">
+                    {/* Imagen clickeable */}
+                    <Link
+                      href={detailHref}
+                      aria-label={`Ver sorteo: ${r?.title || "Sorteo"}`}
+                      title={r?.title || "Ver sorteo"}
+                      className="relative aspect-[16/9] bg-slate-800 overflow-hidden focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                    >
                       {r?.imageUrl ? (
                         <SafeImage
                           src={r.imageUrl}
                           alt={r.title || "Sorteo"}
-                          className="object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                          className="object-cover transition-transform duration-300 group-hover:scale-[1.02] cursor-pointer"
                           fill
                           sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
                           fallback="/file.svg"
@@ -431,16 +495,37 @@ export default function SorteosPublicosPage() {
                           Sin imagen
                         </div>
                       )}
+
+                      {/* Ribbons estado */}
+                      {isFull ? (
+                        <span className="absolute left-0 top-2 z-10 px-3 py-1 rounded-r-full text-[11px] font-semibold bg-gradient-to-r from-emerald-500/90 via-emerald-400/90 to-emerald-300/90 text-emerald-950 shadow-md">
+                          ✅ Meta alcanzada
+                        </span>
+                      ) : isLastSpots ? (
+                        <span className="absolute left-0 top-2 z-10 px-3 py-1 rounded-r-full text-[11px] font-semibold bg-gradient-to-r from-amber-400/90 via-orange-400/90 to-rose-400/90 text-slate-950 shadow-md">
+                          🔥 ¡Últimos {remaining}!
+                        </span>
+                      ) : (
+                        <span className="absolute left-0 top-2 z-10 px-3 py-1 rounded-r-full text-[11px] font-semibold bg-gradient-to-r from-indigo-400/90 via-indigo-300/90 to-sky-300/90 text-slate-950 shadow-md">
+                          ⏳ En curso
+                        </span>
+                      )}
+
+                      {/* Favorito (no navega) */}
                       <button
-                        onClick={() => toggleFav(r.id)}
-                        className="absolute top-2 right-2 p-2 rounded-full bg-black/50 hover:bg-black/70 text-yellow-300"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          toggleFav(r.id);
+                        }}
+                        className="absolute top-2 right-2 p-2 rounded-full bg-black/50 hover:bg-black/70 text-yellow-300 z-10"
                         aria-label="Favorito"
                         title="Marcar como favorito"
                         type="button"
                       >
                         {favorites.includes(r.id) ? "★" : "☆"}
                       </button>
-                    </div>
+                    </Link>
 
                     <div className="p-4 flex flex-col gap-3 grow">
                       <div className="flex items-start justify-between gap-3 min-w-0">
@@ -460,21 +545,33 @@ export default function SorteosPublicosPage() {
                       </p>
 
                       <div className="space-y-2">
-                        <div className="flex justify-between text-xs text-slate-400">
+                        <div className="flex items-center justify-between text-xs text-slate-400">
                           <span className="truncate">Participantes</span>
-                          <span className="shrink-0">
-                            {participants}
-                            {max ? ` / ${max}` : " / ∞"}
-                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {!isFull && remaining != null && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-400/15 text-amber-300 border border-amber-400/30">
+                                Quedan {remaining}
+                              </span>
+                            )}
+                            {isFull && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-400/20 text-emerald-300 border border-emerald-500/30">
+                                100% completado
+                              </span>
+                            )}
+                            <span>
+                              {participants}
+                              {max ? ` / ${max}` : " / ∞"}
+                            </span>
+                          </div>
                         </div>
-                        {/* ProgressBar con olita visual y animación suave */}
-                        <ProgressBar
-                          current={participants}
-                          target={max || Math.max(1, participants)}
-                          animated
-                          wave
-                          waveSpeed="2.8s"
-                        />
+
+                        {/* Barra slim solo si NO está completo */}
+                        {!isFull && (
+                          <SlimBar
+                            current={participants}
+                            target={max || Math.max(1, participants)}
+                          />
+                        )}
                       </div>
 
                       <div className="flex items-center justify-between text-xs text-slate-400 pt-1 min-w-0">
@@ -499,7 +596,7 @@ export default function SorteosPublicosPage() {
                       </div>
 
                       <Link
-                        href={`/sorteo/${r.id}${selectedTicketId ? `?use=${encodeURIComponent(selectedTicketId)}` : ""}`}
+                        href={detailHref}
                         className="mt-auto block w-full text-center px-3 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white text-sm font-semibold"
                       >
                         Ver sorteo
@@ -531,12 +628,6 @@ export default function SorteosPublicosPage() {
                 >
                   Siguiente →
                 </button>
-              </div>
-            )}
-
-            {ticketPrice != null && (
-              <div className="mt-8 text-center text-xs text-slate-400">
-                Precio por ticket (config servidor): ${Number(ticketPrice).toLocaleString()}
               </div>
             )}
           </>

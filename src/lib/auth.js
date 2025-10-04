@@ -54,17 +54,17 @@ export const authOptions = {
     },
 
     /**
-     * JWT: almacena datos mínimos y soporta session.update({...})
+     * JWT: almacena datos mínimos, rehidrata desde DB y soporta session.update({...})
      */
     async jwt({ token, user, trigger, session }) {
-      // 1) Primer login o cuando NextAuth inyecta "user" desde el provider/DB:
+      // 1) Primer login o cuando NextAuth inyecta "user" desde el provider:
       if (user) {
-        if (!token.id && user.id) token.id = user.id;         // id si viene del adapter
+        if (!token.id && user.id) token.id = user.id; // id si viene del adapter
         if (user.name != null) token.name = user.name;
         if (user.email != null) token.email = user.email;
         if (user.image != null) token.image = user.image;
         if (user.whatsapp != null) token.whatsapp = user.whatsapp;
-        if (user.role != null) token.role = String(user.role).toLowerCase();
+        if (user.role != null) token.role = String(user.role); // mantener MAYÚSCULAS (USER/ADMIN/SUPERADMIN)
       }
 
       // 2) Soportar session.update({ ... }) desde el cliente
@@ -72,11 +72,42 @@ export const authOptions = {
         if (session.name != null) token.name = session.name;
         if (session.whatsapp != null) token.whatsapp = session.whatsapp;
         if (session.image != null) token.image = session.image;
-        if (session.role != null) token.role = String(session.role).toLowerCase();
+        if (session.role != null) token.role = String(session.role); // sin .toLowerCase()
       }
 
       // Propagar id si faltaba (común cuando no hay adapter)
       if (!token.id && token.sub) token.id = token.sub;
+
+      // 3) REHIDRATAR DESDE DB: la DB manda (evita que el provider pise tu nombre)
+      const uid = token?.id || token?.sub;
+      const emailForLookup = token?.email; // fallback si no hay id
+      if (uid || emailForLookup) {
+        try {
+          const dbUser = await prisma.user.findUnique({
+            where: uid ? { id: uid } : { email: emailForLookup },
+            select: {
+              id: true,
+              email: true,
+              name: true,
+              image: true,
+              whatsapp: true,
+              role: true,
+            },
+          });
+          if (dbUser) {
+            token.id = dbUser.id;
+            token.sub = dbUser.id;
+            token.email = dbUser.email ?? token.email;
+            token.name = dbUser.name ?? token.name;
+            token.image = dbUser.image ?? token.image;
+            token.whatsapp = dbUser.whatsapp ?? token.whatsapp;
+            token.role = String(dbUser.role); // MAYÚSCULAS
+          }
+        } catch (e) {
+          // no rompemos el flujo si falla DB
+          console.warn("[JWT] fallo rehidratando desde DB (ignorado):", e?.message);
+        }
+      }
 
       return token;
     },
@@ -98,7 +129,7 @@ export const authOptions = {
       if (token?.name != null) session.user.name = token.name;
       if (token?.image != null) session.user.image = token.image;
       if (token?.whatsapp != null) session.user.whatsapp = token.whatsapp;
-      if (token?.role != null) session.user.role = String(token.role).toLowerCase();
+      if (token?.role != null) session.user.role = String(token.role); // mantener MAYÚSCULAS
 
       // 2) Intentar enriquecer con una sola query liviana (si hay email)
       if (!session?.user?.email) return session;
@@ -133,13 +164,13 @@ export const authOptions = {
         });
 
         if (dbUser) {
-          // Campos base
+          // Campos base (DB gana)
           session.user.id = dbUser.id;
           session.user.dbId = dbUser.id;
           session.user.name = dbUser.name ?? session.user.name ?? null;
           session.user.image = dbUser.image ?? session.user.image ?? null;
           session.user.whatsapp = dbUser.whatsapp ?? session.user.whatsapp ?? null;
-          session.user.role = String(dbUser.role ?? session.user.role ?? "user").toLowerCase();
+          session.user.role = String(dbUser.role ?? session.user.role ?? "USER"); // MAYÚSCULAS
           session.user.isActive = dbUser.isActive;
           session.user.memberSince = dbUser.createdAt;
 
@@ -152,7 +183,7 @@ export const authOptions = {
           console.log("[SESSION] OK:", dbUser.email, "role:", session.user.role);
         } else {
           // Usuario no existe aún en DB
-          session.user.role = "user";
+          session.user.role = "USER";
           session.user.availableTickets = 0;
           session.user.totalPurchases = 0;
           session.user.wonRaffles = 0;
@@ -161,7 +192,7 @@ export const authOptions = {
         }
       } catch (err) {
         // Si falla la DB, no rompemos la sesión
-        session.user.role = session.user.role ?? "user";
+        session.user.role = session.user.role ?? "USER";
         session.user.availableTickets = session.user.availableTickets ?? 0;
         session.user.totalPurchases = session.user.totalPurchases ?? 0;
         session.user.wonRaffles = session.user.wonRaffles ?? 0;
@@ -182,15 +213,15 @@ export const authOptions = {
         // ✅ Verificar existencia con una sola consulta
         const existingUser = await prisma.user.findUnique({
           where: { email: user.email },
-          select: { id: true, name: true, firstLogin: true },
+          select: { id: true, name: true, firstLogin: true, image: true },
         });
 
         const isNewUser = !existingUser;
         let userId;
-        let userName;
+        let finalName;
 
         if (isNewUser) {
-          // Usuario NUEVO - Crear en DB
+          // Usuario NUEVO - Crear en DB (tomamos nombre del provider SOLO en alta)
           const newUser = await prisma.user.create({
             data: {
               name: user.name ?? null,
@@ -203,22 +234,24 @@ export const authOptions = {
           });
 
           userId = newUser.id;
-          userName = newUser.name;
+          finalName = newUser.name;
           console.log("[EVENT signIn] NUEVO usuario creado:", user.email);
         } else {
-          // Usuario EXISTENTE - Actualizar datos base
+          // Usuario EXISTENTE - NO sobreescribir name (respetamos el que puso en tu plataforma)
+          // Solo actualizamos image si viene algo nuevo; si el nombre en DB está vacío, lo completamos con el de Google.
+          const shouldSetName = !existingUser.name && user.name; // solo si estaba vacío
           const updatedUser = await prisma.user.update({
             where: { email: user.email },
             data: {
-              name: user.name ?? undefined,
+              name: shouldSetName ? user.name : undefined,
               image: user.image ?? undefined,
             },
             select: { id: true, name: true },
           });
 
           userId = updatedUser.id;
-          userName = updatedUser.name;
-          console.log("[EVENT signIn] Usuario existente actualizado:", user.email);
+          finalName = updatedUser.name;
+          console.log("[EVENT signIn] Usuario existente actualizado (sin pisar name):", user.email);
         }
 
         // ⭐ Notificación de bienvenida / regreso (no bloqueante)
@@ -227,8 +260,8 @@ export const authOptions = {
             ? "¡Bienvenido a Riftea!"
             : "¡Hola de nuevo!";
           const notificationMessage = isNewUser
-            ? `¡Hola ${userName ?? ""}! Gracias por registrarte. ¡Esperamos que disfrutes de los sorteos!`
-            : `¡Bienvenido de vuelta, ${userName ?? ""}! ¡Que tengas suerte en los sorteos!`;
+            ? `¡Hola ${finalName ?? ""}! Gracias por registrarte. ¡Esperamos que disfrutes de los sorteos!`
+            : `¡Bienvenido de vuelta, ${finalName ?? ""}! ¡Que tengas suerte en los sorteos!`;
 
           await prisma.notification.create({
             data: {
@@ -240,6 +273,7 @@ export const authOptions = {
           });
 
           if (isNewUser) {
+            // marcar primer login como completado
             await prisma.user.update({
               where: { id: userId },
               data: { firstLogin: false },
@@ -283,6 +317,7 @@ export async function getServerAuth() {
 export async function requireAdmin() {
   const session = await getServerAuth();
   if (!session?.user) throw new Error("Authentication required");
+  // Comparación en minúsculas para compatibilidad (aunque guardamos MAYÚSCULAS en session)
   if (!["admin", "superadmin"].includes(String(session.user.role).toLowerCase())) {
     throw new Error("Admin access required");
   }

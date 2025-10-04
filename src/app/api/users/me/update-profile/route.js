@@ -6,10 +6,13 @@ import prisma from "@/lib/prisma";
 
 /**
  * PATCH /api/users/me/update-profile
- * Body: { name?: string, whatsapp?: string }
- * - Nombre único (case-insensitive) + cooldown de 30 días (lastNameChange)
- * - WhatsApp 10–15 dígitos (se guarda tal cual lo envíes, validado)
- * - Devuelve "sessionPatch" para usar con session.update(sessionPatch)
+ * Body: { name?: string, whatsapp?: string, bypassLimit?: boolean }
+ *
+ * Cambios clave:
+ * - Si session.user.role === "SUPERADMIN" y viene { bypassLimit: true }, NO se aplica cooldown.
+ * - Unicidad del nombre (case-insensitive) para todos (incluye SUPERADMIN).
+ * - WhatsApp validado (10–15 dígitos).
+ * - Devuelve "sessionPatch" para usar con session.update(sessionPatch).
  */
 export async function PATCH(request) {
   try {
@@ -17,26 +20,40 @@ export async function PATCH(request) {
 
     const userId = session?.user?.id || null;
     const userEmail = session?.user?.email || null;
+    const sessionRole = session?.user?.role || null;
+
     if (!userId && !userEmail) {
       return Response.json({ error: "No autenticado" }, { status: 401 });
     }
 
     const body = await request.json().catch(() => ({}));
-    const { name, whatsapp } = body || {};
+    const { name, whatsapp, bypassLimit } = body || {};
 
-    // Traemos datos actuales para comparar/validar
+    // Traemos datos actuales (y rol como fallback por si no viene en JWT)
     const currentUser = await prisma.user.findFirst({
       where: userId ? { id: userId } : { email: userEmail },
-      select: { id: true, name: true, lastNameChange: true, whatsapp: true },
+      select: {
+        id: true,
+        name: true,
+        lastNameChange: true,
+        whatsapp: true,
+        role: true,
+      },
     });
+
+    if (!currentUser) {
+      return Response.json({ error: "Usuario no encontrado" }, { status: 404 });
+    }
+
+    const effectiveRole = sessionRole || currentUser.role || "USER";
+    const canBypassLimit = effectiveRole === "SUPERADMIN" && bypassLimit === true;
 
     const updates = {};
     const sessionPatch = {};
 
-    // === Nombre con UNICIDAD (case-insensitive) y cooldown ===
+    // === Nombre con UNICIDAD (case-insensitive) y cooldown (salteable por SUPERADMIN con bypass) ===
     if (name !== undefined) {
-      const trimmed = String(name).trim();
-
+      const trimmed = String(name).normalize("NFKC").trim().replace(/\s+/g, " ");
       if (trimmed.length < 2 || trimmed.length > 30) {
         return Response.json(
           { error: "El nombre debe tener entre 2 y 30 caracteres" },
@@ -49,10 +66,7 @@ export async function PATCH(request) {
 
       if (!isSameName) {
         // 1) Chequear duplicado (case-insensitive), excluyéndome a mí
-        const notMe = userId
-          ? { id: { not: userId } }
-          : { email: { not: userEmail } };
-
+        const notMe = { id: { not: currentUser.id } };
         const duplicate = await prisma.user.findFirst({
           where: {
             AND: [
@@ -70,12 +84,12 @@ export async function PATCH(request) {
           );
         }
 
-        // 2) Cooldown 30 días
-        const now = new Date();
-        if (currentUser?.lastNameChange) {
+        // 2) Cooldown ~30 días (solo si NO bypass)
+        if (!canBypassLimit && currentUser?.lastNameChange) {
           const last = new Date(currentUser.lastNameChange);
           const next = new Date(last);
           next.setMonth(next.getMonth() + 1);
+          const now = new Date();
           if (now < next) {
             return Response.json(
               {
@@ -88,6 +102,8 @@ export async function PATCH(request) {
           }
         }
 
+        // Guardamos cambio (igual registramos lastNameChange para trazabilidad)
+        const now = new Date();
         updates.name = trimmed;
         updates.lastNameChange = now;
         sessionPatch.name = trimmed; // para session.update()
@@ -122,7 +138,7 @@ export async function PATCH(request) {
     let updatedUser;
     try {
       updatedUser = await prisma.user.update({
-        where: userId ? { id: userId } : { email: userEmail },
+        where: { id: currentUser.id },
         data: updates,
         select: {
           id: true,
@@ -137,7 +153,7 @@ export async function PATCH(request) {
         },
       });
     } catch (e) {
-      // Si existe índice único a nivel DB (recomendado), mapeamos el error a 409
+      // Si existe índice único en DB, mapeamos a 409
       const msg = String(e?.message || "");
       if (e?.code === "P2002" || msg.includes("duplicate key") || msg.includes("unique")) {
         return Response.json(
@@ -159,6 +175,7 @@ export async function PATCH(request) {
         user: updatedUser,
         shouldSessionUpdate: true,
         sessionPatch,
+        bypassApplied: canBypassLimit === true, // útil para debug en el front
       },
       { status: 200 }
     );
@@ -167,4 +184,3 @@ export async function PATCH(request) {
     return Response.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 }
-

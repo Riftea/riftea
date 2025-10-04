@@ -22,6 +22,8 @@ export default function PerfilPage() {
   const [photoPreview, setPhotoPreview] = useState(null);
   const [updateLoading, setUpdateLoading] = useState(false);
 
+  const isSuperAdmin = session?.user?.role === "SUPERADMIN";
+
   useEffect(() => {
     if (status === "loading") return;
     if (status === "unauthenticated") {
@@ -32,12 +34,20 @@ export default function PerfilPage() {
   }, [status, router]);
 
   useEffect(() => {
-    if (session?.user) {
-      // Usamos "name" (sin tocar DB)
-      setNewDisplayName(session.user.name || "");
-      setNewWhatsApp(session.user.whatsapp || "");
-    }
-  }, [session]);
+    // Prefiere datos frescos del backend si están disponibles
+    const preferredName =
+      userStats?.displayName ??
+      session?.user?.name ??
+      "";
+    const preferredWA =
+      userStats?.whatsapp ??
+      session?.user?.whatsapp ??
+      "";
+
+    // No pisar mientras se está editando
+    if (!isEditingName) setNewDisplayName(preferredName);
+    if (!isEditingWhatsApp) setNewWhatsApp(preferredWA);
+  }, [session, userStats, isEditingName, isEditingWhatsApp]);
 
   const fetchUserStats = async () => {
     try {
@@ -75,6 +85,9 @@ export default function PerfilPage() {
     userStats?.lastNameChange || session?.user?.lastNameChange || null;
 
   const canChangeName = () => {
+    // SUPERADMIN siempre puede
+    if (isSuperAdmin) return true;
+
     const last = getLastNameChange();
     if (!last) return true;
     const lastChange = new Date(last);
@@ -127,10 +140,19 @@ export default function PerfilPage() {
 
     setUpdateLoading(true);
     try {
+      const body = {
+        name: trimmed,
+      };
+
+      // Si sos SUPERADMIN, mandamos bypass para que el backend ignore el límite
+      if (isSuperAdmin) {
+        body.bypassLimit = true;
+      }
+
       const res = await fetch("/api/users/me/update-profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: trimmed }),
+        body: JSON.stringify(body),
       });
 
       if (!res.ok) {
@@ -257,6 +279,8 @@ export default function PerfilPage() {
 
   const user = session?.user;
   const stats = userStats || {};
+  const displayName = (stats.displayName ?? user?.name) || "";
+  const displayWhatsApp = stats.whatsapp ?? user?.whatsapp;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 via-purple-900 to-indigo-900 pt-20">
@@ -270,7 +294,7 @@ export default function PerfilPage() {
             <div className="relative group">
               <Image
                 src={photoPreview || user?.image || "/avatar-default.png"}
-                alt={user?.name || "Avatar"}
+                alt={displayName || "Avatar"}
                 width={96}
                 height={96}
                 className="rounded-full border-4 border-white/20 object-cover"
@@ -306,7 +330,7 @@ export default function PerfilPage() {
                     <button
                       onClick={() => {
                         setIsEditingName(false);
-                        setNewDisplayName(user?.name || "");
+                        setNewDisplayName(displayName || "");
                       }}
                       className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm"
                     >
@@ -316,14 +340,14 @@ export default function PerfilPage() {
                 ) : (
                   <div className="flex items-center gap-3">
                     <h2 className="text-3xl font-bold text-white">
-                      {user?.name}
+                      {displayName}
                     </h2>
                     <button
                       onClick={() => setIsEditingName(true)}
                       disabled={!canChangeName()}
                       className="text-white/70 hover:text-white disabled:text-white/30 disabled:cursor-not-allowed"
                       title={
-                        !canChangeName()
+                        !canChangeName() && !isSuperAdmin
                           ? `Podrás cambiar tu nombre el ${getNextNameChangeDate()}`
                           : "Editar nombre"
                       }
@@ -332,7 +356,7 @@ export default function PerfilPage() {
                     </button>
                   </div>
                 )}
-                {!canChangeName() && (
+                {!isSuperAdmin && !canChangeName() && (
                   <p className="text-yellow-400/70 text-xs mt-1">
                     Próximo cambio disponible: {getNextNameChangeDate()}
                   </p>
@@ -362,7 +386,7 @@ export default function PerfilPage() {
                     <button
                       onClick={() => {
                         setIsEditingWhatsApp(false);
-                        setNewWhatsApp(user?.whatsapp || "");
+                        setNewWhatsApp(displayWhatsApp || "");
                       }}
                       className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm"
                     >
@@ -372,7 +396,7 @@ export default function PerfilPage() {
                 ) : (
                   <div className="flex items-center gap-2">
                     <span className="text-white/70 text-sm">
-                      📱 {user?.whatsapp || "Sin WhatsApp configurado"}
+                      📱 {displayWhatsApp || "Sin WhatsApp configurado"}
                     </span>
                     <button
                       onClick={() => setIsEditingWhatsApp(true)}
