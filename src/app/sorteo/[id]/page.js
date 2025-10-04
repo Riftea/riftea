@@ -6,7 +6,6 @@ import { useSession } from "next-auth/react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import ProgressBar from "@/components/raffle/ProgressBar";
 import ParticipateModal from "@/components/raffle/ParticipateModal";
 import ShareButton from "@/components/ui/ShareButton";
 
@@ -129,7 +128,22 @@ function initials(name = "Usuario") {
   return parts.map((p) => p[0]?.toUpperCase() || "").join("") || "U";
 }
 
-/* ===== Ícono de Ticket con muescas y perforado ===== */
+/** Embellece el título:
+ * - Si viene TODO MAYÚSCULAS o todo minúsculas → lo pasa a Sentence case.
+ * - Si está mixto, sólo fuerza la primera letra en mayúscula. */
+function beautifyTitle(s = "") {
+  const t = String(s).trim();
+  if (!t) return "";
+  const isAllCaps = t === t.toUpperCase();
+  const isAllLower = t === t.toLowerCase();
+  if (isAllCaps || isAllLower) {
+    const lower = t.toLowerCase();
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  }
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+/* ===== Ícono de Ticket con muescas ===== */
 function TicketIcon({ className = "" }) {
   return (
     <svg viewBox="0 0 48 48" aria-hidden="true" className={className} role="img">
@@ -150,9 +164,49 @@ function TicketIcon({ className = "" }) {
   );
 }
 
-/* ======================= Reusables de “sensación de velocidad” ======================= */
+/* ======================= Progress animada local ======================= */
+function FancyProgress({ current = 0, target = 1 }) {
+  const pct = Math.max(0, Math.min(100, Math.round((current / Math.max(1, target)) * 100)));
 
-/** FadeIn: simple animación de entrada reutilizable (embebida) */
+  return (
+    <div className="w-full h-3 rounded-lg bg-white/10 overflow-hidden relative ring-1 ring-white/10">
+      <div
+        className="h-full bg-gradient-to-r from-emerald-400 via-lime-400 to-emerald-500 relative"
+        style={{ width: `${pct}%` }}
+      >
+        {/* Rayas animadas */}
+        <div className="absolute inset-0 opacity-30 progress-stripes" />
+        {/* Brillo suave */}
+        <div className="absolute inset-0 bg-white/20 mix-blend-overlay pointer-events-none" style={{ maskImage: "linear-gradient(to bottom, rgba(0,0,0,0.15), rgba(0,0,0,0.6))" }} />
+      </div>
+
+      {/* Keyframes locales */}
+      <style jsx>{`
+        .progress-stripes {
+          background-image: linear-gradient(
+            45deg,
+            rgba(255,255,255,0.6) 25%,
+            transparent 25%,
+            transparent 50%,
+            rgba(255,255,255,0.6) 50%,
+            rgba(255,255,255,0.6) 75%,
+            transparent 75%,
+            transparent
+          );
+          background-size: 16px 16px;
+          animation: progress-move 1.6s linear infinite;
+        }
+        @keyframes progress-move {
+          from { background-position: 0 0; }
+          to   { background-position: 16px 0; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+/* ======================= Reusables ======================= */
+
 function FadeIn({ children, delay = 0, duration = 300, className = "" }) {
   const [show, setShow] = useState(false);
   useEffect(() => {
@@ -173,7 +227,6 @@ function FadeIn({ children, delay = 0, duration = 300, className = "" }) {
   );
 }
 
-/** SkeletonCard: tarjeta placeholder reusable (embebida) */
 function SkeletonCard() {
   return (
     <div className="rounded-xl p-2 ring-1 ring-white/10">
@@ -203,20 +256,31 @@ export default function SorteoPage() {
   const [descOpen, setDescOpen] = useState(false);
   const [ticketIdx, setTicketIdx] = useState({});
 
-  // === NUEVO: control por query params (tab/resultado y highlight) ===
+  // Control de tabs y resaltados
   const [activeTab, setActiveTab] = useState("Participantes");
   const [focusWinner, setFocusWinner] = useState(false);
   const [highlightKey, setHighlightKey] = useState(null);
   const [tempGlowId, setTempGlowId] = useState(null);
   const winnerCardRef = useRef(null);
 
-  /* =================== Carga base =================== */
+  // Sticky hide-on-scroll
+  const [showSticky, setShowSticky] = useState(true);
+  const lastYRef = useRef(0);
 
-  const unitPrice = useMemo(() => {
-    if (!raffle) return 0;
-    const n = Number(raffle.unitPrice ?? raffle?.meta?.ticketPrice ?? 0);
-    return Number.isFinite(n) ? n : 0;
-  }, [raffle]);
+  useEffect(() => {
+    const onScroll = () => {
+      const y = window.scrollY || 0;
+      const goingDown = y > lastYRef.current + 6;
+      const goingUp = y < lastYRef.current - 6;
+      if (goingDown && showSticky) setShowSticky(false);
+      if (goingUp && !showSticky) setShowSticky(true);
+      lastYRef.current = y;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [showSticky]);
+
+  /* =================== Carga base =================== */
 
   const loadParticipants = useCallback(
     async (raffleId = id) => {
@@ -237,7 +301,6 @@ export default function SorteoPage() {
       } catch {
         setParticipants([]);
       } finally {
-        // mín. 250 ms para que el usuario “sienta” la transición
         setTimeout(() => setParticipantsLoading(false), 250);
       }
     },
@@ -261,9 +324,7 @@ export default function SorteoPage() {
             (t.status === "IN_RAFFLE" || t.status === "ACTIVE")
         );
         setUserParticipation(participation || null);
-      } catch {
-        /* noop */
-      }
+      } catch {}
     },
     [session?.user?.email]
   );
@@ -286,10 +347,7 @@ export default function SorteoPage() {
         }
 
         const raffleObj = json?.raffle ?? json;
-        const merged = {
-          ...raffleObj,
-          unitPrice: raffleObj?.unitPrice ?? json?.meta?.ticketPrice ?? 0,
-        };
+        const merged = { ...raffleObj };
 
         if (!mounted) return;
         setRaffle(merged);
@@ -299,7 +357,6 @@ export default function SorteoPage() {
       } catch (e) {
         if (mounted) setError(e.message || "Error al cargar el sorteo");
       } finally {
-        // mínimo de 400 ms para que el skeleton se perciba y no “parpadee”
         setTimeout(() => mounted && setLoading(false), 400);
       }
     })();
@@ -316,7 +373,7 @@ export default function SorteoPage() {
     return () => clearInterval(t);
   }, [raffle?.id, raffle?.status, loadParticipants]);
 
-  // === NUEVO: leer ?tab=... y ?highlight=... de la URL ===
+  // Leer ?tab y ?highlight
   useEffect(() => {
     const t = (searchParams.get("tab") || "").toLowerCase();
     if (t === "detalles") setActiveTab("Detalles");
@@ -457,7 +514,6 @@ export default function SorteoPage() {
     [participants]
   );
 
-  // === NUEVO: saber si el usuario actual es el ganador (para banner) ===
   const isUserWinner = useMemo(() => {
     if (!winnerParticipation || !session?.user?.id) return false;
     return (
@@ -466,7 +522,6 @@ export default function SorteoPage() {
     );
   }, [winnerParticipation, session?.user?.id]);
 
-  // === NUEVO: enfocar/scroll al ganador cuando venís con ?tab=resultado ===
   useEffect(() => {
     if (!focusWinner) return;
     if (participantsLoading) return;
@@ -481,7 +536,6 @@ export default function SorteoPage() {
     setFocusWinner(false);
   }, [focusWinner, winnerParticipation, participantsLoading]);
 
-  // === NUEVO: highlight de un participante/ticket por query ?highlight=... ===
   useEffect(() => {
     if (!highlightKey || groupedParticipants.length === 0) return;
     const idx = groupedParticipants.findIndex((g) =>
@@ -525,7 +579,6 @@ export default function SorteoPage() {
   const showSuggestedCount =
     !minTicketsIsMandatory && Number.isFinite(minTicketsRequired) && minTicketsRequired > 1;
 
-  /* ========= FIX CRÍTICO: callback que antes faltaba ========= */
   const handleParticipationSuccess = async (payload) => {
     const successes = Array.isArray(payload?.successes) ? payload.successes : [];
     setShowParticipateModal(false);
@@ -587,7 +640,9 @@ export default function SorteoPage() {
   /* ======================= UI ======================= */
 
   const TABS = ["Participantes", "Detalles"];
-  const isLongDesc = (raffle?.description?.length || 0) > 240;
+
+  // Título embellecido (para la cabecera)
+  const prettyTitle = useMemo(() => beautifyTitle(raffle?.title || ""), [raffle?.title]);
 
   if (loading) {
     return (
@@ -680,12 +735,17 @@ export default function SorteoPage() {
       </div>
     ) : null;
 
+  const pct =
+    maxParticipants && maxParticipants > 0
+      ? Math.min(100, Math.round((participationsCount / maxParticipants) * 100))
+      : null;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-violet-900 via-indigo-900 to-sky-900 pt-10">
       <div className="container mx-auto px-4 py-4">
         <div className="max-w-6xl mx-auto">
           {/* Top bar */}
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-2">
             <button
               onClick={() => router.push("/sorteos")}
               className="inline-flex items-center text-white/90 hover:text-white transition-colors text-sm drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]"
@@ -695,6 +755,7 @@ export default function SorteoPage() {
             </button>
 
             <div className="flex items-center gap-2">
+              <ShareButton raffle={raffle} variant="solid" size="sm" />
               {session?.user?.id === raffle?.ownerId && (
                 <Link
                   href={`/admin/raffles/${id}`}
@@ -706,7 +767,16 @@ export default function SorteoPage() {
             </div>
           </div>
 
-          {/* NUEVO: Banner cuando venís a ver resultado y sos ganador */}
+          {/* ===== Título principal arriba ===== */}
+          <h1
+            className="text-2xl md:text-4xl font-extrabold text-white tracking-tight mb-3 drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]"
+            style={{ WebkitTextStroke: "0.35px rgba(255,255,255,.35)" }}
+            title={raffle?.title || ""}
+          >
+            {prettyTitle}
+          </h1>
+
+          {/* Banner ganador propio */}
           {focusWinner && isUserWinner && (
             <div className="mb-3 rounded-lg border border-emerald-500/40 bg-emerald-500/20 px-3 py-2 text-emerald-50 text-sm">
               🎉 <b>¡Felicidades!</b> Este sorteo te tiene como ganador/a. Abajo resaltamos tu tarjeta.
@@ -718,7 +788,7 @@ export default function SorteoPage() {
             {/* Izquierda: Imagen + Descripción */}
             <div className="col-span-12 lg:col-span-6">
               {raffle?.imageUrl ? (
-                <div className="relative w-full aspect-[4/3] rounded-xl overflow-hidden shadow-xl border border-white/15">
+                <div className="relative w-full aspect-[16/9] md:aspect-[4/3] rounded-xl overflow-hidden shadow-xl border border-white/15">
                   <Image
                     src={raffle.imageUrl}
                     alt={raffle.title || "Sorteo"}
@@ -730,23 +800,23 @@ export default function SorteoPage() {
                   />
                 </div>
               ) : (
-                <div className="w-full aspect-[4/3] rounded-xl bg-white/10 border border-white/15" />
+                <div className="w-full aspect-[16/9] md:aspect-[4/3] rounded-xl bg-white/10 border border-white/15" />
               )}
 
               {raffle?.description && (
                 <FadeIn delay={120}>
-                  <div className="mt-3 bg-white/10 backdrop-blur-lg rounded-xl p-4 border border-white/20 relative">
+                  <div className="mt-3 bg-white/5 backdrop-blur-lg rounded-xl p-3 border border-white/15 relative">
                     <h3 className="text-white font-semibold mb-2 drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]">
                       Descripción
                     </h3>
 
                     <div className={`relative ${descOpen ? "" : "max-h-32 overflow-hidden"}`}>
-                      <p className="text-white/90 text-sm leading-relaxed drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
+                      <p className="text-white/85 text-sm leading-relaxed drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
                         {raffle?.description}
                       </p>
                     </div>
 
-                    {/* Handle inferior con triangulito sutil (sin texto) */}
+                    {/* Handle inferior con triangulito */}
                     <div
                       role="button"
                       aria-label={descOpen ? "Contraer descripción" : "Expandir descripción"}
@@ -759,7 +829,6 @@ export default function SorteoPage() {
                         className={`pointer-events-none w-full h-full rounded-b-xl 
                                   ${descOpen ? "bg-white/5" : "bg-gradient-to-t from-[#0b0f1a]/80 to-transparent"}`}
                       />
-                      {/* Triángulo SVG que rota */}
                       <svg
                         width="14"
                         height="14"
@@ -779,50 +848,37 @@ export default function SorteoPage() {
               )}
             </div>
 
-            {/* Derecha: Título + estado + progreso + CTA + info + compartir */}
+            {/* Derecha: Estado + progreso + CTA + info */}
             <div className="col-span-12 lg:col-span-6 flex flex-col">
-              <div className="flex-1 bg-white/10 backdrop-blur-lg rounded-xl p-5 border border-white/20">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h1
-                      className="text-3xl lg:text-4xl font-extrabold text-white mb-1 leading-tight line-clamp-2 drop-shadow-[0_2px_2px_rgba(0,0,0,0.9)]"
-                      style={{ WebkitTextStroke: "0.35px rgba(255,255,255,.35)" }}
-                    >
-                      {raffle?.title}
-                    </h1>
-                    <div className="flex flex-wrap items-center gap-2 text-white/80 text-xs">
-                      {statusPill}
-                    </div>
+              <div className="flex-1 bg-white/5 backdrop-blur-lg rounded-xl p-5 border border-white/15">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2 text-white/80 text-xs">
+                    {statusPill}
                   </div>
                   {winnerBlock}
                 </div>
 
-                {/* Progreso */}
+                {/* Progreso (con animación interna) */}
                 <div className="mt-4">
                   <div className="flex justify-between items-center mb-1">
                     <span className="text-white/90 text-sm drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]">Progreso</span>
-                    <span className="text-white/90 text-xs font-semibold drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]">
-                      {participationsCount}
-                      {maxParticipants ? ` / ${maxParticipants}` : ""} participaciones
-                    </span>
-                  </div>
-                  <ProgressBar
-                    current={participationsCount}
-                    target={maxParticipants || Math.max(1, participationsCount)}
-                    animated
-                  />
-                  {isFull && (
-                    <div className="mt-2 text-center">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-green-500/25 text-green-100 text-xs font-semibold">
-                        <span className="w-1.5 h-1.5 bg-green-300 rounded-full mr-2 animate-pulse"></span>
-                        Cupo completo
+                    <div className="flex items-center gap-2">
+                      {typeof remaining === "number" && remaining > 0 && (
+                        <span className="px-2 py-0.5 rounded-full bg-white/10 text-white text-[11px]">
+                          Restan {remaining}
+                        </span>
+                      )}
+                      <span className="text-white/90 text-xs font-semibold drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]">
+                        {participationsCount}
+                        {maxParticipants ? ` / ${maxParticipants}` : ""}{" "}
+                        participaciones {pct !== null ? `· ${pct}%` : ""}
                       </span>
                     </div>
-                  )}
+                  </div>
+                  <FancyProgress current={participationsCount} target={maxParticipants || Math.max(1, participationsCount)} />
                 </div>
 
-                {/* CTA – VERDE + TICKET + RECOMENDACIÓN */}
-                {/* 🔽 En mobile se oculta el CTA principal, queda sólo el sticky */}
+                {/* CTA principal (desktop) */}
                 <div className="mt-4 hidden lg:block">
                   {session && canParticipate && raffle?.status !== "FINISHED" && !isFull ? (
                     <>
@@ -852,7 +908,6 @@ export default function SorteoPage() {
                         </button>
                       </FadeIn>
 
-                      {/* Recomendación NO obligatoria destacada */}
                       {!showRequiredCount && showSuggestedCount && (
                         <FadeIn delay={140}>
                           <div className="mt-2 flex items-center justify-center sm:justify-start gap-2
@@ -891,8 +946,7 @@ export default function SorteoPage() {
                     </span>
                   </div>
 
-                  {/* 🔽 Componente reutilizable Share */}
-                  <ShareButton raffle={raffle} variant="solid" size="sm" />
+                  <ShareButton raffle={raffle} variant="soft" size="sm" />
                 </div>
 
                 {showAlmostFull && (
@@ -925,7 +979,7 @@ export default function SorteoPage() {
           {/* TABS */}
           <div className="bg-white/10 backdrop-blur-lg rounded-xl border border-white/20">
             <div className="flex gap-1 p-1">
-              {TABS.map((t) => (
+              {["Participantes", "Detalles"].map((t) => (
                 <button
                   key={t}
                   onClick={() => setActiveTab(t)}
@@ -961,7 +1015,7 @@ export default function SorteoPage() {
                   </div>
                 ) : groupedParticipants.length > 0 ? (
                   <FadeIn delay={60}>
-                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-8 gap-3">
+                    <div className="grid grid-cols-4 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-8 gap-3">
                       {groupedParticipants.map((g, i) => {
                         const total = g.tickets.length;
                         const idx = Math.min(ticketIdx[g.key] ?? 0, Math.max(0, total - 1));
@@ -1194,12 +1248,16 @@ export default function SorteoPage() {
           </div>
 
           {/* Sticky action bar (mobile) */}
-          <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40">
+          <div
+            className={`lg:hidden fixed left-0 right-0 z-40 transition-transform duration-200 ${
+              showSticky ? "translate-y-0 bottom-0" : "translate-y-[110%] bottom-0"
+            }`}
+          >
             {session && canParticipate && raffle?.status !== "FINISHED" && !isFull ? (
-              <div className="m-3 p-2 rounded-2xl bg-slate-900/90 backdrop-blur border border-white/10 shadow-xl">
+              <div className="m-2 p-2 rounded-xl bg-slate-900/70 backdrop-blur border border-white/10 shadow-xl">
                 <button
                   onClick={() => setShowParticipateModal(true)}
-                  className="relative w-full py-3 rounded-xl font-extrabold
+                  className="relative w-full py-2 rounded-xl font-extrabold
                              bg-gradient-to-r from-lime-400 via-lime-500 to-emerald-600
                              hover:from-lime-500 hover:via-emerald-600 hover:to-emerald-700
                              text-slate-900 ring-1 ring-black/10 flex items-center justify-center gap-2"
@@ -1219,8 +1277,8 @@ export default function SorteoPage() {
                 </button>
 
                 {!showRequiredCount && showSuggestedCount && (
-                  <div className="mt-2 flex items-center justify-center gap-2
-                                  px-3 py-2 rounded-lg bg-lime-400/15 ring-1 ring-lime-300/40">
+                  <div className="mt-1.5 flex items-center justify-center gap-2
+                                  px-3 py-1.5 rounded-lg bg-lime-400/15 ring-1 ring-lime-300/40">
                     <TicketIcon className="-rotate-12 w-4 h-4 text-lime-300" />
                     <span className="text-lime-100 text-xs drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]">
                       <span className="font-semibold">Sugerido:</span>{" "}
