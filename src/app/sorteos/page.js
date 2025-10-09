@@ -212,6 +212,10 @@ export default function SorteosPublicosPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, sortKey, page, showMode]);
 
+  // Helpers de estado solicitados
+  const isReadyToDraw = (st) => String(st) === "READY_TO_DRAW";
+  const isFinalized = (st) => ["FINISHED", "COMPLETED"].includes(String(st));
+
   // Filtro por estado + favoritos (cliente)
   const filteredItems = useMemo(() => {
     let list = items;
@@ -226,9 +230,12 @@ export default function SorteosPublicosPage() {
     }
 
     if (showMode === "available") {
-      list = list.filter((it) => ["ACTIVE", "PUBLISHED"].includes(it?.status));
+      // 🔧 Cambiado: incluir READY_TO_DRAW dentro de "Disponibles"
+      list = list.filter((it) =>
+        ["ACTIVE", "PUBLISHED", "READY_TO_DRAW"].includes(it?.status),
+      );
     } else if (showMode === "finalized") {
-      list = list.filter((it) => ["FINISHED", "COMPLETED"].includes(it?.status));
+      list = list.filter((it) => isFinalized(it?.status));
     }
     if (showMode === "favorites") {
       list = list.filter((it) => favorites.includes(it.id));
@@ -293,6 +300,22 @@ export default function SorteosPublicosPage() {
   const makeDetailHref = (id) =>
     `/sorteo/${id}${selectedTicketId ? `?use=${encodeURIComponent(selectedTicketId)}` : ""}`;
 
+  // Texto y clases del botón principal según estado (pedido "Ver resultados" en gris)
+  const getCtaForStatus = (status) => {
+    if (isFinalized(status) || isReadyToDraw(status)) {
+      return {
+        text: "Ver resultados",
+        className:
+          "mt-auto block w-full text-center px-3 py-2 rounded-lg bg-slate-700/80 hover:bg-slate-700 text-slate-200 text-sm font-semibold border border-slate-600/60",
+      };
+    }
+    return {
+      text: "Ver sorteo",
+      className:
+        "mt-auto block w-full text-center px-3 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white text-sm font-semibold",
+    };
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 text-slate-50">
       {/* Header */}
@@ -353,7 +376,7 @@ export default function SorteosPublicosPage() {
                 {showFilters && (
                   <div
                     id="filters-pop"
-                    className="absolute right-0 mt-2 w-[min(88vw,360px)] rounded-xl border border-slate-700/60 bg-slate-900/95 shadow-2xl p-3 backdrop-blur-md"
+                    className="absolute right-0 mt-2 w=[min(88vw,360px)] rounded-xl border border-slate-700/60 bg-slate-900/95 shadow-2xl p-3 backdrop-blur-md"
                   >
                     <div className="text-slate-300 text-sm mb-2">Filtros</div>
 
@@ -468,6 +491,8 @@ export default function SorteosPublicosPage() {
                   (max && participants >= max) ||
                   ["FINISHED", "COMPLETED", "READY_TO_DRAW"].includes(r?.status);
                 const isLastSpots = !isFull && remaining != null && remaining <= 3;
+
+                const cta = getCtaForStatus(r?.status);
 
                 return (
                   <div
@@ -595,11 +620,8 @@ export default function SorteosPublicosPage() {
                         <span className="shrink-0">{timeLeft}</span>
                       </div>
 
-                      <Link
-                        href={detailHref}
-                        className="mt-auto block w-full text-center px-3 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white text-sm font-semibold"
-                      >
-                        Ver sorteo
+                      <Link href={detailHref} className={cta.className}>
+                        {cta.text}
                       </Link>
                     </div>
                   </div>

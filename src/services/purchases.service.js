@@ -3,20 +3,28 @@ import prisma from "@/src/lib/prisma";
 import { calculateFundSplit } from "@/src/lib/crypto";
 import { createTickets } from "./tickets.service";
 import { logAuditEvent } from "./audit.service";
-import { enqueueJob } from "@/src/lib/queue";
+
+// Si querés cambiar la regla sin tocar código, poné TICKET_UNIT en ENV.
+// OJO: debe estar en las mismas unidades que uses en productPrice.
+const TICKET_UNIT = Number(process.env.TICKET_UNIT ?? 1000); // 1 ticket cada 1000
 
 /**
  * 🛒 Crea una compra con división automática 50/50 y genera tickets
+ * Regla de tickets: 1 ticket por cada TICKET_UNIT de totalAmount (floor).
  */
 export async function createPurchaseWithTickets({
   userId,
   raffleId,
-  productPrice,
-  quantity = 1,
+  productPrice,        // total pagado por el usuario (mismas unidades que TICKET_UNIT)
+  // quantity = 1,     // <— ya NO se usa para calcular tickets
   metadata = {},
   paymentProvider = "stripe",
   paymentIntentId = null
 }) {
+  if (!Number.isFinite(TICKET_UNIT) || TICKET_UNIT <= 0) {
+    throw new Error("Configuración inválida: TICKET_UNIT debe ser > 0");
+  }
+
   // 🔍 Validar que la rifa existe y está activa
   const raffle = await prisma.raffle.findUnique({
     where: { id: raffleId }
@@ -26,11 +34,27 @@ export async function createPurchaseWithTickets({
     throw new Error("Sorteo no disponible o inactivo");
   }
 
-  // 💰 Calcular totales y división 50/50
-  const totalAmount = productPrice;
+  // 💰 Totales y split
+  const totalAmount = Number(productPrice) || 0;
+  if (totalAmount <= 0) {
+    throw new Error("Monto de compra inválido");
+  }
   const { ticketFund, platformFund } = calculateFundSplit(totalAmount);
 
-  // 🔄 Transacción atómica: Purchase + Tickets + Audit
+  // 🎟️ Regla: 1 ticket por cada TICKET_UNIT del monto total (floor)
+  let ticketsToIssue = Math.floor(totalAmount / TICKET_UNIT);
+  // Si querés garantizar mínimo 1 ticket por compra, descomentá:
+  // ticketsToIssue = Math.max(ticketsToIssue, 1);
+
+  if (ticketsToIssue <= 0) {
+    // Si no llega a TICKET_UNIT, no emite tickets.
+    // Podés decidir si querés rechazar la compra o permitirla sin tickets:
+    // throw new Error(`El monto no alcanza para un ticket. Se requiere al menos ${TICKET_UNIT}.`);
+    // Por ahora, permitimos compra sin tickets:
+    ticketsToIssue = 0;
+  }
+
+  // 🔄 Transacción atómica
   const result = await prisma.$transaction(async (tx) => {
     // 1️⃣ Crear la compra
     const purchase = await tx.purchase.create({
@@ -47,14 +71,17 @@ export async function createPurchaseWithTickets({
       }
     });
 
-    // 2️⃣ Generar tickets seguros
-    const tickets = await createTickets({
-      userId,
-      raffleId,
-      purchaseId: purchase.id,
-      quantity,
-      tx // usar la misma transacción
-    });
+    // 2️⃣ Generar tickets según monto
+    let tickets = [];
+    if (ticketsToIssue > 0) {
+      tickets = await createTickets({
+        userId,
+        raffleId,
+        purchaseId: purchase.id,
+        quantity: ticketsToIssue,
+        tx // usar la misma transacción
+      });
+    }
 
     // 3️⃣ Actualizar progreso de la rifa
     await tx.raffle.update({
@@ -64,12 +91,12 @@ export async function createPurchaseWithTickets({
           increment: ticketFund
         },
         totalTickets: {
-          increment: quantity
+          increment: ticketsToIssue
         }
       }
     });
 
-    // 4️⃣ Registrar auditoría
+    // 4️⃣ Auditoría
     await logAuditEvent({
       action: "PURCHASE_CREATED",
       entityType: "PURCHASE",
@@ -79,8 +106,9 @@ export async function createPurchaseWithTickets({
         totalAmount,
         ticketFund,
         platformFund,
-        ticketsGenerated: quantity,
-        raffleId
+        ticketsGenerated: ticketsToIssue,
+        raffleId,
+        ticketUnit: TICKET_UNIT
       },
       tx
     });
@@ -88,19 +116,7 @@ export async function createPurchaseWithTickets({
     return { purchase, tickets };
   });
 
-  // 🚀 Encolar job para verificar si el sorteo llegó al 100%
-  await enqueueJob("checkRaffleProgress", {
-    raffleId,
-    newFunding: result.purchase.ticketFund
-  });
-
-  // 📧 Encolar notificación de compra exitosa
-  await enqueueJob("sendPurchaseConfirmation", {
-    userId,
-    purchaseId: result.purchase.id,
-    ticketCount: quantity
-  });
-
+  // 🚫 Antes: encolábamos jobs (Redis). Ahora no-op.
   return result;
 }
 

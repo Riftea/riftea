@@ -128,9 +128,7 @@ function initials(name = "Usuario") {
   return parts.map((p) => p[0]?.toUpperCase() || "").join("") || "U";
 }
 
-/** Embellece el título:
- * - Si viene TODO MAYÚSCULAS o todo minúsculas → lo pasa a Sentence case.
- * - Si está mixto, sólo fuerza la primera letra en mayúscula. */
+/** Embellece el título */
 function beautifyTitle(s = "") {
   const t = String(s).trim();
   if (!t) return "";
@@ -177,10 +175,12 @@ function FancyProgress({ current = 0, target = 1 }) {
         {/* Rayas animadas */}
         <div className="absolute inset-0 opacity-30 progress-stripes" />
         {/* Brillo suave */}
-        <div className="absolute inset-0 bg-white/20 mix-blend-overlay pointer-events-none" style={{ maskImage: "linear-gradient(to bottom, rgba(0,0,0,0.15), rgba(0,0,0,0.6))" }} />
+        <div
+          className="absolute inset-0 bg-white/20 mix-blend-overlay pointer-events-none"
+          style={{ maskImage: "linear-gradient(to bottom, rgba(0,0,0,0.15), rgba(0,0,0,0.6))" }}
+        />
       </div>
 
-      {/* Keyframes locales */}
       <style jsx>{`
         .progress-stripes {
           background-image: linear-gradient(
@@ -266,6 +266,9 @@ export default function SorteoPage() {
   // Sticky hide-on-scroll
   const [showSticky, setShowSticky] = useState(true);
   const lastYRef = useRef(0);
+
+  // NEW: flag para evitar disparos múltiples del auto-sorteo
+  const [autoDrawAttempted, setAutoDrawAttempted] = useState(false); // NEW
 
   useEffect(() => {
     const onScroll = () => {
@@ -367,7 +370,7 @@ export default function SorteoPage() {
 
   useEffect(() => {
     if (!raffle?.id) return;
-    const ok = ["ACTIVE", "PUBLISHED", "READY_TO_DRAW"];
+    const ok = ["ACTIVE", "PUBLISHED", "READY_TO_DRAW", "READY_TO_FINISH"]; // NEW incluye READY_TO_FINISH
     if (!ok.includes(raffle.status)) return;
     const t = setInterval(() => loadParticipants(raffle.id), 30000);
     return () => clearInterval(t);
@@ -637,11 +640,55 @@ export default function SorteoPage() {
     });
   };
 
+  /* ======================= NUEVO: Auto-sorteo público ======================= */
+  useEffect(() => {
+    if (!raffle?.id) return;
+    if (autoDrawAttempted) return; // evitar múltiples intentos
+    const alreadyDrawn = raffle?.drawAt || raffle?.winnerParticipationId;
+    if (alreadyDrawn) return;
+
+    const status = String(raffle?.status || "").toUpperCase();
+    if (status === "READY_TO_DRAW" || status === "READY_TO_FINISH") {
+      setAutoDrawAttempted(true); // marcar antes de disparar para evitar loops
+      (async () => {
+        const attempts = [
+          { url: `/api/admin/raffles/${id}/draw`, body: { action: "run", notify: true } },
+          { url: `/api/raffles/${id}/draw`, body: { action: "run", notify: true } },
+          { url: `/api/raffles/${id}/manual-draw`, body: { notify: true } },
+        ];
+        try {
+          for (const { url, body } of attempts) {
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify(body),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+              router.push(`/sorteo/${id}/en-vivo`);
+              return;
+            }
+            // si es 401/403/404 sigo probando siguiente endpoint
+            const msg = String(data?.error || data?.message || "").toLowerCase();
+            if (![401, 403, 404].includes(res.status) && !msg.includes("acceso denegado")) {
+              console.warn("Auto-draw falló:", data?.error || data?.message || "No se pudo completar");
+              break;
+            }
+          }
+        } catch (e) {
+          console.warn("Auto-draw error:", e);
+        }
+      })();
+    }
+  }, [raffle?.id, raffle?.status, raffle?.drawAt, raffle?.winnerParticipationId, autoDrawAttempted, id, router]);
+  /* ======================================================================== */
+
   /* ======================= UI ======================= */
 
   const TABS = ["Participantes", "Detalles"];
 
-  // Título embellecido (para la cabecera)
+  // Título embellecido
   const prettyTitle = useMemo(() => beautifyTitle(raffle?.title || ""), [raffle?.title]);
 
   if (loading) {
@@ -698,7 +745,7 @@ export default function SorteoPage() {
           ? "bg-green-500/25 text-green-100"
           : raffle?.status === "PUBLISHED"
           ? "bg-blue-500/25 text-blue-100"
-          : raffle?.status === "READY_TO_DRAW"
+          : raffle?.status === "READY_TO_DRAW" || raffle?.status === "READY_TO_FINISH" // NEW
           ? "bg-yellow-500/25 text-yellow-100"
           : raffle?.status === "FINISHED"
           ? "bg-fuchsia-500/25 text-fuchsia-100"
@@ -713,6 +760,8 @@ export default function SorteoPage() {
         ? "📢 Publicado"
         : raffle?.status === "FINISHED"
         ? "🏆 Finalizado"
+        : raffle?.status === "READY_TO_FINISH" // NEW
+        ? "⏳ Listo para finalizar"
         : raffle?.status === "READY_TO_DRAW"
         ? "⏳ Listo para sortear"
         : raffle?.status}
@@ -740,6 +789,12 @@ export default function SorteoPage() {
       ? Math.min(100, Math.round((participationsCount / maxParticipants) * 100))
       : null;
 
+  // NEW: Mostrar botón Ver resultados si aplica
+  const canViewResults =
+    raffle?.status === "READY_TO_DRAW" ||
+    raffle?.status === "READY_TO_FINISH" ||
+    raffle?.status === "FINISHED"; // NEW
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-violet-900 via-indigo-900 to-sky-900 pt-10">
       <div className="container mx-auto px-4 py-4">
@@ -756,6 +811,14 @@ export default function SorteoPage() {
 
             <div className="flex items-center gap-2">
               <ShareButton raffle={raffle} variant="solid" size="sm" />
+              {canViewResults && (
+                <button
+                  onClick={() => router.push(`/sorteo/${id}/en-vivo`)}
+                  className="px-3 py-1.5 bg-amber-400 hover:bg-amber-500 text-slate-900 text-sm font-semibold rounded-lg transition-colors"
+                >
+                  Ver resultados
+                </button>
+              )}
               {session?.user?.id === raffle?.ownerId && (
                 <Link
                   href={`/admin/raffles/${id}`}
@@ -858,7 +921,7 @@ export default function SorteoPage() {
                   {winnerBlock}
                 </div>
 
-                {/* Progreso (con animación interna) */}
+                {/* Progreso */}
                 <div className="mt-4">
                   <div className="flex justify-between items-center mb-1">
                     <span className="text-white/90 text-sm drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]">Progreso</span>
@@ -1107,7 +1170,7 @@ export default function SorteoPage() {
                   <div className="text-center py-12">
                     <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-white/5 flex items-center justify-center">
                       <svg className="w-6 h-6 text-white/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 0 014 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 0 016 0zm6 3a2 2 0 11-4 0 2 0 014 0z" />
                       </svg>
                     </div>
                     <h4 className="text-white font-semibold mb-1 text-sm drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]">Sin participantes</h4>

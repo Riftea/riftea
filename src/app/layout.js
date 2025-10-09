@@ -1,23 +1,8 @@
-﻿// src/app/layout.js - REEMPLAZAR COMPLETO
+﻿// src/app/layout.js
 import "./globals.css";
 import { Providers } from "./providers";
 import Header from "../components/header/Header.jsx";
 import RouteSplashProvider from "@/components/providers/RouteSplashProvider";
-
-// Inicialización de cron jobs solo en servidor (production)
-if (typeof window === "undefined" && process.env.NODE_ENV === "production") {
-  import("../lib/cron-jobs")
-    .then(({ initializeCronJobs }) => {
-      if (!global.cronJobsInitialized) {
-        console.log("🚀 Inicializando sistema de auto-sorteos...");
-        initializeCronJobs();
-        global.cronJobsInitialized = true;
-      }
-    })
-    .catch((error) => {
-      console.error("❌ Error inicializando cron jobs:", error);
-    });
-}
 
 export const metadata = {
   title: "Riftea",

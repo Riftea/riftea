@@ -50,15 +50,21 @@ function composeSeed({ serverReveal, raffleId, drawAt, ticketCodes }) {
   return crypto.createHash('sha512').update(material).digest(); // 64 bytes
 }
 
-/* ============================
-   GET → estado del sorteo
-   ============================ */
+/* =========================================================
+   GET → estado del sorteo (con auto-ejecución en vivo)
+   Si el sorteo está READY_TO_DRAW y sin ganador, al entrar
+   se ejecuta inmediatamente y se persiste:
+   - status = FINISHED
+   - drawAt = ahora (momento real del sorteo)
+   - drawnAt = ahora
+   - winnerParticipationId
+   ========================================================= */
 export async function GET(_req, { params }) {
   try {
     const { id: raffleId } = await params;
 
-    // 1) Traer la rifa primero para saber si ya fue sorteada
-    const raffle = await prisma.raffle.findUnique({
+    // 1) Traer la rifa
+    let raffle = await prisma.raffle.findUnique({
       where: { id: raffleId },
       select: {
         id: true,
@@ -76,12 +82,139 @@ export async function GET(_req, { params }) {
       return NextResponse.json({ ok: false, error: 'Sorteo no encontrado' }, { status: 404 });
     }
 
-    // 2) Elegir orden de DB: si ya se sorteó → drawOrder; si no → createdAt
+    // 2) Si está READY_TO_DRAW y aún no fue sorteado → ejecutar en vivo
+    if (
+      raffle.status === 'READY_TO_DRAW' &&
+      !raffle.drawnAt &&
+      !raffle.winnerParticipationId
+    ) {
+      // Cargar participaciones
+      const items = await prisma.participation.findMany({
+        where: { raffleId },
+        select: {
+          id: true,
+          ticketId: true,
+          createdAt: true,
+          ticket: {
+            select: {
+              id: true,
+              code: true,
+              user: { select: { id: true, name: true, email: true } },
+            },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      const total = items.length;
+
+      // Regla conservadora (igual que POST:run): mínimo 2 participantes para sortear
+      if (total >= 2) {
+        // Autocommit si falta compromiso
+        let reveal = raffle.drawSeedReveal;
+        let hash = raffle.drawSeedHash;
+        if (!reveal || !hash) {
+          reveal = crypto.randomBytes(32).toString('hex');
+          hash = sha256hex(Buffer.from(reveal, 'utf8'));
+          await prisma.raffle.update({
+            where: { id: raffleId },
+            data: { drawSeedReveal: reveal, drawSeedHash: hash },
+          });
+        } else {
+          // Validación de integridad del compromiso
+          const check = sha256hex(Buffer.from(reveal, 'utf8'));
+          if (check !== hash) {
+            return NextResponse.json({ ok: false, error: 'Compromiso inválido' }, { status: 400 });
+          }
+        }
+
+        // Usamos el instante real como drawAt para la semilla y persistencia
+        const drawMoment = new Date();
+
+        // Snapshot de códigos (inmutable para seed)
+        const ticketCodes = items.map((i) => i.ticket?.code || i.id);
+        const seed = composeSeed({
+          serverReveal: reveal,
+          raffleId,
+          drawAt: drawMoment, // ahora se usa el momento real del sorteo
+          ticketCodes,
+        });
+
+        // Orden determinístico
+        const ids = items.map((i) => i.id);
+        const shuffled = seededShuffle(ids, seed);     // para animación de "eliminados"
+        const rankingAsc = shuffled.slice().reverse(); // [ganador, 2°, 3°, ...]
+        const winnerParticipationId = rankingAsc[0];
+
+        // Transacción: marcar ganador y cerrar rifa
+        await prisma.$transaction(async (trx) => {
+          // ganador
+          await trx.participation.update({
+            where: { id: winnerParticipationId },
+            data: { isWinner: true },
+          });
+
+          // drawOrder (opcional)
+          try {
+            for (let idx = 0; idx < rankingAsc.length; idx++) {
+              const pId = rankingAsc[idx];
+              await trx.participation.update({
+                where: { id: pId },
+                data: { drawOrder: idx + 1 },
+              });
+            }
+          } catch (e) {
+            console.warn('drawOrder not persisted (optional):', e?.code || e?.message || e);
+          }
+
+          // actualizar rifa → FINISHED, y guardar fecha real del sorteo
+          await trx.raffle.update({
+            where: { id: raffleId },
+            data: {
+              status: 'FINISHED',
+              drawAt: drawMoment,      // ⬅️ fecha real del sorteo
+              drawnAt: drawMoment,     // (si mantenés ambos campos, quedan alineados)
+              winnerParticipationId,
+            },
+          });
+        });
+
+        // Logging/notify (no crítico)
+        try {
+          const winner = items.find((i) => i.id === winnerParticipationId);
+          const winnerEmail = winner?.ticket?.user?.email;
+          const emails = Array.from(new Set(items.map((i) => i.ticket?.user?.email).filter(Boolean)));
+          console.log(
+            `[AUTO-DRAW] Raffle ${raffleId} ejecutado por vista. Ganador ${winnerParticipationId} → ${winnerEmail}. Notificando a ${emails.length} participantes.`
+          );
+        } catch (e) {
+          console.warn('Notify (view) failed (non-critical):', e);
+        }
+
+        // refrescar datos de rifa ya cerrada
+        raffle = await prisma.raffle.findUnique({
+          where: { id: raffleId },
+          select: {
+            id: true,
+            status: true,
+            maxParticipants: true,
+            drawAt: true,
+            drawnAt: true,
+            drawSeedHash: true,
+            drawSeedReveal: true,
+            winnerParticipationId: true,
+          },
+        });
+      }
+      // Si no hay 2 participantes, no se ejecuta; se devuelve estado actual.
+    }
+
+    // 3) Elegir orden de DB: si ya se sorteó → drawOrder; si no → createdAt
     const dbOrderBy = raffle.drawnAt
       ? [{ drawOrder: 'asc' }, { createdAt: 'asc' }]
       : [{ createdAt: 'asc' }];
 
-    // 3) Cargar participaciones con ese orden
+    // 4) Cargar participaciones con ese orden
     let items = await prisma.participation.findMany({
       where: { raffleId },
       select: {
@@ -101,7 +234,7 @@ export async function GET(_req, { params }) {
       orderBy: dbOrderBy,
     });
 
-    // 4) Seguridad adicional: si está sorteado, ordenar en memoria por drawOrder asc y backup createdAt
+    // 5) Seguridad adicional si ya fue sorteado → ordenar en memoria por drawOrder asc y backup createdAt
     if (raffle.drawnAt) {
       items = items.slice().sort((a, b) => {
         const da = a.drawOrder ?? Number.MAX_SAFE_INTEGER;
@@ -127,7 +260,7 @@ export async function GET(_req, { params }) {
           id: raffle.id,
           status: raffle.status,
           maxParticipants: raffle.maxParticipants,
-          drawAt: raffle.drawAt,
+          drawAt: raffle.drawAt, // ⬅️ ahora es la fecha real del sorteo
           drawnAt: raffle.drawnAt,
           drawSeedHash: raffle.drawSeedHash ? `sha256:${raffle.drawSeedHash}` : null,
           drawSeedReveal: raffle.drawSeedReveal || null,
@@ -221,7 +354,6 @@ export async function POST(req, { params }) {
 
     /* ====== 1) Programar ====== */
     if (action === 'schedule') {
-      // si querés exigir meta, reintroducí el check aquí
       const minutes = Number.isFinite(+body?.minutesFromNow)
         ? Math.max(1, +body.minutesFromNow)
         : 3;
@@ -239,7 +371,7 @@ export async function POST(req, { params }) {
         where: { id: raffleId },
         data: {
           status: 'READY_TO_DRAW',
-          drawAt,
+          drawAt,             // aquí drawAt puede seguir usándose como "fecha programada"
           drawSeedReveal,
           drawSeedHash,
         },
@@ -297,7 +429,7 @@ export async function POST(req, { params }) {
       );
     }
 
-    /* ====== 3) Ejecutar sorteo ====== */
+    /* ====== 3) Ejecutar sorteo (manual/admin) ====== */
     if (action === 'run') {
       if (raffle.drawnAt) {
         return NextResponse.json({ ok: false, error: 'El sorteo ya fue ejecutado' }, { status: 400 });
@@ -331,22 +463,25 @@ export async function POST(req, { params }) {
         return NextResponse.json({ ok: false, error: 'Compromiso inválido' }, { status: 400 });
       }
 
+      // Usar momento real del sorteo para el commit (y semilla)
+      const drawMoment = new Date();
+
       // Snapshot de códigos (inmutable para seed)
       const ticketCodes = items.map((i) => i.ticket?.code || i.id);
       const seed = composeSeed({
         serverReveal: reveal,
         raffleId,
-        drawAt: raffle.drawAt, // puede ser null; igual entra en la seed
+        drawAt: drawMoment, // ⬅️ usar fecha real del sorteo
         ticketCodes,
       });
 
       // Orden determinístico
       const ids = items.map((i) => i.id);
-      const shuffled = seededShuffle(ids, seed);     // para animación de "eliminados"
+      const shuffled = seededShuffle(ids, seed);
       const rankingAsc = shuffled.slice().reverse(); // [ganador, 2°, 3°, ...]
       const winnerParticipationId = rankingAsc[0];
 
-      // Transacción: marca ganador + FINISHED + winnerParticipationId + drawnAt
+      // Transacción: marca ganador + FINISHED + winnerParticipationId + drawnAt & drawAt
       const result = await prisma.$transaction(async (trx) => {
         // marcar ganador
         await trx.participation.update({
@@ -367,15 +502,16 @@ export async function POST(req, { params }) {
           console.warn('drawOrder not persisted (optional):', e?.code || e?.message || e);
         }
 
-        // actualizar rifa → FINISHED
+        // actualizar rifa → FINISHED y guardar fecha real del sorteo
         return trx.raffle.update({
           where: { id: raffleId },
           data: {
             status: 'FINISHED',
-            drawnAt: new Date(),
+            drawAt: drawMoment,     // ⬅️ fecha real del sorteo
+            drawnAt: drawMoment,    // si conservás ambos campos
             winnerParticipationId,
           },
-          select: { id: true, status: true, drawnAt: true, winnerParticipationId: true },
+          select: { id: true, status: true, drawAt: true, drawnAt: true, winnerParticipationId: true },
         });
       });
 

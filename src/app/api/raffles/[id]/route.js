@@ -13,7 +13,7 @@ import {
 
 /* =======================
    GET /api/raffles/[id]
-   - Público: solo rifas NO privadas y en estado PUBLISHED/ACTIVE/FINISHED
+   - Público: solo rifas NO privadas y en estado PUBLISHED/ACTIVE/FINISHED/READY_TO_DRAW
    - Dueño/Admin/Superadmin: puede ver cualquier estado y también privadas
    ======================= */
 export async function GET(_req, ctx) {
@@ -43,7 +43,7 @@ export async function GET(_req, ctx) {
         publishedAt: true,
         ownerId: true,
         isPrivate: true,
-        owner: { select: { id: true, name: true, email: true, image: true } },
+        owner: { select: { id: true, name: true, email: true, image: true} },
         _count: { select: { tickets: true, participations: true } },
       },
     });
@@ -55,9 +55,10 @@ export async function GET(_req, ctx) {
     const isOwner = viewerId && raffle.ownerId === viewerId;
 
     // =======================
-    // Visibilidad (patch)
+    // Visibilidad (ajuste)
     // =======================
-    const publicStates = new Set(["PUBLISHED", "ACTIVE", "FINISHED"]);
+    // 🔧 Cambio mínimo: agregamos READY_TO_DRAW a los estados visibles públicamente
+    const publicStates = new Set(["PUBLISHED", "ACTIVE", "FINISHED", "READY_TO_DRAW"]);
 
     if (raffle.isPrivate) {
       // "No listado": visible por link SIN requerir login si está en estado público
