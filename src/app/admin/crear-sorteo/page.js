@@ -8,9 +8,95 @@ import Image from "next/image";
 import SimpleCropper from "@/components/ui/SimpleCropper";
 
 /* =======================
-   Helpers
+   Zona horaria (AR)
    ======================= */
+const AR_TZ = "America/Argentina/Buenos_Aires";
+const AR_OFFSET_MIN = 180; // UTC-03:00 -> sumar 180 min para pasar a UTC
 
+function pad(n) { return String(n).padStart(2, "0"); }
+
+/** Convierte Date a "YYYY-MM-DDTHH:mm" como si fuera hora AR, para <input type="datetime-local"> */
+function dateToArInputValue(date = new Date()) {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: AR_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(date).map(p => [p.type, p.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+/** Convierte Date a "YYYY-MM-DD" como si fuera fecha AR, para <input type="date"> */
+function dateToArDateInputValue(date = new Date()) {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: AR_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return fmt.format(date); // "YYYY-MM-DD"
+}
+
+/** Convierte Date a HH:mm como si fuera hora AR (para <input type="time">) */
+function dateToArTimeInputValue(date = new Date()) {
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: AR_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return fmt.format(date); // "HH:mm"
+}
+
+/** Parsea "YYYY-MM-DDTHH:mm" (hora AR) a ISO UTC */
+function arLocalInputToUtcISO(inputStr = "") {
+  if (!inputStr) return null;
+  const m = String(inputStr).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const [_, y, mo, d, h, mi] = m.map(Number);
+  const ms = Date.UTC(y, mo - 1, d, h, mi);
+  const utcMs = ms + AR_OFFSET_MIN * 60 * 1000;
+  return new Date(utcMs).toISOString();
+}
+
+/** Combina "YYYY-MM-DD" + "HH:mm" (hora AR) a ISO UTC */
+function arDateTimeToUtcISO(dateStr = "", timeStr = "") {
+  if (!dateStr || !timeStr) return null;
+  return arLocalInputToUtcISO(`${dateStr}T${timeStr}`);
+}
+
+/** Epoch UTC (ms) desde "YYYY-MM-DDTHH:mm" en AR */
+function arLocalInputToEpochUtcMs(inputStr = "") {
+  const iso = arLocalInputToUtcISO(inputStr);
+  return iso ? Date.parse(iso) : NaN;
+}
+
+/** Fecha AR "hoy" vs otra fecha "YYYY-MM-DD" */
+function isArSameDay(dateStr) {
+  if (!dateStr) return false;
+  const todayAr = dateToArDateInputValue(new Date());
+  return todayAr === dateStr;
+}
+
+/** Fecha AR: dateStr (YYYY-MM-DD) es futura (mañana o más) */
+function isArFutureDay(dateStr) {
+  if (!dateStr) return false;
+  const todayAr = dateToArDateInputValue(new Date());
+  return dateStr > todayAr; // strings YYYY-MM-DD comparan bien lexicográficamente
+}
+
+/** Badge UI */
+function tzBadge() {
+  return "Hora Argentina (UTC-03:00)";
+}
+
+/* =======================
+   Helpers existentes
+   ======================= */
 function onlyDigits(s = "") { return String(s).replace(/[^\d]/g, ""); }
 function parseIntOrNull(v) { if (v === "" || v == null) return null; const n = parseInt(String(v), 10); return Number.isFinite(n) ? n : null; }
 function normalizeThousandRule(raw) {
@@ -22,7 +108,6 @@ function normalizeThousandRule(raw) {
 }
 
 const POT_CONTRIBUTION_CLIENT = 500; // aporte por ticket
-// Incluyo AVIF porque tu endpoint del server lo acepta
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/jpg", "image/avif"];
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
@@ -84,20 +169,28 @@ export default function CrearSorteoAdminPage() {
 
   // Categoría & mínimo de tickets (UX)
   const [category, setCategory] = useState("");
-  const [minTicketsPerParticipant, setMinTickets] = useState(1); // stepper
-  const [minTicketsMandatory, setMinTicketsMandatory] = useState(false); // NUEVO toggle
+  const [minTicketsPerParticipant, setMinTickets] = useState(1);
+  const [minTicketsMandatory, setMinTicketsMandatory] = useState(false);
 
   // Entradas crudas (strings)
   const [prizeValueInput, setPrizeValueInput] = useState("");
-  const [participantGoal, setParticipantGoal] = useState(""); // opcional
+  const [participantGoal, setParticipantGoal] = useState("");
 
-  const [startsAt, setStartsAt] = useState(""); // opcional
-  const [endsAt, setEndsAt] = useState("");     // opcional
+  // INICIO: sólo fecha en creación; si es futura, se habilita horario
+  const [startsDate, setStartsDate] = useState(""); // "YYYY-MM-DD" (AR)
+  const [startsTime, setStartsTime] = useState(""); // "HH:mm" (AR) — se habilita si startsDate > hoy
+
+  // FIN: sigue siendo datetime-local (AR)
+  const [endsAt, setEndsAt] = useState(""); // "YYYY-MM-DDTHH:mm" (AR)
+
+  // Video YouTube (opcional)
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [youtubeError, setYoutubeError] = useState("");
 
   // Imagen: archivo + preview + crop
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
-  const [croppedDataUrl, setCroppedDataUrl] = useState(""); // resultado del recorte
+  const [croppedDataUrl, setCroppedDataUrl] = useState("");
   const [cropOpen, setCropOpen] = useState(false);
 
   const [imageError, setImageError] = useState("");
@@ -110,7 +203,7 @@ export default function CrearSorteoAdminPage() {
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [termsOpen, setTermsOpen] = useState(false);
 
-  // ----- estado UI
+  // UI
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -137,7 +230,7 @@ export default function CrearSorteoAdminPage() {
     return Math.ceil(totalTicketsNeeded / (minTicketsMandatory ? m : 1));
   }, [totalTicketsNeeded, minTicketsPerParticipant, minTicketsMandatory]);
 
-  // preview del archivo (si hay recorte, se muestra el recorte)
+  // preview del archivo
   useEffect(() => {
     if (!file) { setPreview(""); return; }
     const url = URL.createObjectURL(file);
@@ -150,7 +243,7 @@ export default function CrearSorteoAdminPage() {
     if (status === "unauthenticated") router.push("/login");
   }, [status, router]);
 
-  // ======== Tope dinámico del stepper (garantiza ≥2 participantes) ========
+  // Tope dinámico del stepper (≥2 participantes)
   const totalParticipantsEstimado = useMemo(() => {
     const explicit = parseIntOrNull(participantGoal);
     if (explicit && explicit > 0) return explicit;
@@ -165,6 +258,12 @@ export default function CrearSorteoAdminPage() {
   useEffect(() => {
     setMinTickets((v) => Math.min(Math.max(1, v), maxMinTickets));
   }, [maxMinTickets]);
+
+  // Mínimos para inputs (AR) con pequeño colchón
+  function addMs(d, ms) { return new Date(d.getTime() + ms); }
+  const minEndInputAR = useMemo(() => dateToArInputValue(addMs(new Date(), 60_000)), []);
+  const todayArStr = useMemo(() => dateToArDateInputValue(new Date()), []);
+  const isFutureStartDay = isArFutureDay(startsDate);
 
   // Validaciones
   const validate = () => {
@@ -190,17 +289,42 @@ export default function CrearSorteoAdminPage() {
       }
     }
 
-    // Fechas
-    const now = new Date();
-    const endDate = endsAt ? new Date(endsAt) : null;
-    const startDate = startsAt ? new Date(startsAt) : null;
+    // INICIO: reglas
+    // - Si no elegís fecha, o si elegís HOY (AR), el sorteo inicia "ya" al crear (no se programa horario).
+    // - Si elegís una fecha FUTURA, el horario es OBLIGATORIO y debe ser futuro.
+    if (startsDate) {
+      if (isArSameDay(startsDate)) {
+        // hoy: no se permite programar hora (ignorar startsTime si lo ingresaron)
+      } else if (isArFutureDay(startsDate)) {
+        if (!startsTime) return "Elegí un horario para la fecha de inicio (solo para días futuros).";
+        const startIso = arDateTimeToUtcISO(startsDate, startsTime);
+        if (!startIso) return "Fecha/hora de inicio inválida";
+        const startUtc = Date.parse(startIso);
+        const nowUtc = Date.now();
+        const GRACE_MS = 60_000;
+        if (startUtc <= nowUtc + GRACE_MS) return "La fecha de inicio debe ser futura (Hora AR).";
+      } else {
+        return "La fecha de inicio no puede ser anterior a hoy (Hora AR).";
+      }
+    }
 
-    if (endDate && isNaN(endDate.getTime())) return "Fecha de finalización inválida";
-    if (startDate && isNaN(startDate.getTime())) return "Fecha de inicio inválida";
-    if (endDate && endDate <= now) return "La fecha de finalización debe ser futura";
-    if (startDate && startDate <= now) return "La fecha de inicio debe ser futura";
-    if (startDate && endDate && startDate >= endDate)
-      return "La fecha de inicio debe ser anterior a la fecha de finalización";
+    // FIN: debe ser futuro y si hay inicio futuro, fin > inicio
+    if (endsAt) {
+      const endUtc = arLocalInputToEpochUtcMs(endsAt);
+      if (!Number.isFinite(endUtc)) return "Fecha de finalización inválida";
+      const nowUtc = Date.now();
+      const GRACE_MS = 60_000;
+      if (endUtc <= nowUtc + GRACE_MS) return "La fecha de finalización debe ser futura (Hora AR)";
+
+      // Si inicio está programado para el futuro, exigir fin > inicio
+      if (startsDate && isArFutureDay(startsDate) && startsTime) {
+        const startIso = arDateTimeToUtcISO(startsDate, startsTime);
+        const startUtc = startIso ? Date.parse(startIso) : NaN;
+        if (Number.isFinite(startUtc) && endUtc <= startUtc + GRACE_MS) {
+          return "La fecha de finalización debe ser posterior a la de inicio.";
+        }
+      }
+    }
 
     if (file) {
       if (!ALLOWED_TYPES.includes(file.type)) return "Formato de imagen no soportado (usa JPG/PNG/WebP/AVIF)";
@@ -212,10 +336,16 @@ export default function CrearSorteoAdminPage() {
       return `El mínimo de tickets por participante no puede superar ${maxMinTickets} (asegura que haya al menos 2 participantes).`;
     }
 
+    // YouTube (opcional)
+    if (youtubeUrl.trim()) {
+      const ok = isValidYouTubeUrl(youtubeUrl.trim());
+      if (!ok) return "El enlace de YouTube no parece válido. Probá con un enlace tipo https://www.youtube.com/watch?v=...";
+    }
+
     return null;
   };
 
-  // Subida de imagen (prioriza dataUrl recortada; si no hay, sube archivo con resize)
+  // Subida de imagen
   const maybeUploadImage = async () => {
     if (!file && !croppedDataUrl) return null;
     setImageError("");
@@ -247,10 +377,40 @@ export default function CrearSorteoAdminPage() {
     }
   };
 
+  // YouTube helpers
+  function isValidYouTubeUrl(u = "") {
+    try {
+      const url = new URL(u);
+      if (!/^(www\.)?(youtube\.com|youtu\.be)$/i.test(url.hostname)) return false;
+      if (url.hostname.includes("youtu.be")) return url.pathname.slice(1).length > 0;
+      if (url.pathname === "/watch") return !!url.searchParams.get("v");
+      if (/^\/(live|shorts)\/[A-Za-z0-9_-]+$/.test(url.pathname)) return true;
+      return false;
+    } catch { return false; }
+  }
+
+  function toEmbedUrl(u = "") {
+    try {
+      const url = new URL(u);
+      if (url.hostname.includes("youtu.be")) {
+        const id = url.pathname.slice(1);
+        return `https://www.youtube.com/embed/${id}?rel=0&modestbranding=1`;
+      }
+      if (url.pathname === "/watch") {
+        const id = url.searchParams.get("v");
+        return id ? `https://www.youtube.com/embed/${id}?rel=0&modestbranding=1` : "";
+      }
+      const m = url.pathname.match(/^\/(live|shorts)\/([A-Za-z0-9_-]+)$/);
+      if (m) return `https://www.youtube.com/embed/${m[2]}?rel=0&modestbranding=1`;
+      return "";
+    } catch { return ""; }
+  }
+
   // Submit
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    setYoutubeError("");
 
     if (!session?.user?.id) {
       setError("Sesión no válida. Por favor, inicia sesión nuevamente.");
@@ -290,6 +450,19 @@ export default function CrearSorteoAdminPage() {
         .filter(Boolean)
         .join("");
 
+    // INICIO:
+    // - Si no hay fecha o si es HOY (AR) => empieza YA (deja que el backend fije "now"): NO enviar startsAt.
+    // - Si fecha FUTURA => usar fecha + horario obligatorios y enviar startsAt en UTC.
+    let startsAtUtcISO = null;
+    if (!startsDate || isArSameDay(startsDate)) {
+      startsAtUtcISO = null; // <- clave: no lo mandamos para evitar el error "debe ser futura"
+    } else if (isArFutureDay(startsDate)) {
+      startsAtUtcISO = arDateTimeToUtcISO(startsDate, startsTime); // validado arriba
+    }
+
+    // FIN: opcional
+    const endsAtUtcISO = endsAt ? arLocalInputToUtcISO(endsAt) : null;
+
     setLoading(true);
     try {
       const finalImageUrl = await maybeUploadImage();
@@ -300,13 +473,16 @@ export default function CrearSorteoAdminPage() {
         prizeValue: prizeFinal,
         ...(goalInt != null ? { participantGoal: goalInt } : {}),
         ...(finalImageUrl && { imageUrl: finalImageUrl }),
-        ...(startsAt && { startsAt }),
-        ...(endsAt && { endsAt }),
+        ...(startsAtUtcISO != null ? { startsAt: startsAtUtcISO } : {}), // <-- sólo si hay fecha futura
+        ...(endsAtUtcISO && { endsAt: endsAtUtcISO }),
         ...(category && { prizeCategory: category }),
+        ...(youtubeUrl.trim() && { youtubeUrl: youtubeUrl.trim() }),
         isPrivate,
         termsAccepted: true,
         minTicketsPerParticipant: Math.max(1, Number(minTicketsPerParticipant)),
         minTicketsIsMandatory: Boolean(minTicketsMandatory),
+        inputTimeZone: AR_TZ,
+        startInputMode: !startsDate || isArSameDay(startsDate) ? "NOW_AR" : "SCHEDULE_AR",
       };
 
       const res = await fetch("/api/raffles", {
@@ -346,7 +522,9 @@ export default function CrearSorteoAdminPage() {
     !!description.trim() &&
     termsAccepted &&
     !!normalizeThousandRule(prizeValueInput) &&
-    !uploading;
+    !uploading &&
+    // Si el usuario eligió fecha futura, debe tener horario
+    (!startsDate || isArSameDay(startsDate) || (isArFutureDay(startsDate) && !!startsTime));
 
   const disabledReason = !normalizeThousandRule(prizeValueInput)
     ? "Ingresá un valor de premio válido"
@@ -356,6 +534,8 @@ export default function CrearSorteoAdminPage() {
     ? "Completá la descripción"
     : !termsAccepted
     ? "Aceptá los términos y condiciones"
+    : (startsDate && isArFutureDay(startsDate) && !startsTime)
+    ? "Elegí el horario de inicio para la fecha futura"
     : uploading
     ? "Esperá a que termine la subida de imagen"
     : "";
@@ -370,7 +550,6 @@ export default function CrearSorteoAdminPage() {
   const incMin = () => setMinTickets((v) => Math.min(maxMinTickets, v + 1));
   const decMin = () => setMinTickets((v) => Math.max(1, v - 1));
 
-  // UI
   return isAuthLoading ? (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 flex items-center justify-center p-4">
       <div className="text-center">
@@ -395,8 +574,8 @@ export default function CrearSorteoAdminPage() {
         file={file ? file : (preview ? { src: preview } : null)}
         onCropped={(dataUrl) => setCroppedDataUrl(dataUrl)}
         outputWidth={1200}
-        rememberAspectKey="raffles.cropAspect" // guarda la última relación en localStorage
-        minOutputWidth={700}                    // si el recorte queda < 700px de ancho, se deshabilita "Aplicar"
+        rememberAspectKey="raffles.cropAspect"
+        minOutputWidth={700}
       />
 
       <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -414,7 +593,7 @@ export default function CrearSorteoAdminPage() {
                 <h1 className="text-2xl font-bold text-white">Crear Nuevo Sorteo</h1>
               </div>
               <p className="text-gray-300 mb-4 max-w-2xl">
-                Completá los datos. El sistema calcula automáticamente el mínimo de participantes necesario para realizar el sorteo.
+                Completá los datos. El inicio se fija automáticamente si el sorteo empieza hoy; si lo programás para otro día, podrás elegir el horario.
               </p>
               <div className="flex items-center bg-gray-700/50 border border-gray-600 rounded-lg p-3">
                 <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
@@ -437,7 +616,7 @@ export default function CrearSorteoAdminPage() {
                   <svg className="h-5 w-5 text-red-400 mt-0.5 mr-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                     <path
                       fillRule="evenodd"
-                      d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
+                      d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1H9z"
                       clipRule="evenodd"
                     />
                   </svg>
@@ -657,33 +836,118 @@ export default function CrearSorteoAdminPage() {
                 </div>
               </div>
 
-              {/* Fechas */}
+              {/* INICIO: sólo fecha (AR) + horario si es fecha futura */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">Fecha de inicio (opcional)</label>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-gray-200">Fecha de inicio</label>
+                    <span className="text-[11px] px-2 py-0.5 rounded bg-gray-700 text-gray-300 border border-gray-600">{tzBadge()}</span>
+                  </div>
                   <input
-                    type="datetime-local"
+                    type="date"
                     className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white"
-                    value={startsAt}
-                    onChange={(e) => setStartsAt(e.target.value)}
+                    value={startsDate}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setStartsDate(v);
+                      // Si vuelve a hoy o vacío, limpiamos hora
+                      if (!v || isArSameDay(v)) setStartsTime("");
+                    }}
+                    min={todayArStr}
                     disabled={loading}
-                    min={new Date().toISOString().slice(0, 16)}
                   />
+                  <p className="text-xs text-gray-400 mt-2">
+                    Si elegís <b>hoy</b> o dejás vacío, el sorteo <b>empieza ahora</b> al crear. Para programar, elegí un día futuro.
+                  </p>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-200 mb-2">
-                    Fecha de finalización
-                  </label>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className={`block text-sm font-medium ${isFutureStartDay ? "text-gray-200" : "text-gray-500"}`}>
+                      Horario de inicio (solo si la fecha es futura)
+                    </label>
+                    <span className="text-[11px] px-2 py-0.5 rounded bg-gray-700 text-gray-300 border border-gray-600">{tzBadge()}</span>
+                  </div>
+                  <input
+                    type="time"
+                    className={`w-full bg-gray-700/50 border ${isFutureStartDay ? "border-gray-600" : "border-gray-700"} rounded-xl px-4 py-3.5 focus:ring-2 ${isFutureStartDay ? "focus:ring-orange-500 focus:border-orange-500" : "focus:ring-gray-700 focus:border-gray-700"} text-white placeholder-gray-400`}
+                    value={startsTime}
+                    onChange={(e) => setStartsTime(e.target.value)}
+                    disabled={loading || !isFutureStartDay}
+                  />
+                  {isFutureStartDay ? (
+                    <p className="text-xs text-gray-400 mt-2">
+                      Requerido para programar el inicio en un día futuro.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-500 mt-2">
+                      Se habilita al elegir una fecha posterior a hoy.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* FIN: datetime-local AR */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="md:col-span-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-gray-200">Fecha de finalización (opcional)</label>
+                    <span className="text-[11px] px-2 py-0.5 rounded bg-gray-700 text-gray-300 border border-gray-600">{tzBadge()}</span>
+                  </div>
                   <input
                     type="datetime-local"
                     className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white"
                     value={endsAt}
                     onChange={(e) => setEndsAt(e.target.value)}
                     disabled={loading}
-                    min={new Date().toISOString().slice(0, 16)}
+                    min={minEndInputAR}
                   />
+                  <p className="text-xs text-gray-400 mt-2">
+                    Debe ser futura. Si programaste inicio futuro, la finalización debe ser posterior al inicio.
+                  </p>
                 </div>
+              </div>
+
+              {/* Video YouTube (opcional) */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium text-gray-200">
+                    Enlace de YouTube (opcional)
+                  </label>
+                <span className="text-xs text-gray-400">
+                    Sugerido: poner el video como <b>Oculto (Unlisted)</b>, no Privado.
+                  </span>
+                </div>
+                <input
+                  type="url"
+                  placeholder="https://www.youtube.com/watch?v=XXXXXXXXXXX"
+                  className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
+                  value={youtubeUrl}
+                  onChange={(e) => {
+                    setYoutubeUrl(e.target.value);
+                    setYoutubeError("");
+                  }}
+                  disabled={loading}
+                />
+                {youtubeError && <p className="mt-2 text-sm text-red-300">{youtubeError}</p>}
+
+                {youtubeUrl.trim() && isValidYouTubeUrl(youtubeUrl.trim()) && (
+                  <div className="mt-3">
+                    <div className="relative w-full aspect-video rounded-xl overflow-hidden border border-gray-700 bg-black">
+                      <iframe
+                        src={toEmbedUrl(youtubeUrl.trim())}
+                        className="absolute inset-0 w-full h-full"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        allowFullScreen
+                        loading="lazy"
+                        title="Vista previa del video"
+                      />
+                    </div>
+                    <p className="text-xs text-gray-400 mt-2">
+                      Si el video es <b>Privado</b>, no se podrá reproducir aquí. Usá <b>Oculto</b> y compartí el link.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Imagen (archivo + recorte) */}
@@ -697,7 +961,7 @@ export default function CrearSorteoAdminPage() {
                     onChange={(e) => {
                       const f = e.target.files?.[0] || null;
                       setFile(f);
-                      setCroppedDataUrl(""); // si el usuario sube otra imagen, reseteamos recorte previo
+                      setCroppedDataUrl("");
                     }}
                     disabled={loading}
                     className="block w-full text-sm text-gray-300
@@ -811,7 +1075,8 @@ export default function CrearSorteoAdminPage() {
                     setDescription("");
                     setPrizeValueInput("");
                     setParticipantGoal("");
-                    setStartsAt("");
+                    setStartsDate("");
+                    setStartsTime("");
                     setEndsAt("");
                     setFile(null);
                     setPreview("");
@@ -823,6 +1088,8 @@ export default function CrearSorteoAdminPage() {
                     setMinTickets(1);
                     setMinTicketsMandatory(false);
                     setImageError("");
+                    setYoutubeUrl("");
+                    setYoutubeError("");
                   }}
                   disabled={loading}
                   className="px-4 py-3.5 text-gray-400 hover:text-white hover:bg-gray-700/50 rounded-xl transition-all"
@@ -859,11 +1126,15 @@ export default function CrearSorteoAdminPage() {
                   </li>
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>Si dejás vacío el objetivo, usamos el mínimo requerido automáticamente.</span>
+                    <span>Si dejás vacío el inicio o elegís “hoy”, el sorteo comienza al crear. Para programar, elegí un día futuro y horario.</span>
                   </li>
                   <li className="flex items-start">
                     <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
-                    <span>“No listado (por link)” no requiere aprobación; “Listado” solicitará aprobación para aparecer en “Explorar”.</span>
+                    <span>Los horarios/fechas se interpretan en {tzBadge()} y se guardan en UTC para evitar errores.</span>
+                  </li>
+                  <li className="flex items-start">
+                    <span className="h-1.5 w-1.5 bg-orange-400 rounded-full mt-1.5 mr-2 flex-shrink-0"></span>
+                    <span>Para videos, usá enlace <b>Oculto</b> (no Privado) para que se pueda reproducir acá.</span>
                   </li>
                 </ul>
               </div>
