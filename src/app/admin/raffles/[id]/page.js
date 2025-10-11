@@ -103,19 +103,14 @@ function parseRulesFromDescription(desc = "") {
   return { cleanDescription: clean, minTickets: min, mandatory };
 }
 
-function buildRulesFooter(minTicketsPerParticipant, minTicketsIsMandatory, category) {
-  let lines = [];
-  if (category) {
-    lines.push(`• Categoría: ${category}`);
-  }
-  if (minTicketsPerParticipant > 1) {
-    const ruleLabel = minTicketsIsMandatory ? "Reglas obligatorias" : "Reglas sugeridas";
-    const ruleText = minTicketsIsMandatory
-      ? `• Cada participante debe comprar al menos ${minTicketsPerParticipant} ticket(s).`
-      : `• Mínimo de tickets por participante: ${minTicketsPerParticipant}`;
-    lines.push(`—\nℹ️ ${ruleLabel}:\n${ruleText}`);
-  }
-  return lines.length ? `\n\n${lines.join("\n")}` : "";
+// Solo agrega el bloque de reglas (no categoría)
+function buildRulesFooter(minTicketsPerParticipant, minTicketsIsMandatory) {
+  if (!(Number(minTicketsPerParticipant) > 1)) return "";
+  const ruleLabel = minTicketsIsMandatory ? "Reglas obligatorias" : "Reglas sugeridas";
+  const ruleText = minTicketsIsMandatory
+    ? `• Cada participante debe comprar al menos ${minTicketsPerParticipant} ticket(s).`
+    : `• Mínimo de tickets por participante: ${minTicketsPerParticipant}`;
+  return `\n\n—\nℹ️ ${ruleLabel}:\n${ruleText}`;
 }
 
 /* =======================
@@ -177,6 +172,10 @@ export default function AdminRaffleEditPage() {
 
   const [startsAt, setStartsAt] = useState("");
   const [endsAt, setEndsAt] = useState("");
+
+  // Media/Metadatos
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [freeShipping, setFreeShipping] = useState(false);
 
   // Imagen
   const [currentImageUrl, setCurrentImageUrl] = useState("");
@@ -268,29 +267,37 @@ export default function AdminRaffleEditPage() {
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
-  // -------- Carga inicial (ADMIN endpoint)
+  // -------- Carga inicial (usa /api/raffles/[id])
   useEffect(() => {
     let mounted = true;
     (async () => {
       setLoadError("");
       try {
-        const res = await fetch(`/api/admin/raffles/${id}`, { credentials: "include" });
+        const res = await fetch(`/api/raffles/${id}`, { credentials: "include" });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data?.error || data?.message || "No se pudo cargar el sorteo");
         const r = data?.raffle || data;
 
         if (!mounted) return;
 
-        // Parsear reglas desde la descripción
-        const { cleanDescription, minTickets, mandatory } = parseRulesFromDescription(r.description || "");
+        // Parsear reglas desde la descripción (fallback)
+        const parsed = parseRulesFromDescription(r.description || "");
+
+        // Preferir valores de DB para reglas si existen
+        const dbMin = Number.isFinite(r.minTicketsPerParticipant) && r.minTicketsPerParticipant > 0
+          ? r.minTicketsPerParticipant
+          : null;
+        const dbMandatory = typeof r.minTicketsIsMandatory === "boolean"
+          ? r.minTicketsIsMandatory
+          : null;
 
         setTitle(r.title || "");
-        setDescription(cleanDescription);
+        setDescription(parsed.cleanDescription);
         setCategory(r.prizeCategory || "");
         setIsPrivate(!!r.isPrivate);
 
         setPrizeValueInput(String(r.prizeValue ?? ""));
-        // En edición, "Objetivo" lo tomamos de maxParticipants si está. (coherente con admin route)
+        // En edición, "Objetivo" lo tomamos de maxParticipants si está.
         setParticipantGoal(String(r.maxParticipants ?? ""));
 
         setStartsAt(toLocalDateTimeInputValue(r.startsAt));
@@ -298,15 +305,23 @@ export default function AdminRaffleEditPage() {
 
         setCurrentImageUrl(r.imageUrl || "");
 
+        // Media / Metadatos
+        setYoutubeUrl(r.youtubeUrl || "");
+        setFreeShipping(!!r.freeShipping);
+
         // Estado/Reglas previas (para restricciones)
         const pCount = (r?._count?.participations ?? 0) + (r?._count?.tickets ?? 0);
         setParticipantsCount(pCount);
-        setPrevMinTickets(minTickets || 1);
-        setPrevMandatory(Boolean(mandatory));
+
+        const derivedMin = dbMin ?? (parsed.minTickets || 1);
+        const derivedMandatory = dbMandatory ?? Boolean(parsed.mandatory);
+
+        setPrevMinTickets(derivedMin);
+        setPrevMandatory(derivedMandatory);
 
         // Valores iniciales del stepper/toggle
-        setMinTickets(minTickets || 1);
-        setMinTicketsMandatory(Boolean(mandatory));
+        setMinTickets(derivedMin);
+        setMinTicketsMandatory(derivedMandatory);
 
         setLoaded(true);
       } catch (e) {
@@ -376,6 +391,11 @@ export default function AdminRaffleEditPage() {
     if (minTicketsPerParticipant > maxMinTickets)
       return `El mínimo de tickets por participante no puede superar ${maxMinTickets} (asegura que haya al menos 2 participantes).`;
 
+    // YouTube (validación ligera de formato)
+    if (youtubeUrl && !/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(youtubeUrl)) {
+      return "El enlace de YouTube no parece válido";
+    }
+
     return null;
   };
 
@@ -406,7 +426,7 @@ export default function AdminRaffleEditPage() {
     }
   };
 
-  // -------- Guardar cambios (PUT /api/admin/raffles/[id])
+  // -------- Guardar cambios (PUT /api/raffles/[id])
   const handleSave = async (e) => {
     e.preventDefault();
     setError("");
@@ -434,8 +454,7 @@ export default function AdminRaffleEditPage() {
     const baseDesc = description.trim();
     const footer = buildRulesFooter(
       Math.max(1, Number(minTicketsPerParticipant)),
-      Boolean(minTicketsMandatory),
-      category
+      Boolean(minTicketsMandatory)
     );
     const finalDescription = `${baseDesc}${footer}`;
 
@@ -447,18 +466,20 @@ export default function AdminRaffleEditPage() {
         title: title.trim(),
         description: finalDescription,
         prizeValue: prizeFinal,
-        ...(maxParticipants != null ? { maxParticipants } : {}),
+        ...(maxParticipants != null ? { participantLimit: maxParticipants } : {}),
         imageUrl: finalImageUrl ?? null,
         startsAt: startsAt || null,
         endsAt: endsAt || null,
         prizeCategory: category || null,
         isPrivate,
-        // Por si en el futuro el backend los soporta:
+        youtubeUrl: youtubeUrl || null,
+        freeShipping,
+        // reglas persistentes
         minTicketsPerParticipant: Math.max(1, Number(minTicketsPerParticipant)),
         minTicketsIsMandatory: Boolean(minTicketsMandatory),
       };
 
-      const res = await fetch(`/api/admin/raffles/${id}`, {
+      const res = await fetch(`/api/raffles/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -479,13 +500,13 @@ export default function AdminRaffleEditPage() {
     }
   };
 
-  // -------- Eliminar sorteo (ADMIN endpoint)
+  // -------- Eliminar sorteo
   const handleDelete = async () => {
     if (!confirm("¿Eliminar este sorteo? Esta acción no se puede deshacer.")) return;
     setDeleting(true);
     setError("");
     try {
-      const res = await fetch(`/api/admin/raffles/${id}`, {
+      const res = await fetch(`/api/raffles/${id}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -745,6 +766,19 @@ export default function AdminRaffleEditPage() {
                 />
               </div>
 
+              {/* Video (YouTube) */}
+              <div>
+                <label className="block text-sm font-medium text-gray-200 mb-2">Video de YouTube (opcional)</label>
+                <input
+                  type="url"
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  value={youtubeUrl}
+                  onChange={(e) => setYoutubeUrl(e.target.value)}
+                  className="w-full bg-gray-700/50 border border-gray-600 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-white placeholder-gray-400"
+                />
+                <p className="text-xs text-gray-400 mt-1">Se valida y se muestra embebido en la página del sorteo.</p>
+              </div>
+
               {/* Premio / objetivo / visibilidad */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div>
@@ -804,6 +838,23 @@ export default function AdminRaffleEditPage() {
                       Hacer sorteo privado
                     </label>
                   </div>
+                </div>
+              </div>
+
+              {/* Entrega */}
+              <div>
+                <label className="block text-sm font-medium text-gray-200 mb-2">Entrega</label>
+                <div className="flex items-center h-[52px] bg-gray-700/50 border border-gray-600 rounded-xl px-4">
+                  <input
+                    id="freeShipping"
+                    type="checkbox"
+                    checked={freeShipping}
+                    onChange={(e) => setFreeShipping(e.target.checked)}
+                    className="h-4 w-4 text-orange-600 rounded border-gray-600"
+                  />
+                  <label htmlFor="freeShipping" className="ml-3 text-sm text-gray-300">
+                    Envío gratis (si no, se acuerda entrega)
+                  </label>
                 </div>
               </div>
 
@@ -1011,7 +1062,7 @@ export default function AdminRaffleEditPage() {
 
                 <button
                   type="button"
-                  onClick={() => router.push(`/admin/raffles/${id}`)}
+                  onClick={() => router.push(`/sorteo/${id}`)}
                   className="px-6 py-3.5 border border-gray-600 text-gray-300 rounded-xl font-medium hover:bg-gray-700/50 transition-all"
                 >
                   Cancelar

@@ -88,6 +88,20 @@ function normalizeImageUrl(u) {
   return null;
 }
 
+/** Valida formatos típicos de YouTube */
+function isValidYouTubeUrl(u = "") {
+  try {
+    const url = new URL(u);
+    if (!/^(www\.)?(youtube\.com|youtu\.be)$/i.test(url.hostname)) return false;
+    if (url.hostname.includes("youtu.be")) return url.pathname.slice(1).length > 0;
+    if (url.pathname === "/watch") return !!url.searchParams.get("v");
+    if (/^\/(live|shorts)\/[A-Za-z0-9_-]+$/.test(url.pathname)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /** Etiquetas legibles para motivos tipificados (solo para mensajes/notas) */
 function reasonLabel(code) {
   const map = {
@@ -101,7 +115,7 @@ function reasonLabel(code) {
 }
 
 /* =======================
-   POST: Crear rifa (SIN CAMBIOS)
+   POST: Crear rifa (incluye youtubeUrl, freeShipping, minTickets*)
    ======================= */
 
 export async function POST(request) {
@@ -120,10 +134,7 @@ export async function POST(request) {
     });
     if (!dbUser) {
       return NextResponse.json(
-        {
-          error: "Usuario no encontrado en la base de datos",
-          code: "USER_NOT_FOUND",
-        },
+        { error: "Usuario no encontrado en la base de datos", code: "USER_NOT_FOUND" },
         { status: 400 }
       );
     }
@@ -134,7 +145,7 @@ export async function POST(request) {
       description,
       prizeValue,        // requerido
       participantGoal,   // opcional
-      startsAt,          // opcional
+      startsAt,          // opcional (si viene => PUBLISHED; si no => ACTIVE)
       endsAt,            // opcional
       imageUrl,          // opcional (local /uploads/*.webp, Vercel Blob o Supabase público)
 
@@ -145,9 +156,13 @@ export async function POST(request) {
       // Visibilidad actual (checkbox): true = NO LISTADO (por link), false = LISTADO (público, requiere aprobación)
       isPrivate,
 
-      // UX (no columnas reales, pero afectan mínimo requerido)
+      // UX (afectan el mínimo requerido)
       minTicketsPerParticipant,
       minTicketsIsMandatory,
+
+      // 🚚 Envío / 📺 Video (metadatos)
+      freeShipping,
+      youtubeUrl,
     } = body ?? {};
 
     const normalizedCategory =
@@ -170,11 +185,7 @@ export async function POST(request) {
     const prizeValueInt = normalizePrizeValue(prizeValue);
     if (!prizeValueInt || prizeValueInt < 1000) {
       return NextResponse.json(
-        {
-          error:
-            "El valor del premio es obligatorio y debe ser un entero ≥ 1000",
-          code: "VALIDATION_ERROR",
-        },
+        { error: "El valor del premio es obligatorio y debe ser un entero ≥ 1000", code: "VALIDATION_ERROR" },
         { status: 400 }
       );
     }
@@ -217,10 +228,7 @@ export async function POST(request) {
       const goalInt = Math.trunc(Number(participantGoal));
       if (!Number.isFinite(goalInt) || goalInt < minParticipants) {
         return NextResponse.json(
-          {
-            error: `El objetivo de participantes debe ser un entero ≥ ${minParticipants}`,
-            code: "VALIDATION_ERROR",
-          },
+          { error: `El objetivo de participantes debe ser un entero ≥ ${minParticipants}`, code: "VALIDATION_ERROR" },
           { status: 400 }
         );
       }
@@ -229,6 +237,15 @@ export async function POST(request) {
 
     // Aceptar imagen local/Vercel Blob/Supabase
     const finalImageUrl = normalizeImageUrl(imageUrl);
+
+    // youtube opcional
+    const finalYoutubeUrl = youtubeUrl ? String(youtubeUrl).trim() : null;
+    if (finalYoutubeUrl && !isValidYouTubeUrl(finalYoutubeUrl)) {
+      return NextResponse.json(
+        { error: "El enlace de YouTube no es válido", code: "VALIDATION_ERROR" },
+        { status: 400 }
+      );
+    }
 
     // Estado de sorteo
     const initialStatus = processedStartDate ? "PUBLISHED" : "ACTIVE";
@@ -249,12 +266,17 @@ export async function POST(request) {
           startsAt: processedStartDate,
           endsAt: processedEndDate,
           imageUrl: finalImageUrl,
+          youtubeUrl: finalYoutubeUrl,
           prizeCategory: normalizedCategory,
           status: initialStatus,
           publishedAt: new Date(),
-          ownerImage: dbUser.image || (/** @type any */(session.user))?.image || null,
+          ownerImage: dbUser.image || (session.user?.image || null),
           isPrivate: isPrivateFlag,
           listingStatus,
+          // persistencia nueva:
+          freeShipping: Boolean(freeShipping),
+          minTicketsPerParticipant: minTicketsPP,
+          minTicketsIsMandatory: isMandatory,
           owner: { connect: { id: dbUser.id } },
         },
         include: {
@@ -285,6 +307,10 @@ export async function POST(request) {
             isPrivate: raffle.isPrivate,
             prizeCategory: raffle.prizeCategory || null,
             listingStatus: raffle.listingStatus,
+            freeShipping: raffle.freeShipping,
+            youtubeUrl: raffle.youtubeUrl || null,
+            minTicketsPerParticipant: raffle.minTicketsPerParticipant ?? null,
+            minTicketsIsMandatory: raffle.minTicketsIsMandatory ?? false,
           },
         },
       });
@@ -364,7 +390,7 @@ export async function POST(request) {
 }
 
 /* =======================
-   GET: Listar rifas (AGREGADO: campos de moderación + datos de moderador)
+   GET: Listar rifas (incluye moderación + metadatos nuevos)
    ======================= */
 
 export async function GET(request) {
@@ -417,12 +443,11 @@ export async function GET(request) {
         where.listingStatus = listingStatusFilter;
       }
     } else {
-      // Listado público (Explorar): solo rifas no privadas y APROBADAS para aparecer
+      // Listado público (Explorar): solo rifas no privadas y APROBADAS
       where.isPrivate = false;
       where.listingStatus = "APPROVED";
 
       if (!status) {
-        // Incluye COMPLETED si querés que también se vea públicamente
         where.status = { in: ["PUBLISHED", "ACTIVE", "READY_TO_DRAW", "FINISHED", "COMPLETED"] };
       }
       if (ownerIdParam) {
@@ -466,6 +491,8 @@ export async function GET(request) {
           title: true,
           description: true,
           imageUrl: true,
+          youtubeUrl: true,
+          freeShipping: true,
           prizeValue: true,
           prizeCategory: true,
           maxParticipants: true,
@@ -476,10 +503,13 @@ export async function GET(request) {
           updatedAt: true,
           isPrivate: true,
           listingStatus: true,
-          // ⬇️ Campos de moderación para mostrar en el panel
+          // Moderación
           listingReviewedBy: true,
           listingReviewedAt: true,
           listingReason: true,
+          // Reglas UX
+          minTicketsPerParticipant: true,
+          minTicketsIsMandatory: true,
 
           ownerId: true,
           owner: {
@@ -567,7 +597,7 @@ export async function GET(request) {
 }
 
 /* =======================
-   PUT y DELETE
+   PUT y DELETE (incluye edición de metadatos nuevos)
    ======================= */
 
 export async function PUT(request) {
@@ -586,10 +616,7 @@ export async function PUT(request) {
     });
     if (!dbUser) {
       return NextResponse.json(
-        {
-          error: "Usuario no encontrado en la base de datos",
-          code: "USER_NOT_FOUND",
-        },
+        { error: "Usuario no encontrado en la base de datos", code: "USER_NOT_FOUND" },
         { status: 400 }
       );
     }
@@ -677,7 +704,7 @@ export async function PUT(request) {
             listingStatus: "APPROVED",
             listingReviewedBy: dbUser.id,
             listingReviewedAt: new Date(),
-            listingReason: null, // limpiar motivo previo si lo hubiera
+            listingReason: null,
           },
         });
 
@@ -791,6 +818,17 @@ export async function PUT(request) {
 
     let updateObject = {};
 
+    // Para validar requerimientos con regla (si se actualiza prize/max o min-tickets)
+    const nextMinPP = Number.isFinite(Number(updateData.minTicketsPerParticipant)) && Number(updateData.minTicketsPerParticipant) > 0
+      ? Math.floor(Number(updateData.minTicketsPerParticipant))
+      : (existingRaffle.minTicketsPerParticipant || 1);
+
+    const nextMandatory = updateData.minTicketsIsMandatory !== undefined
+      ? Boolean(updateData.minTicketsIsMandatory)
+      : Boolean(existingRaffle.minTicketsIsMandatory);
+
+    const divisorFromRule = nextMandatory ? Math.max(1, nextMinPP) : 1;
+
     switch (action) {
       case "publish":
         if (existingRaffle.status !== "DRAFT") {
@@ -860,18 +898,19 @@ export async function PUT(request) {
           updateObject.description = d;
         }
 
-        // === NUEVO: tomar regla de tickets por participante desde el payload (como en POST)
-        const superRole = String(dbUser.role || "").toUpperCase() === "SUPERADMIN";
-        const minPP_raw = updateData.minTicketsPerParticipant;
-        const mandatory_raw = updateData.minTicketsIsMandatory;
-
-        const minPP = Number.isFinite(Number(minPP_raw)) && Number(minPP_raw) > 0
-          ? Math.floor(Number(minPP_raw))
-          : 1;
-        const isMandatoryRule = Boolean(mandatory_raw);
-        const divisorFromRule = isMandatoryRule ? Math.max(1, minPP) : 1;
+        // Reglas UX: persistir si llegan
+        if (updateData.minTicketsPerParticipant !== undefined) {
+          const val = Number.isFinite(Number(updateData.minTicketsPerParticipant)) && Number(updateData.minTicketsPerParticipant) > 0
+            ? Math.floor(Number(updateData.minTicketsPerParticipant))
+            : 1;
+          updateObject.minTicketsPerParticipant = val;
+        }
+        if (updateData.minTicketsIsMandatory !== undefined) {
+          updateObject.minTicketsIsMandatory = Boolean(updateData.minTicketsIsMandatory);
+        }
 
         // --- prizeValue ---
+        const superRole = String(dbUser.role || "").toUpperCase() === "SUPERADMIN";
         if (updateData.prizeValue !== undefined) {
           const pv = normalizePrizeValue(updateData.prizeValue);
           if (!pv || pv < 1000) {
@@ -883,7 +922,7 @@ export async function PUT(request) {
           updateObject.prizeValue = pv;
 
           if (!superRole) {
-            // 👇 mismo cálculo que en POST (aplica divisor si la regla es obligatoria)
+            // mismo cálculo que en POST (aplica divisor por regla)
             const baseNeeded = Math.ceil(pv / POT_CONTRIBUTION_PER_TICKET);
             const minRequired = Math.ceil(baseNeeded / divisorFromRule);
 
@@ -963,6 +1002,7 @@ export async function PUT(request) {
           }
         }
 
+        // Fechas
         if (updateData.endsAt !== undefined || updateData.startsAt !== undefined) {
           const newStartsAt =
             updateData.startsAt !== undefined
@@ -982,6 +1022,21 @@ export async function PUT(request) {
           if (updateData.startsAt !== undefined)
             updateObject.startsAt = dateValidation.startDate;
         }
+
+        // 📺 YouTube
+        if (updateData.youtubeUrl !== undefined) {
+          const y = updateData.youtubeUrl ? String(updateData.youtubeUrl).trim() : null;
+          if (y && !isValidYouTubeUrl(y)) {
+            return NextResponse.json({ error: "El enlace de YouTube no es válido", code: "VALIDATION_ERROR" }, { status: 400 });
+          }
+          updateObject.youtubeUrl = y;
+        }
+
+        // 🚚 Envío
+        if (updateData.freeShipping !== undefined) {
+          updateObject.freeShipping = Boolean(updateData.freeShipping);
+        }
+
         break;
     }
 
@@ -1019,6 +1074,10 @@ export async function PUT(request) {
             isPrivate: existingRaffle.isPrivate,
             prizeCategory: existingRaffle.prizeCategory || null,
             listingStatus: existingRaffle.listingStatus,
+            freeShipping: existingRaffle.freeShipping,
+            youtubeUrl: existingRaffle.youtubeUrl || null,
+            minTicketsPerParticipant: existingRaffle.minTicketsPerParticipant ?? null,
+            minTicketsIsMandatory: existingRaffle.minTicketsIsMandatory ?? false,
           },
           newValues: updateObject,
         },
@@ -1099,6 +1158,10 @@ export async function DELETE(request) {
         isPrivate: true,
         listingStatus: true,
         prizeCategory: true,
+        freeShipping: true,
+        youtubeUrl: true,
+        minTicketsPerParticipant: true,
+        minTicketsIsMandatory: true,
         _count: { select: { tickets: true, participations: true } },
       },
     });
@@ -1128,11 +1191,7 @@ export async function DELETE(request) {
     // Regla: si hay tickets/participaciones, solo SUPERADMIN puede eliminar
     if ((hasTickets || hasParts) && !isSuperAdmin) {
       return NextResponse.json(
-        {
-          error:
-            "Solo un SUPERADMIN puede eliminar rifas con tickets o participaciones registradas",
-          code: "HAS_REFS",
-        },
+        { error: "Solo un SUPERADMIN puede eliminar rifas con tickets o participaciones registradas", code: "HAS_REFS" },
         { status: 409 }
       );
     }
@@ -1155,6 +1214,10 @@ export async function DELETE(request) {
             isPrivate: existingRaffle.isPrivate,
             listingStatus: existingRaffle.listingStatus,
             prizeCategory: existingRaffle.prizeCategory || null,
+            freeShipping: existingRaffle.freeShipping,
+            youtubeUrl: existingRaffle.youtubeUrl || null,
+            minTicketsPerParticipant: existingRaffle.minTicketsPerParticipant ?? null,
+            minTicketsIsMandatory: existingRaffle.minTicketsIsMandatory ?? false,
             _count: existingRaffle._count,
           },
           newValues: { deleted: true, byRole: role },

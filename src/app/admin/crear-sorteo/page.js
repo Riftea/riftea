@@ -172,6 +172,9 @@ export default function CrearSorteoAdminPage() {
   const [minTicketsPerParticipant, setMinTickets] = useState(1);
   const [minTicketsMandatory, setMinTicketsMandatory] = useState(false);
 
+  // 🚚 Envío gratis / acordar entrega
+  const [freeShipping, setFreeShipping] = useState(false);
+
   // Entradas crudas (strings)
   const [prizeValueInput, setPrizeValueInput] = useState("");
   const [participantGoal, setParticipantGoal] = useState("");
@@ -290,11 +293,9 @@ export default function CrearSorteoAdminPage() {
     }
 
     // INICIO: reglas
-    // - Si no elegís fecha, o si elegís HOY (AR), el sorteo inicia "ya" al crear (no se programa horario).
-    // - Si elegís una fecha FUTURA, el horario es OBLIGATORIO y debe ser futuro.
     if (startsDate) {
       if (isArSameDay(startsDate)) {
-        // hoy: no se permite programar hora (ignorar startsTime si lo ingresaron)
+        // hoy: empieza ya
       } else if (isArFutureDay(startsDate)) {
         if (!startsTime) return "Elegí un horario para la fecha de inicio (solo para días futuros).";
         const startIso = arDateTimeToUtcISO(startsDate, startsTime);
@@ -316,7 +317,6 @@ export default function CrearSorteoAdminPage() {
       const GRACE_MS = 60_000;
       if (endUtc <= nowUtc + GRACE_MS) return "La fecha de finalización debe ser futura (Hora AR)";
 
-      // Si inicio está programado para el futuro, exigir fin > inicio
       if (startsDate && isArFutureDay(startsDate) && startsTime) {
         const startIso = arDateTimeToUtcISO(startsDate, startsTime);
         const startUtc = startIso ? Date.parse(startIso) : NaN;
@@ -395,7 +395,7 @@ export default function CrearSorteoAdminPage() {
       if (url.hostname.includes("youtu.be")) {
         const id = url.pathname.slice(1);
         return `https://www.youtube.com/embed/${id}?rel=0&modestbranding=1`;
-      }
+        }
       if (url.pathname === "/watch") {
         const id = url.searchParams.get("v");
         return id ? `https://www.youtube.com/embed/${id}?rel=0&modestbranding=1` : "";
@@ -443,10 +443,9 @@ export default function CrearSorteoAdminPage() {
       descriptionFooter = `\n\n—\nℹ️ ${ruleLabel}:\n${ruleText}`;
     }
 
-    const categoryLine = category ? `\n• Categoría: ${category}` : "";
-
+    // ⛔️ Ya no agregamos la categoría a la descripción
     const finalDescription =
-      [description.trim(), categoryLine, descriptionFooter]
+      [description.trim(), descriptionFooter]
         .filter(Boolean)
         .join("");
 
@@ -455,9 +454,9 @@ export default function CrearSorteoAdminPage() {
     // - Si fecha FUTURA => usar fecha + horario obligatorios y enviar startsAt en UTC.
     let startsAtUtcISO = null;
     if (!startsDate || isArSameDay(startsDate)) {
-      startsAtUtcISO = null; // <- clave: no lo mandamos para evitar el error "debe ser futura"
+      startsAtUtcISO = null;
     } else if (isArFutureDay(startsDate)) {
-      startsAtUtcISO = arDateTimeToUtcISO(startsDate, startsTime); // validado arriba
+      startsAtUtcISO = arDateTimeToUtcISO(startsDate, startsTime);
     }
 
     // FIN: opcional
@@ -473,9 +472,9 @@ export default function CrearSorteoAdminPage() {
         prizeValue: prizeFinal,
         ...(goalInt != null ? { participantGoal: goalInt } : {}),
         ...(finalImageUrl && { imageUrl: finalImageUrl }),
-        ...(startsAtUtcISO != null ? { startsAt: startsAtUtcISO } : {}), // <-- sólo si hay fecha futura
+        ...(startsAtUtcISO != null ? { startsAt: startsAtUtcISO } : {}), // solo si hay fecha futura
         ...(endsAtUtcISO && { endsAt: endsAtUtcISO }),
-        ...(category && { prizeCategory: category }),
+        ...(category && { prizeCategory: category }), // ✅ categoría como metadato
         ...(youtubeUrl.trim() && { youtubeUrl: youtubeUrl.trim() }),
         isPrivate,
         termsAccepted: true,
@@ -483,6 +482,9 @@ export default function CrearSorteoAdminPage() {
         minTicketsIsMandatory: Boolean(minTicketsMandatory),
         inputTimeZone: AR_TZ,
         startInputMode: !startsDate || isArSameDay(startsDate) ? "NOW_AR" : "SCHEDULE_AR",
+
+        // 🚚 Nuevo: envío
+        freeShipping: !!freeShipping, // true => "Envío gratis", false => "Acordar entrega"
       };
 
       const res = await fetch("/api/raffles", {
@@ -523,7 +525,6 @@ export default function CrearSorteoAdminPage() {
     termsAccepted &&
     !!normalizeThousandRule(prizeValueInput) &&
     !uploading &&
-    // Si el usuario eligió fecha futura, debe tener horario
     (!startsDate || isArSameDay(startsDate) || (isArFutureDay(startsDate) && !!startsTime));
 
   const disabledReason = !normalizeThousandRule(prizeValueInput)
@@ -769,6 +770,9 @@ export default function CrearSorteoAdminPage() {
                       </option>
                     ))}
                   </select>
+                  <p className="text-xs text-gray-400 mt-2">
+                    La categoría se guarda como metadato (<b>no</b> se agrega a la descripción).
+                  </p>
                 </div>
 
                 <div>
@@ -836,6 +840,34 @@ export default function CrearSorteoAdminPage() {
                 </div>
               </div>
 
+              {/* 🚚 Envío / Entrega */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-200 mb-2">Entrega del premio</label>
+                  <div className="inline-flex bg-gray-700/50 border border-gray-600 rounded-xl overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setFreeShipping(true)}
+                      className={`px-4 py-3.5 text-sm ${freeShipping ? "bg-orange-600 text-white" : "text-gray-200 hover:bg-gray-700"}`}
+                      aria-pressed={freeShipping}
+                    >
+                      Envío gratis
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFreeShipping(false)}
+                      className={`px-4 py-3.5 text-sm ${!freeShipping ? "bg-orange-600 text-white" : "text-gray-200 hover:bg-gray-700"}`}
+                      aria-pressed={!freeShipping}
+                    >
+                      Acordar entrega
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-2">
+                    Esta preferencia se guarda como metadato del sorteo.
+                  </p>
+                </div>
+              </div>
+
               {/* INICIO: sólo fecha (AR) + horario si es fecha futura */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
@@ -850,7 +882,6 @@ export default function CrearSorteoAdminPage() {
                     onChange={(e) => {
                       const v = e.target.value;
                       setStartsDate(v);
-                      // Si vuelve a hoy o vacío, limpiamos hora
                       if (!v || isArSameDay(v)) setStartsTime("");
                     }}
                     min={todayArStr}
@@ -914,7 +945,7 @@ export default function CrearSorteoAdminPage() {
                   <label className="block text-sm font-medium text-gray-200">
                     Enlace de YouTube (opcional)
                   </label>
-                <span className="text-xs text-gray-400">
+                  <span className="text-xs text-gray-400">
                     Sugerido: poner el video como <b>Oculto (Unlisted)</b>, no Privado.
                   </span>
                 </div>
@@ -1090,6 +1121,7 @@ export default function CrearSorteoAdminPage() {
                     setImageError("");
                     setYoutubeUrl("");
                     setYoutubeError("");
+                    setFreeShipping(false);
                   }}
                   disabled={loading}
                   className="px-4 py-3.5 text-gray-400 hover:text-white hover:bg-gray-700/50 rounded-xl transition-all"

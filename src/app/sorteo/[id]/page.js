@@ -172,9 +172,7 @@ function FancyProgress({ current = 0, target = 1 }) {
         className="h-full bg-gradient-to-r from-emerald-400 via-lime-400 to-emerald-500 relative"
         style={{ width: `${pct}%` }}
       >
-        {/* Rayas animadas */}
         <div className="absolute inset-0 opacity-30 progress-stripes" />
-        {/* Brillo suave */}
         <div
           className="absolute inset-0 bg-white/20 mix-blend-overlay pointer-events-none"
           style={{ maskImage: "linear-gradient(to bottom, rgba(0,0,0,0.15), rgba(0,0,0,0.6))" }}
@@ -201,6 +199,198 @@ function FancyProgress({ current = 0, target = 1 }) {
           to   { background-position: 16px 0; }
         }
       `}</style>
+    </div>
+  );
+}
+
+/* ======================= Media helpers (YouTube) ======================= */
+
+/** Extrae videoId de varios formatos: watch?v=, youtu.be/, /embed/, /shorts/, /live/ */
+function extractYouTubeId(url = "") {
+  try {
+    const s = String(url || "").trim();
+    if (!s) return null;
+
+    const pathId = s.match(/youtube\.com\/(?:shorts|live)\/([a-zA-Z0-9_-]{6,})/i);
+    if (pathId) return pathId[1];
+
+    const yb = s.match(/youtu\.be\/([a-zA-Z0-9_-]{6,})/i);
+    if (yb) return yb[1];
+
+    const v = s.match(/[?&]v=([a-zA-Z0-9_-]{6,})/i);
+    if (v) return v[1];
+
+    const em = s.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{6,})/i);
+    if (em) return em[1];
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Obtiene URL embebible si el raffle trae un link de YouTube válido */
+function getRaffleYouTubeEmbed(raffle) {
+  const candidates = [
+    raffle?.youtubeUrl,   // <— este es el que envía tu formulario
+    raffle?.youtubeLink,
+    raffle?.videoUrl,
+    raffle?.video,
+    raffle?.media?.youtube,
+  ].filter(Boolean);
+
+  for (const c of candidates) {
+    const id = extractYouTubeId(c);
+    if (id) return `https://www.youtube.com/embed/${id}?rel=0&modestbranding=1`;
+  }
+  return null;
+}
+
+function getYouTubeIdFromEmbed(embedUrl = "") {
+  // Ej: https://www.youtube.com/embed/VIDEOID?rel=0...
+  const m = String(embedUrl || "").match(/\/embed\/([A-Za-z0-9_-]{6,})(?:\?|$)/);
+  return m ? m[1] : null;
+}
+
+/* ======================= MediaCarousel ======================= */
+
+function MediaCarousel({ imageUrl, youtubeEmbedUrl, title = "Sorteo" }) {
+  const slides = useMemo(() => {
+    const arr = [];
+    if (imageUrl) arr.push({ type: "image", src: imageUrl });
+    if (youtubeEmbedUrl) arr.push({ type: "video", src: youtubeEmbedUrl });
+    return arr;
+  }, [imageUrl, youtubeEmbedUrl]);
+
+  const [idx, setIdx] = useState(0);
+  const total = slides.length;
+
+  useEffect(() => {
+    if (idx >= total) setIdx(0);
+  }, [total, idx]);
+
+  if (total === 0) {
+    return <div className="w-full aspect-[16/9] md:aspect-[4/3] rounded-xl bg-white/10 border border-white/15" />;
+  }
+
+  const current = slides[idx];
+  const ytThumb =
+    youtubeEmbedUrl && getYouTubeIdFromEmbed(youtubeEmbedUrl)
+      ? `https://img.youtube.com/vi/${getYouTubeIdFromEmbed(youtubeEmbedUrl)}/hqdefault.jpg`
+      : null;
+
+  return (
+    <div className="relative">
+      <div className="relative w-full aspect-[16/9] md:aspect-[4/3] rounded-xl overflow-hidden shadow-xl border border-white/15 bg-black/20">
+        {current.type === "image" ? (
+          <>
+            <Image
+              src={current.src}
+              alt={title || "Sorteo"}
+              fill
+              className="object-cover"
+              loader={({ src }) => src}
+              unoptimized
+              priority
+            />
+            {/* Zonas de toque (solo en imagen) */}
+            {total > 1 && (
+              <>
+                <button
+                  aria-label="Anterior"
+                  onClick={() => setIdx((p) => (p - 1 + total) % total)}
+                  className="absolute inset-y-0 left-0 w-2/5 md:w-1/3 cursor-pointer"
+                  style={{ background: "linear-gradient(to right, rgba(0,0,0,.1), transparent)" }}
+                  title="Anterior"
+                />
+                <button
+                  aria-label="Siguiente"
+                  onClick={() => setIdx((p) => (p + 1) % total)}
+                  className="absolute inset-y-0 right-0 w-2/5 md:w-1/3 cursor-pointer"
+                  style={{ background: "linear-gradient(to left, rgba(0,0,0,.08), transparent)" }}
+                  title="Siguiente"
+                />
+              </>
+            )}
+          </>
+        ) : (
+          <iframe
+            src={current.src}
+            title={title || "Video del sorteo"}
+            className="w-full h-full"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            referrerPolicy="strict-origin-when-cross-origin"
+            allowFullScreen
+          />
+        )}
+      </div>
+
+      {/* Flechas visibles */}
+      {total > 1 && (
+        <>
+          <button
+            aria-label="Anterior"
+            onClick={() => setIdx((p) => (p - 1 + total) % total)}
+            className="absolute inset-y-0 left-0 px-2 flex items-center justify-center text-white/90 hover:text-white"
+          >
+            <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-black/30">‹</span>
+          </button>
+          <button
+            aria-label="Siguiente"
+            onClick={() => setIdx((p) => (p + 1) % total)}
+            className="absolute inset-y-0 right-0 px-2 flex items-center justify-center text-white/90 hover:text-white"
+          >
+            <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-black/30">›</span>
+          </button>
+        </>
+      )}
+
+      {/* Miniaturas */}
+      {total > 1 && (
+        <div className="mt-2 flex items-center gap-2">
+          {slides.map((s, i) => (
+            <button
+              key={i}
+              onClick={() => setIdx(i)}
+              className={`border rounded-lg overflow-hidden bg-white/10 hover:bg-white/20 transition
+                          ${i === idx ? "ring-2 ring-white/80" : "ring-1 ring-white/20"}`}
+              style={{ width: 56, height: 40 }}
+              title={s.type === "image" ? "Imagen" : "Video"}
+            >
+              {s.type === "image" ? (
+                <div className="relative w-full h-full">
+                  <Image
+                    src={s.src}
+                    alt={title || "Miniatura"}
+                    fill
+                    className="object-cover"
+                    loader={({ src }) => src}
+                    unoptimized
+                  />
+                </div>
+              ) : ytThumb ? (
+                <div className="relative w-full h-full">
+                  <Image
+                    src={ytThumb}
+                    alt="Video"
+                    fill
+                    className="object-cover"
+                    loader={({ src }) => src}
+                    unoptimized
+                  />
+                  <div className="absolute inset-0 grid place-items-center">
+                    <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-black/60 text-white text-xs">
+                      ▶
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-white/90">▶</div>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -268,7 +458,7 @@ export default function SorteoPage() {
   const lastYRef = useRef(0);
 
   // NEW: flag para evitar disparos múltiples del auto-sorteo
-  const [autoDrawAttempted, setAutoDrawAttempted] = useState(false); // NEW
+  const [autoDrawAttempted, setAutoDrawAttempted] = useState(false);
 
   useEffect(() => {
     const onScroll = () => {
@@ -370,7 +560,7 @@ export default function SorteoPage() {
 
   useEffect(() => {
     if (!raffle?.id) return;
-    const ok = ["ACTIVE", "PUBLISHED", "READY_TO_DRAW", "READY_TO_FINISH"]; // NEW incluye READY_TO_FINISH
+    const ok = ["ACTIVE", "PUBLISHED", "READY_TO_DRAW", "READY_TO_FINISH"];
     if (!ok.includes(raffle.status)) return;
     const t = setInterval(() => loadParticipants(raffle.id), 30000);
     return () => clearInterval(t);
@@ -643,13 +833,14 @@ export default function SorteoPage() {
   /* ======================= NUEVO: Auto-sorteo público ======================= */
   useEffect(() => {
     if (!raffle?.id) return;
-    if (autoDrawAttempted) return; // evitar múltiples intentos
-    const alreadyDrawn = raffle?.drawAt || raffle?.winnerParticipationId;
+    if (autoDrawAttempted) return;
+    // Resultado ya efectuado si hay timestamp de sorteo o participación ganadora
+    const alreadyDrawn = raffle?.drawnAt || raffle?.winnerParticipationId;
     if (alreadyDrawn) return;
 
     const status = String(raffle?.status || "").toUpperCase();
     if (status === "READY_TO_DRAW" || status === "READY_TO_FINISH") {
-      setAutoDrawAttempted(true); // marcar antes de disparar para evitar loops
+      setAutoDrawAttempted(true);
       (async () => {
         const attempts = [
           { url: `/api/admin/raffles/${id}/draw`, body: { action: "run", notify: true } },
@@ -669,7 +860,6 @@ export default function SorteoPage() {
               router.push(`/sorteo/${id}/en-vivo`);
               return;
             }
-            // si es 401/403/404 sigo probando siguiente endpoint
             const msg = String(data?.error || data?.message || "").toLowerCase();
             if (![401, 403, 404].includes(res.status) && !msg.includes("acceso denegado")) {
               console.warn("Auto-draw falló:", data?.error || data?.message || "No se pudo completar");
@@ -681,7 +871,7 @@ export default function SorteoPage() {
         }
       })();
     }
-  }, [raffle?.id, raffle?.status, raffle?.drawAt, raffle?.winnerParticipationId, autoDrawAttempted, id, router]);
+  }, [raffle?.id, raffle?.status, raffle?.drawnAt, raffle?.winnerParticipationId, autoDrawAttempted, id, router]);
   /* ======================================================================== */
 
   /* ======================= UI ======================= */
@@ -690,6 +880,9 @@ export default function SorteoPage() {
 
   // Título embellecido
   const prettyTitle = useMemo(() => beautifyTitle(raffle?.title || ""), [raffle?.title]);
+
+  // URL de YouTube embebible (si existe)
+  const youtubeEmbedUrl = useMemo(() => getRaffleYouTubeEmbed(raffle), [raffle]);
 
   if (loading) {
     return (
@@ -745,7 +938,7 @@ export default function SorteoPage() {
           ? "bg-green-500/25 text-green-100"
           : raffle?.status === "PUBLISHED"
           ? "bg-blue-500/25 text-blue-100"
-          : raffle?.status === "READY_TO_DRAW" || raffle?.status === "READY_TO_FINISH" // NEW
+          : raffle?.status === "READY_TO_DRAW" || raffle?.status === "READY_TO_FINISH"
           ? "bg-yellow-500/25 text-yellow-100"
           : raffle?.status === "FINISHED"
           ? "bg-fuchsia-500/25 text-fuchsia-100"
@@ -760,13 +953,34 @@ export default function SorteoPage() {
         ? "📢 Publicado"
         : raffle?.status === "FINISHED"
         ? "🏆 Finalizado"
-        : raffle?.status === "READY_TO_FINISH" // NEW
+        : raffle?.status === "READY_TO_FINISH"
         ? "⏳ Listo para finalizar"
         : raffle?.status === "READY_TO_DRAW"
         ? "⏳ Listo para sortear"
         : raffle?.status}
     </span>
   );
+
+  // Badges de categoría y entrega (metadatos persistidos, NO en la descripción)
+  const categoryPill = raffle?.prizeCategory ? (
+    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-500/25 text-indigo-100">
+      🏷️ {raffle.prizeCategory}
+    </span>
+  ) : null;
+
+  const shippingPill =
+    typeof raffle?.freeShipping === "boolean" ? (
+      <span
+        className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+          raffle.freeShipping
+            ? "bg-emerald-500/20 text-emerald-100"
+            : "bg-cyan-500/20 text-cyan-100"
+        }`}
+        title={raffle.freeShipping ? "El organizador ofrece envío gratis" : "Se coordina la entrega"}
+      >
+        {raffle.freeShipping ? "🚚 Envío gratis" : "🤝 Acordar entrega"}
+      </span>
+    ) : null;
 
   const winnerParticipationObj = winnerParticipation;
   const winnerBlock =
@@ -789,11 +1003,10 @@ export default function SorteoPage() {
       ? Math.min(100, Math.round((participationsCount / maxParticipants) * 100))
       : null;
 
-  // NEW: Mostrar botón Ver resultados si aplica
   const canViewResults =
     raffle?.status === "READY_TO_DRAW" ||
     raffle?.status === "READY_TO_FINISH" ||
-    raffle?.status === "FINISHED"; // NEW
+    raffle?.status === "FINISHED";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-violet-900 via-indigo-900 to-sky-900 pt-10">
@@ -850,21 +1063,11 @@ export default function SorteoPage() {
           <div className="grid grid-cols-12 gap-5 mb-6">
             {/* Izquierda: Imagen + Descripción */}
             <div className="col-span-12 lg:col-span-6">
-              {raffle?.imageUrl ? (
-                <div className="relative w-full aspect-[16/9] md:aspect-[4/3] rounded-xl overflow-hidden shadow-xl border border-white/15">
-                  <Image
-                    src={raffle.imageUrl}
-                    alt={raffle.title || "Sorteo"}
-                    fill
-                    className="object-cover"
-                    loader={({ src }) => src}
-                    unoptimized
-                    priority
-                  />
-                </div>
-              ) : (
-                <div className="w-full aspect-[16/9] md:aspect-[4/3] rounded-xl bg-white/10 border border-white/15" />
-              )}
+              <MediaCarousel
+                imageUrl={raffle?.imageUrl || null}
+                youtubeEmbedUrl={youtubeEmbedUrl}
+                title={raffle?.title || "Sorteo"}
+              />
 
               {raffle?.description && (
                 <FadeIn delay={120}>
@@ -917,6 +1120,8 @@ export default function SorteoPage() {
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-2 text-white/80 text-xs">
                     {statusPill}
+                    {categoryPill}
+                    {shippingPill}
                   </div>
                   {winnerBlock}
                 </div>
@@ -1281,6 +1486,12 @@ export default function SorteoPage() {
                           {maxParticipants}
                         </p>
                       )}
+                      {typeof raffle?.freeShipping === "boolean" && (
+                        <p className="mt-1">
+                          <span className="text-white/90">Entrega:</span>{" "}
+                          {raffle.freeShipping ? "Envío gratis" : "Acordar entrega"}
+                        </p>
+                      )}
                     </div>
                     <div>
                       {raffle?.publishedAt && (
@@ -1301,6 +1512,12 @@ export default function SorteoPage() {
                             Mínimo {minTicketsIsMandatory ? "obligatorio" : "sugerido"}:
                           </span>{" "}
                           {minTicketsRequired} ticket(s)
+                        </p>
+                      )}
+                      {raffle?.prizeCategory && (
+                        <p className="mt-1">
+                          <span className="text-white/90">Categoría:</span>{" "}
+                          {raffle.prizeCategory}
                         </p>
                       )}
                     </div>

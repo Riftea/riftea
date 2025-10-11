@@ -1,20 +1,42 @@
-﻿export const runtime = 'nodejs';
-// src/app/api/raffles/[id]/route.js
+﻿// src/app/api/raffles/[id]/route.js
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import prisma from "@/lib/prisma";
 import { authOptions } from "@/lib/auth";
-import {
-  TICKET_PRICE,
-  POT_CONTRIBUTION_PER_TICKET,
-} from "@/lib/ticket.server";
+import { TICKET_PRICE, POT_CONTRIBUTION_PER_TICKET } from "@/lib/ticket.server";
+
+/** Valida formatos típicos de YouTube */
+function isValidYouTubeUrl(u = "") {
+  try {
+    const url = new URL(u);
+    if (!/^(www\.)?(youtube\.com|youtu\.be)$/i.test(url.hostname)) return false;
+    if (url.hostname.includes("youtu.be")) return url.pathname.slice(1).length > 0;
+    if (url.pathname === "/watch") return !!url.searchParams.get("v");
+    if (/^\/(live|shorts)\/[A-Za-z0-9_-]+$/.test(url.pathname)) return true;
+    if (/^\/embed\/[A-Za-z0-9_-]+$/.test(url.pathname)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// Normaliza "regla en miles" para prizeValue
+function normalizePrizeValue(raw) {
+  if (raw === null || raw === undefined) return null;
+  let n = Number.isFinite(raw) ? Math.trunc(raw) : NaN;
+  if (!Number.isFinite(n)) {
+    const cleaned = String(raw).replace(/[^\d]/g, "");
+    n = cleaned ? parseInt(cleaned, 10) : NaN;
+  }
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n < 1000 ? n * 1000 : n;
+}
 
 /* =======================
    GET /api/raffles/[id]
-   - Público: solo rifas NO privadas y en estado PUBLISHED/ACTIVE/FINISHED/READY_TO_DRAW
-   - Dueño/Admin/Superadmin: puede ver cualquier estado y también privadas
    ======================= */
 export async function GET(_req, ctx) {
   try {
@@ -24,7 +46,7 @@ export async function GET(_req, ctx) {
     const isAdmin = viewerRole === "ADMIN" || viewerRole === "SUPERADMIN";
     const isSuper = viewerRole === "SUPERADMIN";
 
-    const { id } = await ctx.params; // ✅ evitar warning Next
+    const { id } = await ctx.params;
 
     const raffle = await prisma.raffle.findUnique({
       where: { id },
@@ -33,6 +55,12 @@ export async function GET(_req, ctx) {
         title: true,
         description: true,
         imageUrl: true,
+
+        // 👇 claves para media/metadatos
+        youtubeUrl: true,
+        prizeCategory: true,
+        freeShipping: true, // 🚚 persistencia del envío
+
         prizeValue: true,
         maxParticipants: true,
         startsAt: true,
@@ -43,7 +71,15 @@ export async function GET(_req, ctx) {
         publishedAt: true,
         ownerId: true,
         isPrivate: true,
-        owner: { select: { id: true, name: true, email: true, image: true} },
+
+        // reglas por participante
+        minTicketsPerParticipant: true,
+        minTicketsIsMandatory: true,
+
+        // opcional si lo tuvieras en el modelo
+        ownerImage: true,
+
+        owner: { select: { id: true, name: true, email: true, image: true } },
         _count: { select: { tickets: true, participations: true } },
       },
     });
@@ -54,21 +90,16 @@ export async function GET(_req, ctx) {
 
     const isOwner = viewerId && raffle.ownerId === viewerId;
 
-    // =======================
-    // Visibilidad (ajuste)
-    // =======================
-    // 🔧 Cambio mínimo: agregamos READY_TO_DRAW a los estados visibles públicamente
-    const publicStates = new Set(["PUBLISHED", "ACTIVE", "FINISHED", "READY_TO_DRAW"]);
+    // visibilidad pública
+    const publicStates = new Set(["PUBLISHED", "ACTIVE", "FINISHED", "READY_TO_DRAW", "READY_TO_FINISH"]);
 
     if (raffle.isPrivate) {
-      // "No listado": visible por link SIN requerir login si está en estado público
       const canSeeByLink = publicStates.has(raffle.status);
       const canModerate = isOwner || isAdmin;
       if (!canSeeByLink && !canModerate) {
         return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
       }
     } else {
-      // Público: sólo estados públicos para no dueños/admin
       if (!publicStates.has(raffle.status) && !(isOwner || isAdmin)) {
         return NextResponse.json({ error: "Sorteo no disponible" }, { status: 404 });
       }
@@ -78,7 +109,7 @@ export async function GET(_req, ctx) {
       success: true,
       raffle: {
         ...raffle,
-        unitPrice: TICKET_PRICE, // derivado del sistema, no de DB
+        unitPrice: TICKET_PRICE,
       },
       meta: {
         ticketPrice: TICKET_PRICE,
@@ -97,10 +128,6 @@ export async function GET(_req, ctx) {
 
 /* =======================
    PUT /api/raffles/[id]
-   - Permisos: dueño, ADMIN o SUPERADMIN
-   - Reglas: valida mínimos vs POT_CONTRIBUTION_PER_TICKET, fechas, etc.
-   - Extra: si isLocked === true, solo SUPERADMIN puede modificar.
-            Además, si NO sos SUPERADMIN no podés tocar ownerId ni isLocked.
    ======================= */
 export async function PUT(req, ctx) {
   try {
@@ -109,24 +136,21 @@ export async function PUT(req, ctx) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
 
-    const { id } = await ctx.params; // ✅ evitar warning Next
+    const { id } = await ctx.params;
 
-    // Obtenemos rifa + conteos para reglas
     const existing = await prisma.raffle.findUnique({
       where: { id },
-      include: {
-        _count: { select: { tickets: true, participations: true } },
-      },
+      include: { _count: { select: { tickets: true, participations: true } } },
     });
     if (!existing) {
       return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
     }
 
-    // Permisos
     const role = String(session.user?.role || "").toUpperCase();
     const isAdmin = role === "ADMIN" || role === "SUPERADMIN";
     const isSuper = role === "SUPERADMIN";
     const isOwner = !!session.user?.id && existing.ownerId === session.user.id;
+
     if (!isOwner && !isAdmin && !isSuper) {
       return NextResponse.json(
         { error: "No autorizado para modificar este sorteo" },
@@ -134,7 +158,6 @@ export async function PUT(req, ctx) {
       );
     }
 
-    // Si está bloqueada, solo SUPERADMIN puede modificar
     if (existing.isLocked && !isSuper) {
       return NextResponse.json(
         { error: "Rifa bloqueada. Solo SUPERADMIN puede modificarla." },
@@ -144,7 +167,6 @@ export async function PUT(req, ctx) {
 
     const body = await req.json();
 
-    // Bloqueo de campos sensibles si NO es SUPERADMIN
     if (!isSuper) {
       delete body?.ownerId;
       delete body?.isLocked;
@@ -153,35 +175,48 @@ export async function PUT(req, ctx) {
       delete body?.winningTicket;
     }
 
-    // Flags del body
     const {
       title,
       description,
-      startsAt, // ✅ ahora soportado
+      startsAt,
       endsAt,
       participantLimit,
+      maxParticipants,             // alias aceptado
       published,
       imageUrl,
+
+      // nuevos meta
+      youtubeUrl,
+      prizeCategory,
+      freeShipping,                // 🚚 toggle de envío
+      isPrivate,                   // toggle visibilidad
+
+      // reglas por participante
+      minTicketsPerParticipant,
+      minTicketsIsMandatory,
+
+      // valor del premio (con regla en miles)
+      prizeValue,
+
       makePublicIfPublished,
       notifyParticipants,
     } = body || {};
 
-    // Reglas base
     const hasParticipants =
       (existing._count?.participations ?? 0) > 0 ||
       (existing._count?.tickets ?? 0) > 0;
+
     const isFinalized =
       existing.status === "FINISHED" ||
       existing.status === "COMPLETED" ||
       existing.status === "CANCELLED";
 
-    // Construir update
     const data = {};
-    const changed = []; // para notificaciones
+    const changed = [];
 
     if (title !== undefined) {
       if (hasParticipants && !isFinalized) {
-        // Ignorar cambio de título mientras haya actividad y no esté finalizado
+        // ignorar si hay actividad y no está finalizado
       } else {
         const t = String(title).trim();
         if (!t) {
@@ -210,17 +245,113 @@ export async function PUT(req, ctx) {
       }
     }
 
-    // ✅ startsAt
+    // YouTube
+    if (youtubeUrl !== undefined) {
+      const y = youtubeUrl ? String(youtubeUrl).trim() : null;
+      if (y && !isValidYouTubeUrl(y)) {
+        return NextResponse.json({ error: "El enlace de YouTube no es válido" }, { status: 400 });
+      }
+      if (y !== existing.youtubeUrl) {
+        data.youtubeUrl = y;
+        changed.push("video de YouTube");
+      }
+    }
+
+    // Categoría
+    if (prizeCategory !== undefined) {
+      const c = prizeCategory ? String(prizeCategory).trim() : null;
+      if (c !== existing.prizeCategory) {
+        data.prizeCategory = c;
+        changed.push("categoría");
+      }
+    }
+
+    // 🚚 Envío (toggle)
+    if (freeShipping !== undefined) {
+      const val = !!freeShipping;
+      if (val !== existing.freeShipping) {
+        data.freeShipping = val;
+        changed.push(val ? "envío gratis" : "acordar entrega");
+      }
+    }
+
+    // Visibilidad (isPrivate)
+    if (isPrivate !== undefined) {
+      const v = !!isPrivate;
+      if (v !== existing.isPrivate) {
+        data.isPrivate = v;
+        changed.push(v ? "modo privado" : "modo público");
+      }
+    }
+
+    // Reglas por participante
+    if (minTicketsPerParticipant !== undefined) {
+      const m = Math.max(1, parseInt(minTicketsPerParticipant, 10) || 1);
+      const prevM = existing.minTicketsPerParticipant || 1;
+      if (hasParticipants && m > prevM && !isSuper) {
+        return NextResponse.json(
+          { error: `No podés aumentar el mínimo de tickets por participante (actual: ${prevM}).` },
+          { status: 400 }
+        );
+      }
+      if (m !== existing.minTicketsPerParticipant) {
+        data.minTicketsPerParticipant = m;
+        changed.push("mínimo de tickets por participante");
+      }
+    }
+
+    if (minTicketsIsMandatory !== undefined) {
+      const mand = !!minTicketsIsMandatory;
+      if (hasParticipants && !existing.minTicketsIsMandatory && mand && !isSuper) {
+        return NextResponse.json(
+          { error: "No podés activar la obligatoriedad de tickets porque ya hay participantes." },
+          { status: 400 }
+        );
+      }
+      if (mand !== existing.minTicketsIsMandatory) {
+        data.minTicketsIsMandatory = mand;
+        changed.push(mand ? "regla obligatoria" : "regla sugerida");
+      }
+    }
+
+    // prizeValue (regla en miles, coherencia con participantLimit/maxParticipants)
+    if (prizeValue !== undefined) {
+      const pv = normalizePrizeValue(prizeValue);
+      if (!pv || pv < 1000) {
+        return NextResponse.json(
+          { error: "El valor del premio debe ser un entero ≥ 1000" },
+          { status: 400 }
+        );
+      }
+      if (pv !== existing.prizeValue) {
+        // Aseguramos coherencia con maxParticipants (existente o nuevo si viene)
+        const divisor = (data.minTicketsIsMandatory ?? existing.minTicketsIsMandatory)
+          ? Math.max(1, data.minTicketsPerParticipant ?? existing.minTicketsPerParticipant ?? 1)
+          : 1;
+        const baseNeeded = Math.ceil(pv / POT_CONTRIBUTION_PER_TICKET);
+        const minRequired = Math.ceil(baseNeeded / divisor);
+        const targetLimit = (data.maxParticipants ?? existing.maxParticipants) || 0;
+
+        if (!isSuper && targetLimit && targetLimit < minRequired) {
+          return NextResponse.json(
+            { error: `Con ese premio, participantLimit debe ser ≥ ${minRequired}` },
+            { status: 400 }
+          );
+        }
+
+        data.prizeValue = pv;
+        changed.push("valor del premio");
+      }
+    }
+
+    // startsAt
     if (startsAt !== undefined) {
       const startDate = startsAt ? new Date(startsAt) : null;
       if (startDate && isNaN(startDate.getTime())) {
         return NextResponse.json({ error: "Fecha de inicio inválida" }, { status: 400 });
       }
       if (startDate && startDate <= new Date()) {
-        return NextResponse.json(
-          { error: "La fecha de inicio debe ser futura" },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: "La fecha de inicio debe ser futura" }, { status: 400 });
       }
       const prev = existing.startsAt ? existing.startsAt.toISOString() : null;
       const next = startDate ? startDate.toISOString() : null;
@@ -237,16 +368,12 @@ export async function PUT(req, ctx) {
         return NextResponse.json({ error: "Fecha de finalización inválida" }, { status: 400 });
       }
       if (endDate && endDate <= new Date()) {
-        return NextResponse.json(
-          { error: "La fecha de finalización debe ser futura" },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: "La fecha de finalización debe ser futura" }, { status: 400 });
       }
-      // coherencia startsAt < endsAt (si ambas disponibles)
       const effectiveStart = data.startsAt ?? existing.startsAt;
       if (endDate && effectiveStart && endDate <= effectiveStart) {
         return NextResponse.json(
-          { error: "La fecha de finalización debe ser posterior a la fecha de inicio" },
+          { error: "La fecha de finalización debe ser posterior a la de inicio" },
           { status: 400 }
         );
       }
@@ -258,19 +385,22 @@ export async function PUT(req, ctx) {
       }
     }
 
-    // participantLimit (maxParticipants)
-    if (participantLimit !== undefined) {
-      const mp =
-        participantLimit === null ? null : Math.trunc(Number(participantLimit));
+    // participantLimit o alias maxParticipants
+    const participantLimitRaw = participantLimit ?? maxParticipants;
+    if (participantLimitRaw !== undefined) {
+      const mp = participantLimitRaw === null ? null : Math.trunc(Number(participantLimitRaw));
       if (mp === null || !Number.isFinite(mp) || mp <= 0) {
         return NextResponse.json(
           { error: "participantLimit debe ser un entero mayor a 0" },
           { status: 400 }
         );
       }
-      const minNeeded = Math.ceil(
-        (existing.prizeValue ?? 0) / POT_CONTRIBUTION_PER_TICKET
-      );
+      const effectivePrize = data.prizeValue ?? existing.prizeValue ?? 0;
+      const divisor = (data.minTicketsIsMandatory ?? existing.minTicketsIsMandatory)
+        ? Math.max(1, data.minTicketsPerParticipant ?? existing.minTicketsPerParticipant ?? 1)
+        : 1;
+      const baseNeeded = Math.ceil(effectivePrize / POT_CONTRIBUTION_PER_TICKET);
+      const minNeeded = Math.ceil(baseNeeded / divisor);
       if (mp < minNeeded) {
         return NextResponse.json(
           { error: `participantLimit debe ser ≥ ${minNeeded} para cubrir el premio` },
@@ -283,7 +413,7 @@ export async function PUT(req, ctx) {
       }
     }
 
-    // published toggle + transición a PUBLISHED/ACTIVE según startsAt
+    // published toggle
     if (published !== undefined) {
       const wantPublished = !!published;
       if (wantPublished) {
@@ -303,7 +433,6 @@ export async function PUT(req, ctx) {
           changed.push("visibilidad (ahora público)");
         }
       } else {
-        // despublicar -> DRAFT
         if (existing.status !== "DRAFT") {
           data.status = "DRAFT";
           data.publishedAt = null;
@@ -313,7 +442,6 @@ export async function PUT(req, ctx) {
     }
 
     if (Object.keys(data).length === 0) {
-      // Nada para actualizar; devolvemos el actual igualmente
       const current = await prisma.raffle.findUnique({
         where: { id },
         select: {
@@ -321,6 +449,9 @@ export async function PUT(req, ctx) {
           title: true,
           description: true,
           imageUrl: true,
+          youtubeUrl: true,
+          prizeCategory: true,
+          freeShipping: true, // 👈
           prizeValue: true,
           maxParticipants: true,
           startsAt: true,
@@ -331,6 +462,9 @@ export async function PUT(req, ctx) {
           publishedAt: true,
           ownerId: true,
           isPrivate: true,
+          minTicketsPerParticipant: true,
+          minTicketsIsMandatory: true,
+          ownerImage: true,
           owner: { select: { id: true, name: true, email: true, image: true } },
           _count: { select: { tickets: true, participations: true } },
         },
@@ -350,6 +484,9 @@ export async function PUT(req, ctx) {
         title: true,
         description: true,
         imageUrl: true,
+        youtubeUrl: true,
+        prizeCategory: true,
+        freeShipping: true, // 👈
         prizeValue: true,
         maxParticipants: true,
         startsAt: true,
@@ -360,6 +497,9 @@ export async function PUT(req, ctx) {
         publishedAt: true,
         ownerId: true,
         isPrivate: true,
+        minTicketsPerParticipant: true,
+        minTicketsIsMandatory: true,
+        ownerImage: true,
         owner: { select: { id: true, name: true, email: true, image: true } },
         _count: { select: { tickets: true, participations: true } },
       },
@@ -377,6 +517,9 @@ export async function PUT(req, ctx) {
             title: existing.title,
             description: existing.description,
             imageUrl: existing.imageUrl,
+            youtubeUrl: existing.youtubeUrl,
+            prizeCategory: existing.prizeCategory,
+            freeShipping: existing.freeShipping, // 👈
             startsAt: existing.startsAt,
             endsAt: existing.endsAt,
             maxParticipants: existing.maxParticipants,
@@ -384,6 +527,9 @@ export async function PUT(req, ctx) {
             isPrivate: existing.isPrivate,
             publishedAt: existing.publishedAt,
             isLocked: existing.isLocked,
+            minTicketsPerParticipant: existing.minTicketsPerParticipant,
+            minTicketsIsMandatory: existing.minTicketsIsMandatory,
+            prizeValue: existing.prizeValue,
           },
           newValues: data,
         },
@@ -392,17 +538,14 @@ export async function PUT(req, ctx) {
       console.warn("auditLog update failed (ignored):", e?.message || e);
     }
 
-    // Notificar participantes si corresponde
+    // notificaciones opcionales
     if (notifyParticipants === true && changed.length > 0) {
       try {
         const parts = await prisma.participation.findMany({
           where: { raffleId: id },
           select: { ticket: { select: { userId: true } } },
         });
-        const userIdsSet = new Set(
-          parts.map((p) => p.ticket.userId).filter(Boolean)
-        );
-
+        const userIdsSet = new Set(parts.map((p) => p.ticket.userId).filter(Boolean));
         if (userIdsSet.size > 0) {
           const changesText = changed.join(", ");
           const toCreate = Array.from(userIdsSet).map((uid) => ({
@@ -412,7 +555,6 @@ export async function PUT(req, ctx) {
             message: `El sorteo "${updated.title}" tuvo cambios: ${changesText}.`,
             raffleId: id,
           }));
-
           await prisma.notification.createMany({ data: toCreate });
         }
       } catch (e) {
@@ -437,12 +579,9 @@ export async function PUT(req, ctx) {
   }
 }
 
-/* ==========================
+/* =======================
    DELETE /api/raffles/[id]
-   - SUPERADMIN: puede borrar aun con tickets/participaciones
-   - ADMIN/DUEÑO: solo sin actividad
-   - Extra: si isLocked === true, solo SUPERADMIN puede borrar.
-   ========================== */
+   ======================= */
 export async function DELETE(_req, ctx) {
   try {
     const session = await getServerSession(authOptions);
@@ -450,13 +589,11 @@ export async function DELETE(_req, ctx) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
 
-    const { id } = await ctx.params; // ✅ evitar warning Next
+    const { id } = await ctx.params;
 
     const existing = await prisma.raffle.findUnique({
       where: { id },
-      include: {
-        _count: { select: { tickets: true, participations: true } },
-      },
+      include: { _count: { select: { tickets: true, participations: true } } },
     });
     if (!existing) {
       return NextResponse.json({ error: "Sorteo no encontrado" }, { status: 404 });
@@ -467,7 +604,6 @@ export async function DELETE(_req, ctx) {
     const isAdmin = role === "ADMIN" || role === "SUPERADMIN";
     const isOwner = !!session.user?.id && existing.ownerId === session.user.id;
 
-    // Si está bloqueada, solo SUPERADMIN puede borrar
     if (existing.isLocked && !isSuper) {
       return NextResponse.json(
         { error: "Rifa bloqueada. Solo SUPERADMIN puede eliminarla." },
@@ -497,7 +633,6 @@ export async function DELETE(_req, ctx) {
       }
     }
 
-    // Auditoría (best-effort)
     try {
       await prisma.auditLog.create({
         data: {
@@ -512,6 +647,7 @@ export async function DELETE(_req, ctx) {
             maxParticipants: existing.maxParticipants,
             isPrivate: existing.isPrivate,
             isLocked: existing.isLocked,
+            freeShipping: existing.freeShipping, // 👈 auditoría
             counters: { ticketsCount, partsCount },
           },
         },
@@ -522,10 +658,7 @@ export async function DELETE(_req, ctx) {
 
     await prisma.raffle.delete({ where: { id } });
 
-    return NextResponse.json({
-      success: true,
-      message: "Sorteo eliminado exitosamente",
-    });
+    return NextResponse.json({ success: true, message: "Sorteo eliminado exitosamente" });
   } catch (err) {
     console.error("DELETE /api/raffles/[id] error:", err);
     return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
